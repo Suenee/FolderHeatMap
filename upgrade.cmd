@@ -85,12 +85,12 @@ if errorlevel 1 goto build_error
 
 echo [4/5] Preparing dist folder...
 rem Both the settings GUI and Total Commander can lock files directly in dist.
-taskkill /IM FolderHeatMapConfig.exe /T >nul 2>nul
+taskkill /IM FolderHeatMapConfig.exe >nul 2>nul
 for /l %%N in (1,1,20) do (
     tasklist /FI "IMAGENAME eq FolderHeatMapConfig.exe" 2>nul | find /I "FolderHeatMapConfig.exe" >nul || goto config_closed
     timeout /t 1 /nobreak >nul
 )
-taskkill /F /IM FolderHeatMapConfig.exe /T >nul 2>nul
+taskkill /F /IM FolderHeatMapConfig.exe >nul 2>nul
 :config_closed
 
 rem TC is currently registered directly against dist\FolderHeatMap.wdx64, so it must be stopped BEFORE dist is overwritten.
@@ -153,16 +153,18 @@ exit /b 0
 
 :stop_tc
 echo [TC] Closing all Total Commander instances...
-taskkill /IM TOTALCMD64.EXE /T >nul 2>nul
-taskkill /IM TOTALCMD.EXE /T >nul 2>nul
+rem IMPORTANT: never use taskkill /T here. The upgrade terminal may itself have been launched from TC,
+rem and /T would kill TC's entire child process tree including this running upgrade.cmd.
+taskkill /IM TOTALCMD64.EXE >nul 2>nul
+taskkill /IM TOTALCMD.EXE >nul 2>nul
 for /l %%N in (1,1,20) do (
     call :is_tc_running
     if "!TC_RUNNING!"=="0" exit /b 0
     timeout /t 1 /nobreak >nul
 )
-echo [TC] Normal close timed out - forcing all instances to stop...
-taskkill /F /IM TOTALCMD64.EXE /T >nul 2>nul
-taskkill /F /IM TOTALCMD.EXE /T >nul 2>nul
+echo [TC] Normal close timed out - forcing Total Commander processes to stop...
+taskkill /F /IM TOTALCMD64.EXE >nul 2>nul
+taskkill /F /IM TOTALCMD.EXE >nul 2>nul
 timeout /t 1 /nobreak >nul
 call :is_tc_running
 if "!TC_RUNNING!"=="1" exit /b 1
