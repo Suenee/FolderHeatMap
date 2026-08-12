@@ -39,6 +39,8 @@ bool LoadSettings(const std::wstring& iniPath, Settings& s) {
     s.coolingHalfLifeDays = std::clamp(static_cast<double>(GetPrivateProfileIntW(L"Heat", L"CoolingHalfLifeDays", 30, iniPath.c_str())), 1.0, 365.0);
     s.includePathHeat = GetPrivateProfileIntW(L"Heat", L"IncludePathHeat", 1, iniPath.c_str()) != 0;
     s.pathDecay = std::clamp(GetPrivateProfileIntW(L"Heat", L"PathDecayPercent", 50, iniPath.c_str()), 0u, 100u) / 100.0;
+    s.fileHeatEnabled = GetPrivateProfileIntW(L"Heat", L"FileHeatEnabled", 1, iniPath.c_str()) != 0;
+    s.fileContribution = std::clamp(GetPrivateProfileIntW(L"Heat", L"FileContributionPercent", 50, iniPath.c_str()), 0u, 100u) / 100.0;
     s.repeatVisitCooldownSeconds = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Heat", L"RepeatVisitCooldownSeconds", 90, iniPath.c_str())), 0, 600);
     s.sessionResetHours = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Heat", L"SessionResetHours", 8, iniPath.c_str())), 1, 24);
     s.smoothColors = GetPrivateProfileIntW(L"Colors", L"Smooth", 1, iniPath.c_str()) != 0;
@@ -61,6 +63,8 @@ bool SaveSettings(const std::wstring& iniPath, const Settings& s) {
     ok &= writeInt(L"Heat", L"CoolingHalfLifeDays", static_cast<long>(std::clamp(s.coolingHalfLifeDays, 1.0, 365.0)));
     ok &= writeInt(L"Heat", L"IncludePathHeat", s.includePathHeat ? 1 : 0);
     ok &= writeInt(L"Heat", L"PathDecayPercent", static_cast<long>(std::clamp(s.pathDecay, 0.0, 1.0) * 100.0 + 0.5));
+    ok &= writeInt(L"Heat", L"FileHeatEnabled", s.fileHeatEnabled ? 1 : 0);
+    ok &= writeInt(L"Heat", L"FileContributionPercent", static_cast<long>(std::clamp(s.fileContribution, 0.0, 1.0) * 100.0 + 0.5));
     ok &= writeInt(L"Heat", L"RepeatVisitCooldownSeconds", std::clamp(s.repeatVisitCooldownSeconds, 0, 600));
     ok &= writeInt(L"Heat", L"SessionResetHours", std::clamp(s.sessionResetHours, 1, 24));
     ok &= writeInt(L"Colors", L"Smooth", s.smoothColors ? 1 : 0);
