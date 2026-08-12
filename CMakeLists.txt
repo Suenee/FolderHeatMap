@@ -54,10 +54,9 @@ add_executable(FolderHeatMapConfig WIN32
 target_include_directories(FolderHeatMapConfig PRIVATE src)
 target_compile_features(FolderHeatMapConfig PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMapConfig PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(FolderHeatMapConfig PRIVATE comdlg32 shell32 advapi32)
+target_link_libraries(FolderHeatMapConfig PRIVATE comdlg32 shell32 advapi32 comctl32)
 
 if(MSVC)
-    # Repository sources are UTF-8.
     target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc /utf-8)
     target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /utf-8 /FIwindows.h /FIshellapi.h)
     set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
