@@ -1,0 +1,33 @@
+# Build output
+build/
+out/
+bin/
+obj/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Plugin binaries
+*.wdx
+*.wdx64
+*.dll
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# OS
+Thumbs.db
+Desktop.ini
