@@ -2,6 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
+set "UPGRADE_REV=reset-tool-v2"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
 set "VSBT_URL=https://aka.ms/vs/17/release/vs_BuildTools.exe"
@@ -34,6 +35,7 @@ if defined TC_PLUGIN set "TC_PLUGIN=!TC_PLUGIN:"=!"
 
 echo ============================================================
 echo  FolderHeatMap - one-click upgrade/build/deploy
+echo  Upgrade revision: %UPGRADE_REV%
 echo ============================================================
 if defined TC_PATH echo [TC] Total Commander: !TC_PATH!
 if defined TC_INI echo [TC] Configuration:   !TC_INI!
@@ -76,19 +78,24 @@ del /q "%SQLITE_ZIP%" >nul 2>nul
 :build
 echo [1/5] Preparing build...
 if exist build rmdir /s /q build
-rem Legacy versions occasionally left an executable in the repository root.
-rem It must never shadow the deployed dist copy.
 if exist "FolderHeatMapConfig.exe" del /f /q "FolderHeatMapConfig.exe" >nul 2>nul
 if exist "FolderHeatMapReset.exe" del /f /q "FolderHeatMapReset.exe" >nul 2>nul
+
 echo [2/5] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
-echo [3/5] Building FolderHeatMap plugin, settings GUI and reset utility...
-"%CMAKE%" --build build --config Release
+
+echo [3/5] Building plugin, settings GUI and reset utility...
+"%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
+rem Fail before touching Total Commander if any expected artifact is missing.
+if not exist "build\Release\FolderHeatMap.wdx64" goto missing_artifact
+if not exist "build\Release\FolderHeatMapConfig.exe" goto missing_artifact
+if not exist "build\Release\FolderHeatMapReset.exe" goto missing_reset_artifact
+echo [BUILD] Reset utility verified: build\Release\FolderHeatMapReset.exe
+
 echo [4/5] Preparing dist folder...
-rem The settings GUI and reset utility may lock files directly in dist.
 taskkill /IM FolderHeatMapConfig.exe >nul 2>nul
 taskkill /IM FolderHeatMapReset.exe >nul 2>nul
 for /l %%N in (1,1,20) do (
@@ -98,7 +105,6 @@ for /l %%N in (1,1,20) do (
 taskkill /F /IM FolderHeatMapConfig.exe >nul 2>nul
 :config_closed
 
-rem TC is currently registered directly against dist\FolderHeatMap.wdx64, so it must be stopped BEFORE dist is overwritten.
 call :is_tc_running
 if "!TC_RUNNING!"=="1" call :stop_tc
 if errorlevel 1 goto tc_stop_error
@@ -110,6 +116,7 @@ copy /y "build\Release\FolderHeatMapConfig.exe" "dist\FolderHeatMapConfig.exe" >
 if errorlevel 1 goto dist_error
 copy /y "build\Release\FolderHeatMapReset.exe" "dist\FolderHeatMapReset.exe" >nul
 if errorlevel 1 goto dist_error
+if not exist "dist\FolderHeatMapReset.exe" goto missing_reset_dist
 copy /y "configure.cmd" "dist\configure.cmd" >nul
 copy /y "README.md" "dist\README.md" >nul
 copy /y "TESTING.md" "dist\TESTING.md" >nul
@@ -161,8 +168,6 @@ exit /b 0
 
 :stop_tc
 echo [TC] Closing all Total Commander instances...
-rem IMPORTANT: never use taskkill /T here. The upgrade terminal may itself have been launched from TC,
-rem and /T would kill TC's entire child process tree including this running upgrade.cmd.
 taskkill /IM TOTALCMD64.EXE >nul 2>nul
 taskkill /IM TOTALCMD.EXE >nul 2>nul
 for /l %%N in (1,1,20) do (
@@ -178,6 +183,17 @@ call :is_tc_running
 if "!TC_RUNNING!"=="1" exit /b 1
 exit /b 0
 
+:missing_reset_artifact
+echo ERROR: FolderHeatMapReset.exe was NOT produced by the build.
+echo Expected: %CD%\build\Release\FolderHeatMapReset.exe
+echo The upgrade stops here and Total Commander has not been touched.
+goto restart_after_error
+:missing_artifact
+echo ERROR: One or more required build artifacts are missing.
+goto restart_after_error
+:missing_reset_dist
+echo ERROR: Reset utility was built but was not copied to dist.
+goto restart_after_error
 :dist_error
 echo ERROR: Could not update the dist folder. A FolderHeatMap file is still locked by another process.
 goto restart_after_error
