@@ -25,8 +25,9 @@ start "FolderHeatMapConfig" "%CONFIG_EXE%"
 
 timeout /t 2 /nobreak >nul
 
-rem A healthy GUI process must own a visible top-level window. Do not leave the terminal blocked by a headless process.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=Get-Process FolderHeatMapConfig -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $p){exit 2}; $p.Refresh(); if($p.MainWindowHandle -eq 0){exit 3}; exit 0"
+rem Validate the ACTUAL settings window, not just any dialog owned by the process.
+rem The previous test mistook the startup error MessageBox for a healthy GUI.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=Get-Process FolderHeatMapConfig -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $p){exit 2}; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class FhmWin { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls,string title); }'; $h=[FhmWin]::FindWindow('FolderHeatMapConfigWindow',$null); if($h -ne [IntPtr]::Zero){exit 0}; exit 3"
 set "RC=%ERRORLEVEL%"
 
 if "%RC%"=="0" (
@@ -37,11 +38,12 @@ if "%RC%"=="0" (
 if "%RC%"=="2" (
     echo ERROR: FolderHeatMapConfig.exe terminated during startup.
 ) else (
-    echo ERROR: FolderHeatMapConfig.exe is running but did not create a visible window.
-    echo The stale process will be terminated automatically.
-    taskkill /F /IM FolderHeatMapConfig.exe >nul 2>nul
+    echo ERROR: FolderHeatMapConfig.exe started, but the real FolderHeatMap settings window was not created.
+    echo An error dialog may still be visible; close it after taking a screenshot.
 )
 
-echo Please send a screenshot of this window.
+echo.
+echo IMPORTANT: If src\ConfigApp.cpp changed after your last successful upgrade,
+echo run upgrade.cmd before testing configure.cmd, otherwise dist contains the old EXE.
 pause
 exit /b %RC%
