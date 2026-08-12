@@ -55,8 +55,9 @@ void RecordDirectoryVisit(const std::wstring& path) {
     if (!fhm::IsDirectory(path)) return;
     const auto id = fhm::ResolveFolderIdentity(path);
     if (!id) return;
+    if (!g_settingsPath.empty()) fhm::LoadSettings(g_settingsPath, g_settings);
     FILETIME now{}; GetSystemTimeAsFileTime(&now);
-    g_database.RecordVisit(*id, now);
+    g_database.RecordVisit(*id, now, g_settings.repeatVisitCooldownSeconds, g_settings.sessionResetHours);
 }
 
 ULONGLONG FileTimeTicks(const FILETIME& time) {
@@ -80,29 +81,22 @@ std::int64_t CurrentDayKey() {
 }
 
 double EffectiveHalfLifeDays() {
-    if (!g_settings.coolingAuto) return std::clamp(g_settings.coolingHalfLifeDays, 1.0, 3650.0);
+    if (!g_settings.coolingAuto) return std::clamp(g_settings.coolingHalfLifeDays, 1.0, 365.0);
 
     FILETIME now{}; GetSystemTimeAsFileTime(&now);
     constexpr int window = 60;
     const int activeDays = g_database.GetRecentActiveDays(now, window);
-    if (activeDays < 7) return 30.0; // Bootstrap until enough behavior has been observed.
+    if (activeDays < 7) return 30.0;
 
-    // Daily users cool quickly; occasional users keep useful paths warm longer.
-    // 60/60 active days -> about 12 days half-life, 9/60 -> about 80 days.
     const double activeFraction = static_cast<double>(activeDays) / window;
     return std::clamp(12.0 / std::max(activeFraction, 1.0 / window), 7.0, 180.0);
 }
 
 double RecentHeat(const fhm::StoredActivity& a, double halfLifeDays) {
     if (!a.recentVisits || !FileTimeTicks(a.lastEffectiveVisit)) return 0.0;
-
-    // Diminishing returns: early meaningful visits matter much more than the 20th retry.
     constexpr double targetVisits = 24.0;
     const double activity = std::log1p(static_cast<double>(a.recentVisits)) / std::log1p(targetVisits);
     const double base = 5.8 * std::clamp(activity, 0.0, 1.0);
-
-    // Recent work is deliberately fast-moving. The user's global cooling rhythm still
-    // influences it, but a current-session spike should not stay red for weeks.
     const double recentHalfLife = std::clamp(halfLifeDays * 0.18, 0.5, 14.0);
     const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastEffectiveVisit) / recentHalfLife);
     return std::clamp(base * recency, 0.0, 5.8);
@@ -115,13 +109,9 @@ double HabitHeat(const fhm::StoredActivity& a, double halfLifeDays) {
     const std::int64_t first = a.firstActiveDay > 0 ? a.firstActiveDay : today;
     const double spanDays = static_cast<double>(std::max<std::int64_t>(1, today - first + 1));
     const double frequency = std::clamp(static_cast<double>(a.activeDays) / spanDays, 0.0, 1.0);
-
-    // It takes several distinct working days to become a habit. Frequency then distinguishes
-    // a daily project from a folder opened once a week.
     const double maturity = 1.0 - std::exp(-static_cast<double>(a.activeDays) / 6.0);
     const double regularity = 0.45 + 0.55 * std::sqrt(frequency);
     const double base = 5.2 * maturity * regularity;
-
     const double habitHalfLife = std::clamp(halfLifeDays * 3.0, 14.0, 540.0);
     const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastEffectiveVisit) / habitHalfLife);
     return std::clamp(base * recency, 0.0, 5.2);
@@ -129,12 +119,8 @@ double HabitHeat(const fhm::StoredActivity& a, double halfLifeDays) {
 
 double DirectHeat(const fhm::StoredActivity& a, double halfLifeDays) {
     if (!a.visits) return 0.0;
-
     const double recent = RecentHeat(a, halfLifeDays);
     const double habit = HabitHeat(a, halfLifeDays);
-
-    // Strong recent work plus a real long-term habit can reach level 7. Either component by
-    // itself normally stays below red, which keeps level 7 meaningful.
     const double high = std::max(recent, habit);
     const double low = std::min(recent, habit);
     return std::clamp(high + 0.30 * low, 0.0, 7.0);
@@ -159,8 +145,6 @@ double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::S
     double result = direct ? DirectHeat(*direct, halfLife) : 0.0;
     if (!g_settings.includePathHeat || g_settings.pathDecay <= 0.0) return result;
 
-    // Hot-path propagation uses the hottest descendant only. This avoids a large number of
-    // mildly warm children artificially making their parent red.
     const int baseDepth = ComponentDepth(id.relativePath);
     const auto activities = g_database.GetVolumeActivities(id.volumeId);
     for (const auto& [relative, activity] : activities) {
