@@ -41,7 +41,8 @@ bool LoadSettings(const std::wstring& iniPath, Settings& s) {
     s.includePathHeat = GetPrivateProfileIntW(L"Heat", L"IncludePathHeat", 1, iniPath.c_str()) != 0;
     s.pathDecay = GetPrivateProfileIntW(L"Heat", L"PathDecayPercent", 50, iniPath.c_str()) / 100.0;
     s.smoothColors = GetPrivateProfileIntW(L"Colors", L"Smooth", 1, iniPath.c_str()) != 0;
-    s.stepsPerLevel = std::clamp(GetPrivateProfileIntW(L"Colors", L"StepsPerLevel", 4, iniPath.c_str()), 1, 16);
+    const int configuredSteps = static_cast<int>(GetPrivateProfileIntW(L"Colors", L"StepsPerLevel", 4, iniPath.c_str()));
+    s.stepsPerLevel = std::clamp(configuredSteps, 1, 16);
     const Settings defaults = DefaultSettings();
     for (int i = 1; i <= 7; ++i) s.colors[i] = ReadColor(iniPath, i, defaults.colors[i]);
     return true;
