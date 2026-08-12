@@ -180,7 +180,7 @@ void Apply(HWND hwnd) {
     SetWindowTextW(g_status, L"Uloženo. Barevná mapa byla aktualizována.");
 }
 
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM) {
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
             HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
@@ -251,7 +251,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM) {
             PostQuitMessage(0);
             return 0;
     }
-    return DefWindowProcW(hwnd, msg, wp, 0);
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 } // namespace
 
