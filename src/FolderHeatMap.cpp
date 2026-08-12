@@ -128,28 +128,27 @@ double DirectHeat(const fhm::StoredActivity& a, double halfLifeDays) {
     return std::clamp(high + 0.30 * low, 0.0, 7.0);
 }
 
-std::uint64_t RealFileWriteEvents(const fhm::StoredFileActivity& a) {
-    // The first observation establishes the filesystem Last Write baseline.
-    // Database::ObserveFileWrite stores that observation as event #1 for
-    // backward compatibility, so only later timestamp changes count as writes.
-    return a.writeEvents > 0 ? a.writeEvents - 1 : 0;
-}
-
 double FileHeat(const fhm::StoredFileActivity& a, double halfLifeDays) {
-    const std::uint64_t realWrites = RealFileWriteEvents(a);
-    if (!realWrites || !FileTimeTicks(a.lastWrite)) return 0.0;
+    // A file's existing timestamp is only a baseline. Heat starts only after
+    // FolderHeatMap has actually observed at least one subsequent write.
+    if (!a.writeEvents || !FileTimeTicks(a.lastWrite)) return 0.0;
 
+    // Repeated saves have diminishing returns. One observed write should only
+    // make the file mildly warm; sustained work is required for orange/red.
+    constexpr double targetWrites = 12.0;
+    const double activity = std::log1p(static_cast<double>(a.writeEvents)) / std::log1p(targetWrites);
+    const double recentBase = 6.2 * std::clamp(activity, 0.0, 1.0);
     const double writeHalfLife = std::clamp(halfLifeDays * 0.14, 0.5, 21.0);
-    const double recent = 6.4 * std::exp(-std::log(2.0) * DaysAgo(a.lastWrite) / writeHalfLife);
+    const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastWrite) / writeHalfLife);
+    const double recent = recentBase * recency;
 
-    const std::uint64_t realActiveDays = std::min(a.activeDays, realWrites);
-    if (!realActiveDays) return std::clamp(recent, 0.0, 7.0);
-
+    // Long-term habit grows more slowly and keeps regularly edited files warm
+    // without allowing a single edit to jump straight to the hottest levels.
     const std::int64_t today = CurrentDayKey();
     const std::int64_t first = a.firstActiveDay > 0 ? a.firstActiveDay : today;
     const double spanDays = static_cast<double>(std::max<std::int64_t>(1, today - first + 1));
-    const double frequency = std::clamp(static_cast<double>(realActiveDays) / spanDays, 0.0, 1.0);
-    const double maturity = 1.0 - std::exp(-static_cast<double>(realWrites) / 8.0);
+    const double frequency = std::clamp(static_cast<double>(a.activeDays) / spanDays, 0.0, 1.0);
+    const double maturity = 1.0 - std::exp(-static_cast<double>(a.writeEvents) / 8.0);
     const double habitBase = 4.4 * maturity * (0.45 + 0.55 * std::sqrt(frequency));
     const double habitHalfLife = std::clamp(halfLifeDays * 2.0, 10.0, 365.0);
     const double habit = habitBase * std::exp(-std::log(2.0) * DaysAgo(a.lastWrite) / habitHalfLife);
@@ -266,11 +265,7 @@ int GetValueForFile(const std::wstring& path, int fieldIndex, void* fieldValue) 
     if (!activity) {
         fhm::StoredFileActivity fallback{};
         fallback.lastWrite = lastWrite;
-        fallback.writeEvents = 1; // baseline only; RealFileWriteEvents() reports zero
-        fallback.activeDays = 1;
-        const auto day = static_cast<std::int64_t>(FileTimeTicks(lastWrite) / static_cast<ULONGLONG>(kTicksPerDay));
-        fallback.firstActiveDay = day;
-        fallback.lastActiveDay = day;
+        fallback.writeEvents = 0;
         activity = fallback;
     }
 
@@ -279,7 +274,7 @@ int GetValueForFile(const std::wstring& path, int fieldIndex, void* fieldValue) 
         case kFieldHeat: *static_cast<double*>(fieldValue) = heat; return ft_numeric_floating;
         case kFieldHeatLevel: *static_cast<int*>(fieldValue) = HeatToLevel(heat); return ft_numeric_32;
         case kFieldColorStep: *static_cast<int*>(fieldValue) = HeatToColorStep(heat); return ft_numeric_32;
-        case kFieldWrites: *static_cast<__int64*>(fieldValue) = static_cast<__int64>(RealFileWriteEvents(*activity)); return ft_numeric_64;
+        case kFieldWrites: *static_cast<__int64*>(fieldValue) = static_cast<__int64>(activity->writeEvents); return ft_numeric_64;
         case kFieldLastWrite: *static_cast<FILETIME*>(fieldValue) = activity->lastWrite; return ft_datetime;
         case kFieldVisits:
         case kFieldLastVisit:
