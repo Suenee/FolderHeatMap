@@ -41,21 +41,46 @@ HWND g_stepsEdit{};
 HWND g_status{};
 HINSTANCE g_instance{};
 
+std::wstring ExpandEnvironment(const std::wstring& value) {
+    if (value.empty()) return {};
+    DWORD needed = ExpandEnvironmentStringsW(value.c_str(), nullptr, 0);
+    if (!needed) return value;
+    std::vector<wchar_t> buffer(needed);
+    if (!ExpandEnvironmentStringsW(value.c_str(), buffer.data(), needed)) return value;
+    return buffer.data();
+}
+
 std::wstring QueryRegString(HKEY root, const wchar_t* subkey, const wchar_t* value) {
     wchar_t buffer[2048]{};
     DWORD type = 0;
     DWORD size = sizeof(buffer);
-    if (RegGetValueW(root, subkey, value, RRF_RT_REG_SZ, &type, buffer, &size) == ERROR_SUCCESS) return buffer;
+    if (RegGetValueW(root, subkey, value, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, &type, buffer, &size) == ERROR_SUCCESS) {
+        return ExpandEnvironment(buffer);
+    }
     return {};
 }
 
 std::wstring FindWincmdIni() {
     wchar_t env[2048]{};
     DWORD n = GetEnvironmentVariableW(L"COMMANDER_INI", env, 2048);
-    if (n > 0 && n < 2048 && std::filesystem::exists(env)) return env;
+    if (n > 0 && n < 2048) {
+        const auto expanded = ExpandEnvironment(env);
+        if (std::filesystem::exists(expanded)) return expanded;
+    }
+
     auto p = QueryRegString(HKEY_CURRENT_USER, L"Software\\Ghisler\\Total Commander", L"IniFileName");
-    if (!p.empty()) return p;
-    return QueryRegString(HKEY_LOCAL_MACHINE, L"Software\\Ghisler\\Total Commander", L"IniFileName");
+    if (!p.empty() && std::filesystem::exists(p)) return p;
+
+    p = QueryRegString(HKEY_LOCAL_MACHINE, L"Software\\Ghisler\\Total Commander", L"IniFileName");
+    if (!p.empty() && std::filesystem::exists(p)) return p;
+
+    wchar_t appData[2048]{};
+    n = GetEnvironmentVariableW(L"APPDATA", appData, 2048);
+    if (n > 0 && n < 2048) {
+        std::filesystem::path fallback = std::filesystem::path(appData) / L"GHISLER" / L"wincmd.ini";
+        if (std::filesystem::exists(fallback)) return fallback.wstring();
+    }
+    return {};
 }
 
 std::wstring ReadIniString(const wchar_t* section, const std::wstring& key) {
@@ -104,7 +129,7 @@ std::wstring FindTcExe() {
     wchar_t env[2048]{};
     DWORD n = GetEnvironmentVariableW(L"COMMANDER_PATH", env, 2048);
     std::wstring dir;
-    if (n > 0 && n < 2048) dir = env;
+    if (n > 0 && n < 2048) dir = ExpandEnvironment(env);
     if (dir.empty()) dir = QueryRegString(HKEY_CURRENT_USER, L"Software\\Ghisler\\Total Commander", L"InstallDir");
     if (dir.empty()) dir = QueryRegString(HKEY_LOCAL_MACHINE, L"Software\\Ghisler\\Total Commander", L"InstallDir");
     if (dir.empty()) return {};
@@ -218,7 +243,7 @@ void RemoveLegacyColorKeys() {
     }
 }
 
-void WriteManagedColorRules() {
+int WriteManagedColorRules() {
     CleanupManagedSearches();
     RemoveLegacyColorKeys();
 
@@ -268,12 +293,25 @@ void WriteManagedColorRules() {
     WritePrivateProfileStringW(L"FolderHeatMap", L"ManagedColorRuleCount", std::to_wstring(managedCount).c_str(), g_wincmdIni.c_str());
     WritePrivateProfileStringW(L"FolderHeatMap", L"ManagedColorRuleStart", L"1", g_wincmdIni.c_str());
     WritePrivateProfileStringW(nullptr, nullptr, nullptr, g_wincmdIni.c_str());
+    return managedCount;
 }
 
 bool ApplyTcColorRules() {
-    if (g_wincmdIni.empty()) return false;
-    WriteManagedColorRules();
-    return true;
+    if (g_wincmdIni.empty() || !std::filesystem::exists(g_wincmdIni)) return false;
+
+    const int expected = WriteManagedColorRules();
+    if (expected <= 0) return false;
+
+    // Read back from disk. This catches a wrong INI path immediately instead of
+    // reporting success while Total Commander still sees no generated rules.
+    const std::wstring firstFilter = ReadIniString(L"Colors", L"ColorFilter1");
+    const std::wstring firstSearch = ManagedSearchName(1);
+    const std::wstring firstPlugin = ReadIniString(L"searches", firstSearch + L"_plugin");
+    const int storedCount = GetPrivateProfileIntW(L"FolderHeatMap", L"ManagedColorRuleCount", 0, g_wincmdIni.c_str());
+
+    return firstFilter == (L">" + firstSearch) &&
+           firstPlugin.rfind(L"folderheatmap.Heat > ", 0) == 0 &&
+           storedCount == expected;
 }
 
 void Apply(HWND hwnd) {
@@ -301,12 +339,14 @@ void Apply(HWND hwnd) {
 
     if (!ApplyTcColorRules()) {
         if (wasRunning) StartTc();
-        MessageBoxW(hwnd, L"Nastavení bylo uloženo, ale nepodařilo se upravit barvy Total Commanderu.", L"FolderHeatMap", MB_ICONWARNING);
+        std::wstring msg = L"Nepodařilo se zapsat nebo ověřit barevná pravidla Total Commanderu.\n\nPoužitý wincmd.ini:\n" + g_wincmdIni;
+        MessageBoxW(hwnd, msg.c_str(), L"FolderHeatMap", MB_ICONWARNING);
         return;
     }
 
     if (wasRunning) StartTc();
-    SetWindowTextW(g_status, L"Uloženo. Barevná mapa byla aktualizována.");
+    std::wstring status = L"Uloženo. Barevná mapa byla aktualizována v: " + g_wincmdIni;
+    SetWindowTextW(g_status, status.c_str());
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
