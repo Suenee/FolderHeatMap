@@ -9,8 +9,6 @@ namespace fhm {
 namespace {
 constexpr sqlite3_int64 kTicksPerSecond = 10000000LL;
 constexpr sqlite3_int64 kTicksPerDay = kTicksPerSecond * 60LL * 60LL * 24LL;
-constexpr sqlite3_int64 kHeatCooldownTicks = kTicksPerSecond * 90LL;
-constexpr sqlite3_int64 kSessionGapTicks = kTicksPerSecond * 60LL * 60LL * 8LL;
 
 sqlite3_int64 FileTimeToInt64(const FILETIME& value) {
     ULARGE_INTEGER v{};
@@ -115,12 +113,14 @@ bool Database::EnsureSchema() {
     return rc == SQLITE_OK;
 }
 
-bool Database::RecordVisit(const FolderIdentity& identity, const FILETIME& now) {
+bool Database::RecordVisit(const FolderIdentity& identity, const FILETIME& now, int cooldownSeconds, int sessionResetHours) {
     std::scoped_lock lock(mutex_);
     if (db_ == nullptr) return false;
 
     const sqlite3_int64 nowTicks = FileTimeToInt64(now);
     const sqlite3_int64 today = nowTicks / kTicksPerDay;
+    const sqlite3_int64 heatCooldownTicks = kTicksPerSecond * std::clamp(cooldownSeconds, 0, 600);
+    const sqlite3_int64 sessionGapTicks = kTicksPerSecond * 60LL * 60LL * std::clamp(sessionResetHours, 1, 24);
 
     if (sqlite3_exec(db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) return false;
     bool ok = true;
@@ -169,10 +169,10 @@ bool Database::RecordVisit(const FolderIdentity& identity, const FILETIME& now) 
         }
     }
 
-    const bool effective = ok && (lastEffectiveVisit == 0 || nowTicks - lastEffectiveVisit >= kHeatCooldownTicks);
+    const bool effective = ok && (lastEffectiveVisit == 0 || heatCooldownTicks == 0 || nowTicks - lastEffectiveVisit >= heatCooldownTicks);
     if (effective) {
         ++heatVisits;
-        if (lastEffectiveVisit == 0 || nowTicks - lastEffectiveVisit > kSessionGapTicks) recentVisits = 1;
+        if (lastEffectiveVisit == 0 || nowTicks - lastEffectiveVisit > sessionGapTicks) recentVisits = 1;
         else recentVisits = std::max<sqlite3_int64>(1, recentVisits + 1);
 
         if (lastActiveDay != today) {
