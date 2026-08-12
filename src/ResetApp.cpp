@@ -10,6 +10,52 @@
 
 namespace {
 
+constexpr UINT kTcExecuteCommandMessage = WM_USER + 51;
+constexpr WPARAM kTcRereadSourceCommand = 540; // cm_RereadSource
+
+bool IsTotalCommanderWindow(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    wchar_t className[128]{};
+    if (!GetClassNameW(hwnd, className, static_cast<int>(std::size(className)))) return false;
+    return _wcsicmp(className, L"TTOTAL_CMD") == 0;
+}
+
+BOOL CALLBACK FindTcWindowProc(HWND hwnd, LPARAM lParam) {
+    if (!IsWindowVisible(hwnd) || !IsTotalCommanderWindow(hwnd)) return TRUE;
+    *reinterpret_cast<HWND*>(lParam) = hwnd;
+    return FALSE;
+}
+
+HWND FindTotalCommanderWindow() {
+    // The reset utility is normally launched by a TC toolbar button. Capture the
+    // foreground/root window first so multiple-monitor setups use the TC instance
+    // the user actually clicked, rather than an arbitrary TC window.
+    HWND foreground = GetForegroundWindow();
+    if (foreground) foreground = GetAncestor(foreground, GA_ROOT);
+    if (IsTotalCommanderWindow(foreground)) return foreground;
+
+    HWND found = nullptr;
+    EnumWindows(FindTcWindowProc, reinterpret_cast<LPARAM>(&found));
+    return found;
+}
+
+void RefreshTotalCommander(HWND tcWindow) {
+    if (!IsTotalCommanderWindow(tcWindow)) return;
+
+    // Total Commander exposes internal cm_* commands through WM_USER+51.
+    // cm_RereadSource (540) rereads the active source panel and causes WDX
+    // content/color rules to be evaluated again after the database reset.
+    DWORD_PTR ignored = 0;
+    SendMessageTimeoutW(tcWindow, kTcExecuteCommandMessage, kTcRereadSourceCommand, 0,
+                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &ignored);
+
+    // Also ask Windows to repaint the TC window immediately. The reread above
+    // updates the data; these calls avoid leaving stale pixels until the next UI
+    // interaction on some systems.
+    RedrawWindow(tcWindow, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+
 std::wstring ExpandEnvironment(const std::wstring& value) {
     if (value.empty()) return {};
     const DWORD needed = ExpandEnvironmentStringsW(value.c_str(), nullptr, 0);
@@ -148,6 +194,11 @@ std::wstring MakeAbsolute(const std::wstring& path) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // Capture TC before this process creates any UI. This is important on
+    // multi-monitor systems: the message boxes then use TC as their owner and
+    // Windows keeps them on the same monitor as the TC instance that launched us.
+    HWND tcWindow = FindTotalCommanderWindow();
+
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) return 2;
@@ -162,7 +213,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     for (auto& path : paths) path = MakeAbsolute(TrimLine(path));
     if (paths.empty()) {
-        MessageBoxW(nullptr, L"No files or folders were supplied.\n\nFor a Total Commander button use parameter: --list \"%WL\"",
+        MessageBoxW(tcWindow, L"No files or folders were supplied.\n\nFor a Total Commander button use parameter: --list \"%WL\"",
                     L"FolderHeatMap - Reset heat", MB_OK | MB_ICONINFORMATION);
         return 1;
     }
@@ -172,60 +223,64 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     bool recursive = false;
     if (hasDirectory) {
-        const int answer = MessageBoxW(nullptr,
+        const int answer = MessageBoxW(tcWindow,
             L"Reset heat for the selected items?\n\nYES  = reset selected items AND everything below selected folders\nNO   = reset only the selected items\nCANCEL = do nothing\n\nInherited heat is never forcibly hidden; parent folders will recalculate from the activity that remains.",
             L"FolderHeatMap - Reset heat", MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2);
         if (answer == IDCANCEL) return 0;
         recursive = answer == IDYES;
     } else {
-        const int answer = MessageBoxW(nullptr, L"Reset the direct heat of the selected file(s)?",
+        const int answer = MessageBoxW(tcWindow, L"Reset the direct heat of the selected file(s)?",
                                        L"FolderHeatMap - Reset heat", MB_OKCANCEL | MB_ICONQUESTION);
         if (answer != IDOK) return 0;
     }
 
     const auto dbPath = FindDatabasePath();
     if (dbPath.empty()) {
-        MessageBoxW(nullptr, L"FolderHeatMap could not locate the Total Commander configuration/database.",
-                    L"FolderHeatMap - Reset heat", MB_OK | MB_ICONERROR);
-        return 2;
-    }
-
-    fhm::Database database;
-    if (!database.Open(dbPath)) {
-        MessageBoxW(nullptr, L"FolderHeatMap database could not be opened.",
+        MessageBoxW(tcWindow, L"FolderHeatMap could not locate the Total Commander configuration/database.",
                     L"FolderHeatMap - Reset heat", MB_OK | MB_ICONERROR);
         return 2;
     }
 
     int resetCount = 0;
     int failedCount = 0;
-    for (const auto& path : paths) {
-        const DWORD attrs = GetFileAttributesW(path.c_str());
-        if (attrs == INVALID_FILE_ATTRIBUTES) { ++failedCount; continue; }
-        const bool isDirectory = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        const auto identity = fhm::ResolveFolderIdentity(path);
-        if (!identity) { ++failedCount; continue; }
-
-        bool ok = false;
-        if (recursive && isDirectory) {
-            ok = database.ResetRecursiveActivity(*identity);
-        } else if (isDirectory) {
-            ok = database.ResetDirectActivity(*identity, true, nullptr);
-        } else {
-            FILETIME lastWrite{};
-            ok = GetLastWriteTime(path, lastWrite) && database.ResetDirectActivity(*identity, false, &lastWrite);
+    {
+        fhm::Database database;
+        if (!database.Open(dbPath)) {
+            MessageBoxW(tcWindow, L"FolderHeatMap database could not be opened.",
+                        L"FolderHeatMap - Reset heat", MB_OK | MB_ICONERROR);
+            return 2;
         }
-        if (ok) ++resetCount; else ++failedCount;
-    }
+
+        for (const auto& path : paths) {
+            const DWORD attrs = GetFileAttributesW(path.c_str());
+            if (attrs == INVALID_FILE_ATTRIBUTES) { ++failedCount; continue; }
+            const bool isDirectory = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            const auto identity = fhm::ResolveFolderIdentity(path);
+            if (!identity) { ++failedCount; continue; }
+
+            bool ok = false;
+            if (recursive && isDirectory) {
+                ok = database.ResetRecursiveActivity(*identity);
+            } else if (isDirectory) {
+                ok = database.ResetDirectActivity(*identity, true, nullptr);
+            } else {
+                FILETIME lastWrite{};
+                ok = GetLastWriteTime(path, lastWrite) && database.ResetDirectActivity(*identity, false, &lastWrite);
+            }
+            if (ok) ++resetCount; else ++failedCount;
+        }
+    } // Close SQLite before asking TC/WDX to reread the panel.
+
+    // Refresh even after a partial failure: successfully reset items should be
+    // reflected immediately in both WDX columns and TC color filters.
+    RefreshTotalCommander(tcWindow);
 
     if (failedCount > 0) {
         std::wstring message = L"Heat reset completed with errors.\n\nReset: " + std::to_wstring(resetCount) +
                                L"\nFailed: " + std::to_wstring(failedCount);
-        MessageBoxW(nullptr, message.c_str(), L"FolderHeatMap - Reset heat", MB_OK | MB_ICONWARNING);
+        MessageBoxW(tcWindow, message.c_str(), L"FolderHeatMap - Reset heat", MB_OK | MB_ICONWARNING);
         return 3;
     }
 
-    // No success popup: a toolbar action should stay lightweight. TC will show
-    // the recalculated values on its next content refresh/navigation.
     return 0;
 }
