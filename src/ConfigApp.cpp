@@ -131,7 +131,6 @@ bool IsManagedColorFilter(const std::wstring& value) {
 void DeleteSearch(const std::wstring& name) {
     static const wchar_t* suffixes[] = {L"_SearchFor", L"_SearchIn", L"_SearchText", L"_SearchFlags", L"_plugin"};
     for (const auto* suffix : suffixes) {
-        WritePrivateProfileStringW(L"Searches", (name + suffix).c_str(), nullptr, g_wincmdIni.c_str());
         WritePrivateProfileStringW(L"searches", (name + suffix).c_str(), nullptr, g_wincmdIni.c_str());
     }
 }
@@ -160,12 +159,15 @@ void WriteColorRuleIndex(int index, const ExistingColorRule& rule) {
     if (!rule.colorDark.empty()) WritePrivateProfileStringW(L"Colors", (base + L"ColorDark").c_str(), rule.colorDark.c_str(), g_wincmdIni.c_str());
 }
 
-void CreateManagedSearch(const std::wstring& name, const std::wstring& pluginExpression) {
-    WritePrivateProfileStringW(L"Searches", (name + L"_SearchFor").c_str(), L"", g_wincmdIni.c_str());
-    WritePrivateProfileStringW(L"Searches", (name + L"_SearchIn").c_str(), L"", g_wincmdIni.c_str());
-    WritePrivateProfileStringW(L"Searches", (name + L"_SearchText").c_str(), L"", g_wincmdIni.c_str());
-    WritePrivateProfileStringW(L"Searches", (name + L"_SearchFlags").c_str(), L"0|002002000020|||||||||0000|||", g_wincmdIni.c_str());
-    WritePrivateProfileStringW(L"Searches", (name + L"_plugin").c_str(), pluginExpression.c_str(), g_wincmdIni.c_str());
+void CreateManagedSearch(const std::wstring& name, double threshold) {
+    // This mirrors the exact format produced by Total Commander 11.58 when
+    // a saved search is created through: Define selection -> Plugins.
+    WritePrivateProfileStringW(L"searches", (name + L"_SearchFor").c_str(), L"", g_wincmdIni.c_str());
+    WritePrivateProfileStringW(L"searches", (name + L"_SearchIn").c_str(), L"", g_wincmdIni.c_str());
+    WritePrivateProfileStringW(L"searches", (name + L"_SearchText").c_str(), L"", g_wincmdIni.c_str());
+    WritePrivateProfileStringW(L"searches", (name + L"_SearchFlags").c_str(), L"0|002002000020|||||||||0000|||", g_wincmdIni.c_str());
+    const std::wstring expression = L"folderheatmap.Heat > " + HeatNumber(threshold);
+    WritePrivateProfileStringW(L"searches", (name + L"_plugin").c_str(), expression.c_str(), g_wincmdIni.c_str());
 }
 
 void RemoveLegacyColorKeys() {
@@ -180,6 +182,8 @@ void WriteManagedColorRules() {
     CleanupManagedSearches();
     RemoveLegacyColorKeys();
 
+    // Preserve all user-created TC color filters, but put FolderHeatMap rules
+    // first so a generic user filter cannot hide the heat color of a hot folder.
     std::vector<ExistingColorRule> existing;
     existing.reserve(32);
     for (int i = 1; i <= MAX_TC_COLOR_FILTERS; ++i) {
@@ -192,32 +196,49 @@ void WriteManagedColorRules() {
 
     for (int i = 1; i <= MAX_TC_COLOR_FILTERS; ++i) DeleteColorRuleIndex(i);
 
-    int tcRuleIndex = 1;
-    for (const auto& rule : existing) WriteColorRuleIndex(tcRuleIndex++, rule);
-
     const int steps = g_settings.smoothColors ? std::clamp(g_settings.stepsPerLevel, 1, 16) : 1;
+    int tcRuleIndex = 1;
     int managedCount = 0;
-    for (int level = 1; level <= 6; ++level) {
+
+    // TC saved-search plugin expressions are most reliable as a single
+    // comparison (e.g. "folderheatmap.Heat > 4"). Therefore we build
+    // descending thresholds. The first matching color rule wins.
+    // A tiny epsilon makes exact level values (4.000 etc.) belong to that level
+    // while still using the proven '>' operator written by TC itself.
+    constexpr double EPSILON = 0.001;
+
+    // Level 7 catches everything at 7 and above.
+    {
+        const std::wstring searchName = ManagedSearchName(++managedCount);
+        CreateManagedSearch(searchName, 7.0 - EPSILON);
+        WriteColorRuleIndex(tcRuleIndex++, {L">" + searchName,
+            std::to_wstring(static_cast<unsigned long>(static_cast<COLORREF>(g_settings.colors[7]))), L""});
+    }
+
+    // Descend from the hottest interval to the coolest so higher heat never
+    // gets swallowed by a lower threshold.
+    for (int level = 6; level >= 1; --level) {
         const COLORREF from = static_cast<COLORREF>(g_settings.colors[level]);
         const COLORREF to = static_cast<COLORREF>(g_settings.colors[level + 1]);
-        for (int s = 0; s < steps; ++s) {
-            const double low = level + static_cast<double>(s) / steps;
-            const double high = level + static_cast<double>(s + 1) / steps;
-            const double t = static_cast<double>(s) / steps;
-            const COLORREF color = Interpolate(from, to, t);
+        for (int s = steps - 1; s >= 0; --s) {
+            const double position = static_cast<double>(s) / steps;
+            const double threshold = level + position - EPSILON;
+            const COLORREF color = Interpolate(from, to, position);
             const std::wstring searchName = ManagedSearchName(++managedCount);
-            const std::wstring expression = L"folderheatmap.Heat >= " + HeatNumber(low) + L" & folderheatmap.Heat < " + HeatNumber(high);
-            CreateManagedSearch(searchName, expression);
-            WriteColorRuleIndex(tcRuleIndex++, {L">" + searchName, std::to_wstring(static_cast<unsigned long>(color)), L""});
+            CreateManagedSearch(searchName, threshold);
+            WriteColorRuleIndex(tcRuleIndex++, {L">" + searchName,
+                std::to_wstring(static_cast<unsigned long>(color)), L""});
         }
     }
 
-    const std::wstring finalSearch = ManagedSearchName(++managedCount);
-    CreateManagedSearch(finalSearch, L"folderheatmap.Heat >= 7");
-    WriteColorRuleIndex(tcRuleIndex++, {L">" + finalSearch, std::to_wstring(static_cast<unsigned long>(static_cast<COLORREF>(g_settings.colors[7]))), L""});
+    // Append the user's original TC color filters unchanged.
+    for (const auto& rule : existing) {
+        if (tcRuleIndex > MAX_TC_COLOR_FILTERS) break;
+        WriteColorRuleIndex(tcRuleIndex++, rule);
+    }
 
     WritePrivateProfileStringW(L"FolderHeatMap", L"ManagedColorRuleCount", std::to_wstring(managedCount).c_str(), g_wincmdIni.c_str());
-    WritePrivateProfileStringW(L"FolderHeatMap", L"ManagedColorRuleStart", std::to_wstring(static_cast<int>(existing.size()) + 1).c_str(), g_wincmdIni.c_str());
+    WritePrivateProfileStringW(L"FolderHeatMap", L"ManagedColorRuleStart", L"1", g_wincmdIni.c_str());
     WritePrivateProfileStringW(nullptr, nullptr, nullptr, g_wincmdIni.c_str());
 }
 
