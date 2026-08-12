@@ -3,11 +3,15 @@ build/
 out/
 bin/
 obj/
+dist/
 *.obj
 *.pdb
 *.ilk
 *.exp
 *.lib
+
+# Downloaded dependencies
+vendor/sqlite/
 
 # Plugin binaries
 *.wdx
