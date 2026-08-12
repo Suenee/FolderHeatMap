@@ -22,7 +22,6 @@ unsigned long ReadColor(const std::wstring& ini, int index, unsigned long fallba
 
 Settings DefaultSettings() {
     Settings s;
-    // Designed for dark Total Commander themes: green -> yellow -> orange -> red -> magenta.
     s.colors[0] = RGB(0, 0, 0);
     s.colors[1] = RGB(80, 200, 120);
     s.colors[2] = RGB(130, 220, 90);
@@ -37,12 +36,13 @@ Settings DefaultSettings() {
 bool LoadSettings(const std::wstring& iniPath, Settings& s) {
     s = DefaultSettings();
     s.coolingAuto = GetPrivateProfileIntW(L"Heat", L"CoolingAuto", 1, iniPath.c_str()) != 0;
-    s.coolingHalfLifeDays = GetPrivateProfileIntW(L"Heat", L"CoolingHalfLifeDays", 30, iniPath.c_str());
+    s.coolingHalfLifeDays = std::clamp(static_cast<double>(GetPrivateProfileIntW(L"Heat", L"CoolingHalfLifeDays", 30, iniPath.c_str())), 1.0, 365.0);
     s.includePathHeat = GetPrivateProfileIntW(L"Heat", L"IncludePathHeat", 1, iniPath.c_str()) != 0;
-    s.pathDecay = GetPrivateProfileIntW(L"Heat", L"PathDecayPercent", 50, iniPath.c_str()) / 100.0;
+    s.pathDecay = std::clamp(GetPrivateProfileIntW(L"Heat", L"PathDecayPercent", 50, iniPath.c_str()), 0u, 100u) / 100.0;
+    s.repeatVisitCooldownSeconds = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Heat", L"RepeatVisitCooldownSeconds", 90, iniPath.c_str())), 0, 600);
+    s.sessionResetHours = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Heat", L"SessionResetHours", 8, iniPath.c_str())), 1, 24);
     s.smoothColors = GetPrivateProfileIntW(L"Colors", L"Smooth", 1, iniPath.c_str()) != 0;
-    const int configuredSteps = static_cast<int>(GetPrivateProfileIntW(L"Colors", L"StepsPerLevel", 4, iniPath.c_str()));
-    s.stepsPerLevel = std::clamp(configuredSteps, 1, 16);
+    s.stepsPerLevel = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Colors", L"StepsPerLevel", 4, iniPath.c_str())), 1, 16);
     const Settings defaults = DefaultSettings();
     for (int i = 1; i <= 7; ++i) s.colors[i] = ReadColor(iniPath, i, defaults.colors[i]);
     return true;
@@ -58,11 +58,13 @@ bool SaveSettings(const std::wstring& iniPath, const Settings& s) {
     };
     bool ok = true;
     ok &= writeInt(L"Heat", L"CoolingAuto", s.coolingAuto ? 1 : 0);
-    ok &= writeInt(L"Heat", L"CoolingHalfLifeDays", static_cast<long>(s.coolingHalfLifeDays));
+    ok &= writeInt(L"Heat", L"CoolingHalfLifeDays", static_cast<long>(std::clamp(s.coolingHalfLifeDays, 1.0, 365.0)));
     ok &= writeInt(L"Heat", L"IncludePathHeat", s.includePathHeat ? 1 : 0);
-    ok &= writeInt(L"Heat", L"PathDecayPercent", static_cast<long>(s.pathDecay * 100.0 + 0.5));
+    ok &= writeInt(L"Heat", L"PathDecayPercent", static_cast<long>(std::clamp(s.pathDecay, 0.0, 1.0) * 100.0 + 0.5));
+    ok &= writeInt(L"Heat", L"RepeatVisitCooldownSeconds", std::clamp(s.repeatVisitCooldownSeconds, 0, 600));
+    ok &= writeInt(L"Heat", L"SessionResetHours", std::clamp(s.sessionResetHours, 1, 24));
     ok &= writeInt(L"Colors", L"Smooth", s.smoothColors ? 1 : 0);
-    ok &= writeInt(L"Colors", L"StepsPerLevel", s.stepsPerLevel);
+    ok &= writeInt(L"Colors", L"StepsPerLevel", std::clamp(s.stepsPerLevel, 1, 16));
     for (int i = 1; i <= 7; ++i) {
         wchar_t key[32]{}; wchar_t value[32]{};
         swprintf_s(key, L"Color%d", i); swprintf_s(value, L"%lu", s.colors[i]);
