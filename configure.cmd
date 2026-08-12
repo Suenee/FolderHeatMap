@@ -25,9 +25,9 @@ start "FolderHeatMapConfig" "%CONFIG_EXE%"
 
 timeout /t 2 /nobreak >nul
 
-rem Validate the ACTUAL settings window, not just any dialog owned by the process.
-rem The previous test mistook the startup error MessageBox for a healthy GUI.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=Get-Process FolderHeatMapConfig -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $p){exit 2}; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class FhmWin { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls,string title); }'; $h=[FhmWin]::FindWindow('FolderHeatMapConfigWindow',$null); if($h -ne [IntPtr]::Zero){exit 0}; exit 3"
+rem Validate without inline C# / Add-Type. Quoting C# inside CMD was fragile.
+rem The real settings window has a longer title than the simple startup error dialog "FolderHeatMap".
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=Get-Process FolderHeatMapConfig -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $p){exit 2}; $p.Refresh(); if($p.MainWindowHandle -eq 0){exit 3}; if($p.MainWindowTitle.Length -le 13){exit 4}; exit 0"
 set "RC=%ERRORLEVEL%"
 
 if "%RC%"=="0" (
@@ -37,9 +37,10 @@ if "%RC%"=="0" (
 
 if "%RC%"=="2" (
     echo ERROR: FolderHeatMapConfig.exe terminated during startup.
+) else if "%RC%"=="3" (
+    echo ERROR: FolderHeatMapConfig.exe is running but has no visible main window.
 ) else (
-    echo ERROR: FolderHeatMapConfig.exe started, but the real FolderHeatMap settings window was not created.
-    echo An error dialog may still be visible; close it after taking a screenshot.
+    echo ERROR: FolderHeatMapConfig.exe showed only a startup/error dialog, not the settings window.
 )
 
 echo.
