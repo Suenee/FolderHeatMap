@@ -1,0 +1,34 @@
+name: Build FolderHeatMap
+
+on:
+  push:
+    branches: [ devel ]
+  workflow_dispatch:
+
+jobs:
+  build-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure x64
+        run: cmake -S . -B build -A x64
+
+      - name: Build Release
+        run: cmake --build build --config Release
+
+      - name: Prepare test package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item build/Release/FolderHeatMap.wdx64 package/FolderHeatMap.wdx64
+          Copy-Item README.md package/README.md
+          Copy-Item TESTING.md package/TESTING.md
+
+      - name: Upload test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: FolderHeatMap-WDX64-test
+          path: package/
+          if-no-files-found: error
