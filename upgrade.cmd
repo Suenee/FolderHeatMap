@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -9,10 +9,46 @@ set "SQLITE_VERSION=3530400"
 set "SQLITE_ZIP=%TEMP%\sqlite-amalgamation-%SQLITE_VERSION%.zip"
 set "SQLITE_URL=https://www.sqlite.org/2026/sqlite-amalgamation-%SQLITE_VERSION%.zip"
 set "CMAKE="
+set "TC_PATH=%COMMANDER_PATH%"
+set "TC_INI=%COMMANDER_INI%"
+set "TC_PLUGIN="
 
 echo ============================================================
-echo  FolderHeatMap - one-click upgrade/build
+echo  FolderHeatMap - one-click upgrade/build/deploy
 echo ============================================================
+echo.
+
+rem ------------------------------------------------------------
+rem Detect Total Commander installation and active wincmd.ini.
+rem When launched from Total Commander, COMMANDER_PATH and
+rem COMMANDER_INI are the most reliable sources. Registry is fallback.
+rem ------------------------------------------------------------
+if not defined TC_PATH (
+    for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
+)
+if not defined TC_PATH (
+    for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
+)
+if not defined TC_PATH (
+    for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Wow6432Node\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
+)
+
+if not defined TC_INI (
+    for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Ghisler\Total Commander" /v IniFileName 2^>nul ^| find /i "IniFileName"') do set "TC_INI=%%B"
+)
+if not defined TC_INI (
+    for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Ghisler\Total Commander" /v IniFileName 2^>nul ^| find /i "IniFileName"') do set "TC_INI=%%B"
+)
+
+if defined TC_PATH echo [TC] Total Commander: !TC_PATH!
+if defined TC_INI echo [TC] Configuration:   !TC_INI!
+
+rem Find currently registered FolderHeatMap plugin path in [ContentPlugins].
+rem PowerShell keeps this safe for spaces and expands COMMANDER_PATH.
+if defined TC_INI if exist "!TC_INI!" (
+    for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ini=$env:TC_INI; $cp=$env:TC_PATH; $in=$false; foreach($line in Get-Content -LiteralPath $ini){ if($line -match '^\s*\[ContentPlugins\]\s*$'){ $in=$true; continue }; if($in -and $line -match '^\s*\['){ break }; if($in -and $line -match '^\s*\d+\s*=\s*(.+FolderHeatMap\.wdx64?)\s*$'){ $p=$matches[1].Trim().Trim('"'); $p=$p -replace '(?i)%%COMMANDER_PATH%%',[regex]::Escape($cp); $p=$p -replace '\\\\','\'; Write-Output $p; break } }"`) do set "TC_PLUGIN=%%I"
+)
+if defined TC_PLUGIN echo [TC] Registered plugin: !TC_PLUGIN!
 echo.
 
 rem Find CMake.
@@ -81,30 +117,61 @@ echo Using CMake:
 echo   %CMAKE%
 echo.
 if exist build (
-    echo [1/4] Removing previous build...
+    echo [1/5] Removing previous build...
     rmdir /s /q build
 ) else (
-    echo [1/4] No previous build found.
+    echo [1/5] No previous build found.
 )
-echo [2/4] Configuring x64 Release build...
+echo [2/5] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
-echo [3/4] Building FolderHeatMap.wdx64...
+echo [3/5] Building FolderHeatMap.wdx64...
 "%CMAKE%" --build build --config Release
 if errorlevel 1 goto build_error
-echo [4/4] Preparing dist folder...
+echo [4/5] Preparing dist folder...
 if not exist dist mkdir dist
 copy /y "build\Release\FolderHeatMap.wdx64" "dist\FolderHeatMap.wdx64" >nul
+if errorlevel 1 goto deploy_locked
 copy /y "README.md" "dist\README.md" >nul
 copy /y "TESTING.md" "dist\TESTING.md" >nul
+
+echo [5/5] Deploying to Total Commander...
+if not defined TC_PLUGIN (
+    echo [TC] FolderHeatMap registration was not found in wincmd.ini.
+    echo [TC] Build is ready in dist; register it once in Total Commander.
+    goto success
+)
+
+for %%I in ("%CD%\dist\FolderHeatMap.wdx64") do set "DIST_PLUGIN=%%~fI"
+for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
+if /I "!DIST_PLUGIN!"=="!TC_PLUGIN_FULL!" (
+    echo [TC] Registered plugin already points to dist. No extra copy needed.
+    goto success
+)
+
+copy /y "dist\FolderHeatMap.wdx64" "!TC_PLUGIN!" >nul
+if errorlevel 1 goto deploy_locked
+echo [TC] Updated registered plugin automatically:
+echo      !TC_PLUGIN!
+
+:success
 echo.
 echo SUCCESS.
 echo Test plugin is ready here:
 echo   %CD%\dist\FolderHeatMap.wdx64
 echo.
 echo SQLite persistence is enabled in this build.
+if defined TC_PLUGIN echo Total Commander deployment is synchronized.
 pause
 exit /b 0
+
+:deploy_locked
+echo.
+echo ERROR: FolderHeatMap.wdx64 could not be replaced.
+echo Total Commander probably has the plugin loaded and Windows has locked it.
+echo Close all Total Commander windows and run upgrade.cmd again.
+pause
+exit /b 1
 
 :download_error
 echo.
