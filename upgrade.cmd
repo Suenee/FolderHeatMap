@@ -76,6 +76,9 @@ del /q "%SQLITE_ZIP%" >nul 2>nul
 :build
 echo [1/5] Preparing build...
 if exist build rmdir /s /q build
+rem Legacy versions occasionally left an executable in the repository root.
+rem It must never shadow the deployed dist copy.
+if exist "FolderHeatMapConfig.exe" del /f /q "FolderHeatMapConfig.exe" >nul 2>nul
 echo [2/5] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
