@@ -55,6 +55,15 @@ public:
     std::optional<StoredFileActivity> GetFileActivity(const FolderIdentity& identity);
     std::vector<std::pair<std::wstring, StoredFileActivity>> GetVolumeFileActivities(const std::wstring& volumeId);
 
+    // Reset only the selected item's own activity. For files, currentLastWrite
+    // becomes the new cold baseline so the same timestamp cannot immediately
+    // reheat the file after the reset.
+    bool ResetDirectActivity(const FolderIdentity& identity, bool isDirectory, const FILETIME* currentLastWrite = nullptr);
+
+    // Reset a folder and all tracked folders/files below it. Ancestor heat is
+    // not stored, so it automatically recalculates from the remaining sources.
+    bool ResetRecursiveActivity(const FolderIdentity& identity);
+
     int GetRecentActiveDays(const FILETIME& now, int windowDays);
 
 private:
