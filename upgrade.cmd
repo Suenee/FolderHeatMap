@@ -27,9 +27,7 @@ if defined TC_PATH (
     if not defined TC_EXE if exist "!TC_PATH!\TOTALCMD.EXE" set "TC_EXE=!TC_PATH!\TOTALCMD.EXE"
 )
 
-rem Find FolderHeatMap registration without embedding a complex PowerShell
-rem expression inside a parenthesized CMD block. The previous approach could
-rem break CMD parsing with "$p was unexpected at this time".
+rem Find FolderHeatMap registration.
 if not defined TC_INI goto tc_plugin_detected
 if not exist "!TC_INI!" goto tc_plugin_detected
 for /f "usebackq tokens=1,* delims==" %%A in (`findstr /I /C:"FolderHeatMap.wdx64" "!TC_INI!" 2^>nul`) do if not defined TC_PLUGIN set "TC_PLUGIN=%%B"
@@ -85,13 +83,16 @@ if exist build rmdir /s /q build
 echo [2/5] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
-echo [3/5] Building FolderHeatMap.wdx64...
+echo [3/5] Building FolderHeatMap plugin and settings GUI...
 "%CMAKE%" --build build --config Release
 if errorlevel 1 goto build_error
 echo [4/5] Preparing dist folder...
 if not exist dist mkdir dist
 copy /y "build\Release\FolderHeatMap.wdx64" "dist\FolderHeatMap.wdx64" >nul
 if errorlevel 1 goto build_error
+copy /y "build\Release\FolderHeatMapConfig.exe" "dist\FolderHeatMapConfig.exe" >nul
+if errorlevel 1 goto build_error
+copy /y "configure.cmd" "dist\configure.cmd" >nul
 copy /y "README.md" "dist\README.md" >nul
 copy /y "TESTING.md" "dist\TESTING.md" >nul
 
@@ -127,11 +128,14 @@ goto success
 :success
 echo.
 echo SUCCESS.
-echo Plugin: %CD%\dist\FolderHeatMap.wdx64
+echo Plugin:    %CD%\dist\FolderHeatMap.wdx64
+echo Settings:  %CD%\dist\FolderHeatMapConfig.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE (
     echo [TC] Restarting Total Commander...
     start "" "!TC_EXE!"
 )
+echo.
+echo Run configure.cmd to change heat behavior and colors.
 pause
 exit /b 0
 
