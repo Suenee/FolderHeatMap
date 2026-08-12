@@ -47,7 +47,7 @@ endif()
 file(WRITE "${FHM_CONFIG_RC}" "IDI_FHM_CONFIG ICON \"${FHM_CONFIG_ICON}\"\n")
 
 add_executable(FolderHeatMapConfig WIN32
-    src/ConfigApp.cpp
+    src/ConfigAppCompile.cpp
     src/Settings.cpp
     "${FHM_CONFIG_RC}"
 )
