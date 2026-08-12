@@ -16,7 +16,6 @@ if defined CMAKE goto :build
 
 echo C++ build environment is not installed yet.
 echo FolderHeatMap can install the minimal Microsoft Build Tools
-
 echo required to compile the x64 Total Commander plugin.
 echo.
 choice /C YN /N /M "Download and install the required Build Tools now? [Y/N] "
@@ -28,14 +27,22 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference=
 if errorlevel 1 goto :download_error
 if not exist "%VSBT%" goto :download_error
 
-echo [SETUP] Installing minimal x64 C++ toolchain, CMake and Windows SDK...
-echo         Windows may ask for administrator permission.
-start /wait "" "%VSBT%" --quiet --wait --norestart --nocache ^
+echo [SETUP] Starting Microsoft Build Tools installer...
+echo [SETUP] Keep the installer window open until installation finishes.
+echo [SETUP] Only the minimal x64 C++ toolchain, CMake and Windows SDK are requested.
+echo.
+
+start /wait "" "%VSBT%" --passive --wait --norestart --nocache ^
   --add Microsoft.VisualStudio.Workload.VCTools ^
   --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
   --add Microsoft.VisualStudio.Component.VC.CMake.Project ^
   --add Microsoft.VisualStudio.Component.Windows11SDK.26100
-if errorlevel 1 goto :install_error
+set "INSTALL_RC=%ERRORLEVEL%"
+
+if not "%INSTALL_RC%"=="0" (
+    if "%INSTALL_RC%"=="3010" goto :restart_required
+    goto :install_error
+)
 
 del /q "%VSBT%" >nul 2>nul
 call :find_cmake
@@ -100,9 +107,17 @@ echo Check the Internet connection and run upgrade.cmd again.
 pause
 exit /b 1
 
+:restart_required
+echo.
+echo Build Tools were installed successfully, but Windows requires a restart.
+echo Restart Windows and run upgrade.cmd again.
+pause
+exit /b 0
+
 :install_error
 echo.
 echo ERROR: Microsoft Build Tools installation failed or was cancelled.
+echo Installer return code: %INSTALL_RC%
 echo No FolderHeatMap build was attempted.
 pause
 exit /b 1
