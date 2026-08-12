@@ -17,6 +17,7 @@ constexpr int kFieldVisits = 1;
 constexpr int kFieldLastVisit = 2;
 constexpr int kFieldHeatLevel = 3;
 constexpr int kFieldColorStep = 4;
+constexpr double kTicksPerDay = 10000000.0 * 60.0 * 60.0 * 24.0;
 
 fhm::Database g_database;
 fhm::Settings g_settings = fhm::DefaultSettings();
@@ -58,30 +59,85 @@ void RecordDirectoryVisit(const std::wstring& path) {
     g_database.RecordVisit(*id, now);
 }
 
+ULONGLONG FileTimeTicks(const FILETIME& time) {
+    ULARGE_INTEGER v{};
+    v.LowPart = time.dwLowDateTime;
+    v.HighPart = time.dwHighDateTime;
+    return v.QuadPart;
+}
+
 double DaysAgo(const FILETIME& time) {
-    ULARGE_INTEGER then{}, now{};
-    then.LowPart = time.dwLowDateTime; then.HighPart = time.dwHighDateTime;
+    const ULONGLONG then = FileTimeTicks(time);
     FILETIME nft{}; GetSystemTimeAsFileTime(&nft);
-    now.LowPart = nft.dwLowDateTime; now.HighPart = nft.dwHighDateTime;
-    if (!then.QuadPart || now.QuadPart <= then.QuadPart) return 0.0;
-    return static_cast<double>(now.QuadPart - then.QuadPart) / (10000000.0 * 60.0 * 60.0 * 24.0);
+    const ULONGLONG now = FileTimeTicks(nft);
+    if (!then || now <= then) return 0.0;
+    return static_cast<double>(now - then) / kTicksPerDay;
+}
+
+std::int64_t CurrentDayKey() {
+    FILETIME now{}; GetSystemTimeAsFileTime(&now);
+    return static_cast<std::int64_t>(FileTimeTicks(now) / static_cast<ULONGLONG>(kTicksPerDay));
 }
 
 double EffectiveHalfLifeDays() {
     if (!g_settings.coolingAuto) return std::clamp(g_settings.coolingHalfLifeDays, 1.0, 3650.0);
+
     FILETIME now{}; GetSystemTimeAsFileTime(&now);
     constexpr int window = 60;
     const int activeDays = g_database.GetRecentActiveDays(now, window);
     if (activeDays < 7) return 30.0; // Bootstrap until enough behavior has been observed.
+
+    // Daily users cool quickly; occasional users keep useful paths warm longer.
+    // 60/60 active days -> about 12 days half-life, 9/60 -> about 80 days.
     const double activeFraction = static_cast<double>(activeDays) / window;
-    return std::clamp(10.0 / std::max(activeFraction, 1.0 / window), 7.0, 180.0);
+    return std::clamp(12.0 / std::max(activeFraction, 1.0 / window), 7.0, 180.0);
+}
+
+double RecentHeat(const fhm::StoredActivity& a, double halfLifeDays) {
+    if (!a.recentVisits || !FileTimeTicks(a.lastEffectiveVisit)) return 0.0;
+
+    // Diminishing returns: early meaningful visits matter much more than the 20th retry.
+    constexpr double targetVisits = 24.0;
+    const double activity = std::log1p(static_cast<double>(a.recentVisits)) / std::log1p(targetVisits);
+    const double base = 5.8 * std::clamp(activity, 0.0, 1.0);
+
+    // Recent work is deliberately fast-moving. The user's global cooling rhythm still
+    // influences it, but a current-session spike should not stay red for weeks.
+    const double recentHalfLife = std::clamp(halfLifeDays * 0.18, 0.5, 14.0);
+    const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastEffectiveVisit) / recentHalfLife);
+    return std::clamp(base * recency, 0.0, 5.8);
+}
+
+double HabitHeat(const fhm::StoredActivity& a, double halfLifeDays) {
+    if (!a.activeDays || !FileTimeTicks(a.lastEffectiveVisit)) return 0.0;
+
+    const std::int64_t today = CurrentDayKey();
+    const std::int64_t first = a.firstActiveDay > 0 ? a.firstActiveDay : today;
+    const double spanDays = static_cast<double>(std::max<std::int64_t>(1, today - first + 1));
+    const double frequency = std::clamp(static_cast<double>(a.activeDays) / spanDays, 0.0, 1.0);
+
+    // It takes several distinct working days to become a habit. Frequency then distinguishes
+    // a daily project from a folder opened once a week.
+    const double maturity = 1.0 - std::exp(-static_cast<double>(a.activeDays) / 6.0);
+    const double regularity = 0.45 + 0.55 * std::sqrt(frequency);
+    const double base = 5.2 * maturity * regularity;
+
+    const double habitHalfLife = std::clamp(halfLifeDays * 3.0, 14.0, 540.0);
+    const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastEffectiveVisit) / habitHalfLife);
+    return std::clamp(base * recency, 0.0, 5.2);
 }
 
 double DirectHeat(const fhm::StoredActivity& a, double halfLifeDays) {
     if (!a.visits) return 0.0;
-    const double visitHeat = std::min(7.0, std::log2(static_cast<double>(a.visits) + 1.0));
-    const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastVisit) / halfLifeDays);
-    return std::clamp(visitHeat * recency, 0.0, 7.0);
+
+    const double recent = RecentHeat(a, halfLifeDays);
+    const double habit = HabitHeat(a, halfLifeDays);
+
+    // Strong recent work plus a real long-term habit can reach level 7. Either component by
+    // itself normally stays below red, which keeps level 7 meaningful.
+    const double high = std::max(recent, habit);
+    const double low = std::min(recent, habit);
+    return std::clamp(high + 0.30 * low, 0.0, 7.0);
 }
 
 int ComponentDepth(const std::wstring& relative) {
@@ -103,6 +159,8 @@ double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::S
     double result = direct ? DirectHeat(*direct, halfLife) : 0.0;
     if (!g_settings.includePathHeat || g_settings.pathDecay <= 0.0) return result;
 
+    // Hot-path propagation uses the hottest descendant only. This avoids a large number of
+    // mildly warm children artificially making their parent red.
     const int baseDepth = ComponentDepth(id.relativePath);
     const auto activities = g_database.GetVolumeActivities(id.volumeId);
     for (const auto& [relative, activity] : activities) {
@@ -166,7 +224,7 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int) {
     if (!fileName || !fieldValue) return ft_fileerror;
-    if (!g_settingsPath.empty()) fhm::LoadSettings(g_settingsPath, g_settings); // Cheap INI refresh for live config changes.
+    if (!g_settingsPath.empty()) fhm::LoadSettings(g_settingsPath, g_settings);
     return GetValueForDirectory(fileName, fieldIndex, fieldValue);
 }
 
