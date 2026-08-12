@@ -158,6 +158,15 @@ double FileHeat(const fhm::StoredFileActivity& a, double halfLifeDays) {
     return std::clamp(high + 0.22 * low, 0.0, 7.0);
 }
 
+double CombineHeat(double current, double contribution) {
+    // Saturating union on the 0..7 scale. Every independent source can raise
+    // the result, but repeated descendants asymptotically approach 7 instead
+    // of growing without bound. A contribution of zero leaves current intact.
+    const double a = std::clamp(current, 0.0, 7.0) / 7.0;
+    const double b = std::clamp(contribution, 0.0, 7.0) / 7.0;
+    return 7.0 * (1.0 - (1.0 - a) * (1.0 - b));
+}
+
 int ComponentDepth(const std::wstring& relative) {
     if (relative.empty()) return 0;
     int depth = 1;
@@ -197,7 +206,7 @@ double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::S
             if (!IsDescendantOf(relative, id.relativePath)) continue;
             const int distance = std::max(1, ComponentDepth(relative) - baseDepth);
             const double inherited = DirectHeat(activity, halfLife) * std::pow(g_settings.pathDecay, distance);
-            result = std::max(result, inherited);
+            result = CombineHeat(result, inherited);
         }
     }
 
@@ -214,7 +223,7 @@ double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::S
             if (distance < 0) continue;
             const double pathFactor = distance == 0 ? 1.0 : std::pow(g_settings.pathDecay, distance);
             const double inherited = FileHeat(activity, halfLife) * g_settings.fileContribution * pathFactor;
-            result = std::max(result, inherited);
+            result = CombineHeat(result, inherited);
         }
     }
 
