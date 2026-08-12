@@ -15,7 +15,6 @@ set "TC_PLUGIN="
 set "TC_EXE="
 set "TC_WAS_RUNNING=0"
 
-rem Detect Total Commander installation/configuration.
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Wow6432Node\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
@@ -27,7 +26,6 @@ if defined TC_PATH (
     if not defined TC_EXE if exist "!TC_PATH!\TOTALCMD.EXE" set "TC_EXE=!TC_PATH!\TOTALCMD.EXE"
 )
 
-rem Find FolderHeatMap registration.
 if not defined TC_INI goto tc_plugin_detected
 if not exist "!TC_INI!" goto tc_plugin_detected
 for /f "usebackq tokens=1,* delims==" %%A in (`findstr /I /C:"FolderHeatMap.wdx64" "!TC_INI!" 2^>nul`) do if not defined TC_PLUGIN set "TC_PLUGIN=%%B"
@@ -42,11 +40,9 @@ if defined TC_INI echo [TC] Configuration:   !TC_INI!
 if defined TC_PLUGIN echo [TC] Registered plugin: !TC_PLUGIN!
 echo.
 
-rem Remember whether TC was running. Stop it only immediately before deployment.
-tasklist /FI "IMAGENAME eq TOTALCMD64.EXE" 2>nul | find /I "TOTALCMD64.EXE" >nul && set "TC_WAS_RUNNING=1"
-tasklist /FI "IMAGENAME eq TOTALCMD.EXE" 2>nul | find /I "TOTALCMD.EXE" >nul && set "TC_WAS_RUNNING=1"
+call :is_tc_running
+if "!TC_RUNNING!"=="1" set "TC_WAS_RUNNING=1"
 
-rem Find CMake.
 for /f "delims=" %%I in ('where cmake.exe 2^>nul') do if not defined CMAKE set "CMAKE=%%I"
 if not defined CMAKE if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.CMake.Project -find Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`) do if not defined CMAKE set "CMAKE=%%I"
 if defined CMAKE goto dependencies
@@ -86,12 +82,21 @@ if errorlevel 1 goto build_error
 echo [3/5] Building FolderHeatMap plugin and settings GUI...
 "%CMAKE%" --build build --config Release
 if errorlevel 1 goto build_error
+
 echo [4/5] Preparing dist folder...
+rem The config GUI itself may still be open from testing. Close it before replacing dist files.
+taskkill /IM FolderHeatMapConfig.exe /T >nul 2>nul
+for /l %%N in (1,1,20) do (
+    tasklist /FI "IMAGENAME eq FolderHeatMapConfig.exe" 2>nul | find /I "FolderHeatMapConfig.exe" >nul || goto config_closed
+    timeout /t 1 /nobreak >nul
+)
+taskkill /F /IM FolderHeatMapConfig.exe /T >nul 2>nul
+:config_closed
 if not exist dist mkdir dist
 copy /y "build\Release\FolderHeatMap.wdx64" "dist\FolderHeatMap.wdx64" >nul
-if errorlevel 1 goto build_error
+if errorlevel 1 goto dist_error
 copy /y "build\Release\FolderHeatMapConfig.exe" "dist\FolderHeatMapConfig.exe" >nul
-if errorlevel 1 goto build_error
+if errorlevel 1 goto dist_error
 copy /y "configure.cmd" "dist\configure.cmd" >nul
 copy /y "README.md" "dist\README.md" >nul
 copy /y "TESTING.md" "dist\TESTING.md" >nul
@@ -101,17 +106,23 @@ if not defined TC_PLUGIN goto success
 for %%I in ("%CD%\dist\FolderHeatMap.wdx64") do set "DIST_PLUGIN=%%~fI"
 for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
 
-if "!TC_WAS_RUNNING!"=="1" (
-    echo [TC] Total Commander is running - closing it for plugin update...
+rem Always check the real process state here; do not rely only on the state captured at script start.
+call :is_tc_running
+if "!TC_RUNNING!"=="1" (
+    echo [TC] Closing all Total Commander instances...
     taskkill /IM TOTALCMD64.EXE /T >nul 2>nul
     taskkill /IM TOTALCMD.EXE /T >nul 2>nul
     for /l %%N in (1,1,20) do (
-        tasklist /FI "IMAGENAME eq TOTALCMD64.EXE" 2>nul | find /I "TOTALCMD64.EXE" >nul || tasklist /FI "IMAGENAME eq TOTALCMD.EXE" 2>nul | find /I "TOTALCMD.EXE" >nul || goto tc_closed
+        call :is_tc_running
+        if "!TC_RUNNING!"=="0" goto tc_closed
         timeout /t 1 /nobreak >nul
     )
-    echo [TC] Normal close timed out - forcing Total Commander to stop...
+    echo [TC] Normal close timed out - forcing all instances to stop...
     taskkill /F /IM TOTALCMD64.EXE /T >nul 2>nul
     taskkill /F /IM TOTALCMD.EXE /T >nul 2>nul
+    timeout /t 1 /nobreak >nul
+    call :is_tc_running
+    if "!TC_RUNNING!"=="1" goto tc_stop_error
 )
 :tc_closed
 
@@ -131,14 +142,31 @@ echo SUCCESS.
 echo Plugin:    %CD%\dist\FolderHeatMap.wdx64
 echo Settings:  %CD%\dist\FolderHeatMapConfig.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE (
-    echo [TC] Restarting Total Commander...
-    start "" "!TC_EXE!"
+    call :is_tc_running
+    if "!TC_RUNNING!"=="0" (
+        echo [TC] Restarting exactly one Total Commander instance...
+        start "" "!TC_EXE!"
+    ) else (
+        echo [TC] Total Commander is already running - not starting another instance.
+    )
 )
 echo.
 echo Run configure.cmd to change heat behavior and colors.
 pause
 exit /b 0
 
+:is_tc_running
+set "TC_RUNNING=0"
+tasklist /FI "IMAGENAME eq TOTALCMD64.EXE" 2>nul | find /I "TOTALCMD64.EXE" >nul && set "TC_RUNNING=1"
+tasklist /FI "IMAGENAME eq TOTALCMD.EXE" 2>nul | find /I "TOTALCMD.EXE" >nul && set "TC_RUNNING=1"
+exit /b 0
+
+:dist_error
+echo ERROR: Could not update the dist folder. A FolderHeatMap file is still locked by another process.
+goto restart_after_error
+:tc_stop_error
+echo ERROR: Total Commander is still running after forced shutdown. Deployment was aborted.
+goto restart_after_error
 :deploy_error
 echo ERROR: FolderHeatMap.wdx64 could not be deployed even after stopping Total Commander.
 goto restart_after_error
@@ -162,6 +190,10 @@ echo Build Tools were installed successfully, but Windows requires a restart.
 goto restart_after_error
 
 :restart_after_error
-if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
+rem Never create a duplicate TC instance on an error path.
+if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE (
+    call :is_tc_running
+    if "!TC_RUNNING!"=="0" start "" "!TC_EXE!"
+)
 pause
 exit /b 1
