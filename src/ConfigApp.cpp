@@ -31,6 +31,7 @@ HWND g_halfEdit{};
 HWND g_decayEdit{};
 HWND g_stepsEdit{};
 HWND g_status{};
+HINSTANCE g_instance{};
 
 std::wstring QueryRegString(HKEY root, const wchar_t* subkey, const wchar_t* value) {
     wchar_t buffer[2048]{};
@@ -68,165 +69,105 @@ void UpdateColorButton(int level) {
 }
 
 bool IsTcRunning() {
-    return system("tasklist /FI \"IMAGENAME eq TOTALCMD64.EXE\" 2>nul | find /I \"TOTALCMD64.EXE\" >nul") == 0 ||
-           system("tasklist /FI \"IMAGENAME eq TOTALCMD.EXE\" 2>nul | find /I \"TOTALCMD.EXE\" >nul") == 0;
+    return FindWindowW(L"TTOTAL_CMD", nullptr) != nullptr;
 }
 
 std::wstring FindTcExe() {
     wchar_t env[2048]{};
     DWORD n = GetEnvironmentVariableW(L"COMMANDER_PATH", env, 2048);
-    std::wstring dir = (n > 0 && n < 2048) ? env : QueryRegString(HKEY_CURRENT_USER, L"Software\\Ghisler\\Total Commander", L"InstallDir");
+    std::wstring dir;
+    if (n > 0 && n < 2048) dir = env;
+    if (dir.empty()) dir = QueryRegString(HKEY_CURRENT_USER, L"Software\\Ghisler\\Total Commander", L"InstallDir");
     if (dir.empty()) dir = QueryRegString(HKEY_LOCAL_MACHINE, L"Software\\Ghisler\\Total Commander", L"InstallDir");
     if (dir.empty()) return {};
-    auto p64 = std::filesystem::path(dir) / L"TOTALCMD64.EXE";
+    std::filesystem::path p64 = std::filesystem::path(dir) / L"TOTALCMD64.EXE";
     if (std::filesystem::exists(p64)) return p64.wstring();
-    auto p32 = std::filesystem::path(dir) / L"TOTALCMD.EXE";
-    return std::filesystem::exists(p32) ? p32.wstring() : L"";
+    std::filesystem::path p32 = std::filesystem::path(dir) / L"TOTALCMD.EXE";
+    if (std::filesystem::exists(p32)) return p32.wstring();
+    return {};
 }
 
-void StopTc() {
-    system("taskkill /IM TOTALCMD64.EXE /T >nul 2>nul");
-    system("taskkill /IM TOTALCMD.EXE /T >nul 2>nul");
-    for (int i = 0; i < 30 && IsTcRunning(); ++i) Sleep(100);
-    if (IsTcRunning()) {
-        system("taskkill /F /IM TOTALCMD64.EXE /T >nul 2>nul");
-        system("taskkill /F /IM TOTALCMD.EXE /T >nul 2>nul");
-        Sleep(300);
+bool StopTc() {
+    HWND hwnd = FindWindowW(L"TTOTAL_CMD", nullptr);
+    if (!hwnd) return true;
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    for (int i = 0; i < 50; ++i) {
+        Sleep(100);
+        if (!FindWindowW(L"TTOTAL_CMD", nullptr)) return true;
     }
+    return false;
 }
 
 void StartTc() {
-    const auto exe = FindTcExe();
+    auto exe = FindTcExe();
     if (!exe.empty()) ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-void RemoveOldHeatSearches() {
-    for (int i = 1; i <= 112; ++i) {
-        wchar_t base[64]{};
-        swprintf_s(base, L"FolderHeatMap Heat %03d", i);
-        const wchar_t* suffixes[] = {L"_SearchFor", L"_SearchIn", L"_SearchText", L"_SearchFlags", L"_plugin"};
-        for (const auto* suffix : suffixes) {
-            std::wstring key = std::wstring(base) + suffix;
-            WritePrivateProfileStringW(L"Searches", key.c_str(), nullptr, g_wincmdIni.c_str());
+std::wstring ReadIniSection(const wchar_t* section) {
+    std::vector<wchar_t> buffer(65536);
+    DWORD n = GetPrivateProfileSectionW(section, buffer.data(), static_cast<DWORD>(buffer.size()), g_wincmdIni.c_str());
+    if (!n) return {};
+    std::wstring out;
+    for (const wchar_t* p = buffer.data(); *p; p += wcslen(p) + 1) {
+        out += p;
+        out += L'\n';
+    }
+    return out;
+}
+
+void WriteManagedColorRules() {
+    const int steps = std::clamp(g_settings.stepsPerLevel, 1, 16);
+    int rule = 0;
+    for (int level = 1; level <= 7; ++level) {
+        const COLORREF from = static_cast<COLORREF>(g_settings.colors[level]);
+        const COLORREF to = static_cast<COLORREF>(g_settings.colors[std::min(level + 1, 7)]);
+        const int count = (g_settings.smoothColors && level < 7) ? steps : 1;
+        for (int s = 0; s < count; ++s) {
+            double t = count > 1 ? static_cast<double>(s) / count : 0.0;
+            COLORREF c = Interpolate(from, to, t);
+            std::wstring name = L"FHM_" + std::to_wstring(rule);
+            std::wstring filter = L"[=folderheatmap.Heat Level]=" + std::to_wstring(level);
+            WritePrivateProfileStringW(L"Colors", name.c_str(), filter.c_str(), g_wincmdIni.c_str());
+            WritePrivateProfileStringW(L"Colors", (name + L"Color").c_str(), std::to_wstring(static_cast<unsigned long>(c)).c_str(), g_wincmdIni.c_str());
+            ++rule;
         }
     }
-}
-
-struct ExistingFilter {
-    std::wstring value;
-    std::wstring color;
-};
-
-std::vector<ExistingFilter> ReadNonHeatFilters() {
-    std::vector<ExistingFilter> filters;
-    for (int i = 1; i <= 256; ++i) {
-        wchar_t key[64]{};
-        swprintf_s(key, L"ColorFilter%d", i);
-        wchar_t value[2048]{};
-        GetPrivateProfileStringW(L"Colors", key, L"", value, 2048, g_wincmdIni.c_str());
-        if (!*value) continue;
-        if (wcsncmp(value, L">FolderHeatMap Heat ", 19) == 0) continue;
-        wchar_t ckey[64]{};
-        swprintf_s(ckey, L"ColorFilter%dColor", i);
-        wchar_t color[64]{};
-        GetPrivateProfileStringW(L"Colors", ckey, L"-1", color, 64, g_wincmdIni.c_str());
-        filters.push_back({value, color});
-    }
-    return filters;
-}
-
-void ClearColorFilters() {
-    for (int i = 1; i <= 256; ++i) {
-        wchar_t key[64]{};
-        swprintf_s(key, L"ColorFilter%d", i);
-        WritePrivateProfileStringW(L"Colors", key, nullptr, g_wincmdIni.c_str());
-        swprintf_s(key, L"ColorFilter%dColor", i);
-        WritePrivateProfileStringW(L"Colors", key, nullptr, g_wincmdIni.c_str());
-    }
+    WritePrivateProfileStringW(L"FolderHeatMap", L"ManagedColorRuleCount", std::to_wstring(rule).c_str(), g_wincmdIni.c_str());
 }
 
 bool ApplyTcColorRules() {
     if (g_wincmdIni.empty()) return false;
-
-    // Read existing TC rules before deleting/rebuilding ours. This preserves
-    // user's file-type colors while keeping ColorFilter indexes continuous.
-    const auto existing = ReadNonHeatFilters();
-    RemoveOldHeatSearches();
-    ClearColorFilters();
-
-    int index = 1;
-    for (const auto& f : existing) {
-        wchar_t key[64]{};
-        swprintf_s(key, L"ColorFilter%d", index);
-        WritePrivateProfileStringW(L"Colors", key, f.value.c_str(), g_wincmdIni.c_str());
-        swprintf_s(key, L"ColorFilter%dColor", index);
-        WritePrivateProfileStringW(L"Colors", key, f.color.c_str(), g_wincmdIni.c_str());
-        ++index;
+    int oldCount = GetPrivateProfileIntW(L"FolderHeatMap", L"ManagedColorRuleCount", 0, g_wincmdIni.c_str());
+    for (int i = 0; i < oldCount; ++i) {
+        std::wstring name = L"FHM_" + std::to_wstring(i);
+        WritePrivateProfileStringW(L"Colors", name.c_str(), nullptr, g_wincmdIni.c_str());
+        WritePrivateProfileStringW(L"Colors", (name + L"Color").c_str(), nullptr, g_wincmdIni.c_str());
     }
-
-    const int steps = g_settings.smoothColors ? std::clamp(g_settings.stepsPerLevel, 1, 16) : 1;
-    const int maxStep = 7 * steps;
-    for (int step = 1; step <= maxStep; ++step) {
-        wchar_t name[64]{};
-        swprintf_s(name, L"FolderHeatMap Heat %03d", step);
-        const double heat = static_cast<double>(step) / steps;
-        const int upper = std::clamp(static_cast<int>(std::ceil(heat)), 1, 7);
-        const int lower = std::max(1, upper - 1);
-        const double t = upper == lower ? 0.0 : std::clamp(heat - lower, 0.0, 1.0);
-        const COLORREF color = upper == 1
-            ? static_cast<COLORREF>(g_settings.colors[1])
-            : Interpolate(static_cast<COLORREF>(g_settings.colors[lower]), static_cast<COLORREF>(g_settings.colors[upper]), t);
-
-        std::wstring prefix = name;
-        WritePrivateProfileStringW(L"Searches", (prefix + L"_SearchFor").c_str(), L"", g_wincmdIni.c_str());
-        WritePrivateProfileStringW(L"Searches", (prefix + L"_SearchIn").c_str(), L"", g_wincmdIni.c_str());
-        WritePrivateProfileStringW(L"Searches", (prefix + L"_SearchText").c_str(), L"", g_wincmdIni.c_str());
-        WritePrivateProfileStringW(L"Searches", (prefix + L"_SearchFlags").c_str(), L"0|002002010021|||||||||0000|||", g_wincmdIni.c_str());
-        const std::wstring plugin = L"folderheatmap.Heat Color Step = " + std::to_wstring(step);
-        WritePrivateProfileStringW(L"Searches", (prefix + L"_plugin").c_str(), plugin.c_str(), g_wincmdIni.c_str());
-
-        wchar_t key[64]{};
-        swprintf_s(key, L"ColorFilter%d", index);
-        const std::wstring filter = L">" + prefix;
-        WritePrivateProfileStringW(L"Colors", key, filter.c_str(), g_wincmdIni.c_str());
-        swprintf_s(key, L"ColorFilter%dColor", index);
-        wchar_t colorText[64]{};
-        swprintf_s(colorText, L"%lu", static_cast<unsigned long>(color));
-        WritePrivateProfileStringW(L"Colors", key, colorText, g_wincmdIni.c_str());
-        ++index;
-    }
-
-    WritePrivateProfileStringW(L"Configuration", L"ColorFilters", L"1", g_wincmdIni.c_str());
+    WriteManagedColorRules();
     return true;
 }
 
-int ReadEditInt(HWND h, int fallback, int minV, int maxV) {
-    wchar_t b[64]{};
-    GetWindowTextW(h, b, 64);
-    wchar_t* e = nullptr;
-    const long v = wcstol(b, &e, 10);
-    return e == b ? fallback : std::clamp(static_cast<int>(v), minV, maxV);
-}
-
 void Apply(HWND hwnd) {
+    wchar_t buf[64]{};
     g_settings.coolingAuto = SendDlgItemMessageW(hwnd, IDC_AUTO, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    g_settings.coolingHalfLifeDays = ReadEditInt(g_halfEdit, 30, 1, 3650);
+    GetWindowTextW(g_halfEdit, buf, 64);
+    g_settings.coolingHalfLifeDays = std::clamp(_wtoi(buf), 1, 3650);
     g_settings.includePathHeat = SendDlgItemMessageW(hwnd, IDC_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    g_settings.pathDecay = ReadEditInt(g_decayEdit, 50, 0, 100) / 100.0;
+    GetWindowTextW(g_decayEdit, buf, 64);
+    g_settings.pathDecay = std::clamp(_wtoi(buf) / 100.0, 0.0, 1.0);
     g_settings.smoothColors = SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    g_settings.stepsPerLevel = ReadEditInt(g_stepsEdit, 4, 1, 16);
+    GetWindowTextW(g_stepsEdit, buf, 64);
+    g_settings.stepsPerLevel = std::clamp(_wtoi(buf), 1, 16);
 
     if (!fhm::SaveSettings(g_settingsIni, g_settings)) {
-        MessageBoxW(hwnd, L"Nepodařilo se uložit FolderHeatMap.ini.", L"FolderHeatMap", MB_ICONERROR);
+        MessageBoxW(hwnd, L"Nastavení se nepodařilo uložit.", L"FolderHeatMap", MB_ICONERROR);
         return;
     }
 
-    // TC can rewrite wincmd.ini while shutting down. Therefore stop it first,
-    // then modify its configuration, and only afterwards start it again.
     const bool wasRunning = IsTcRunning();
-    if (wasRunning) {
-        SetWindowTextW(g_status, L"Zastavuji Total Commander a aktualizuji barevná pravidla…");
-        StopTc();
+    if (wasRunning && !StopTc()) {
+        MessageBoxW(hwnd, L"Total Commander se nepodařilo ukončit. Nastavení je uložené, ale barvy nebyly změněny.", L"FolderHeatMap", MB_ICONWARNING);
+        return;
     }
 
     if (!ApplyTcColorRules()) {
@@ -245,8 +186,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM) {
             HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
             auto add = [&](const wchar_t* cls, const wchar_t* txt, DWORD style, int x, int y, int w, int h, int id = 0) {
                 HWND c = CreateWindowExW(0, cls, txt, WS_CHILD | WS_VISIBLE | style, x, y, w, h, hwnd,
-                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
-                SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_instance, nullptr);
+                if (c) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
                 return c;
             };
 
@@ -315,6 +256,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
+    g_instance = instance;
     g_wincmdIni = FindWincmdIni();
     if (g_wincmdIni.empty()) {
         MessageBoxW(nullptr, L"Nepodařilo se najít wincmd.ini Total Commanderu.", L"FolderHeatMap", MB_ICONERROR);
@@ -330,15 +272,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     wc.lpszClassName = L"FolderHeatMapConfigWindow";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    RegisterClassW(&wc);
+    ATOM atom = RegisterClassW(&wc);
+    if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        DWORD err = GetLastError();
+        std::wstring msg = L"Nepodařilo se zaregistrovat okno nastavení. Windows chyba: " + std::to_wstring(err);
+        MessageBoxW(nullptr, msg.c_str(), L"FolderHeatMap", MB_ICONERROR);
+        return 2;
+    }
 
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"FolderHeatMap – Nastavení",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 660, 590, nullptr, nullptr, instance, nullptr);
-    if (!hwnd) return 2;
+    if (!hwnd) {
+        DWORD err = GetLastError();
+        std::wstring msg = L"Nepodařilo se vytvořit okno nastavení. Windows chyba: " + std::to_wstring(err);
+        MessageBoxW(nullptr, msg.c_str(), L"FolderHeatMap", MB_ICONERROR);
+        return 3;
+    }
 
-    ShowWindow(hwnd, show);
+    ShowWindow(hwnd, show == 0 ? SW_SHOWNORMAL : show);
     UpdateWindow(hwnd);
+    SetForegroundWindow(hwnd);
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
