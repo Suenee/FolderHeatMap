@@ -32,3 +32,10 @@
 
 #define CONTENT_DELAYIFSLOW 1
 #define CONTENT_PASSTHROUGH 2
+
+typedef struct {
+    int size;
+    DWORD PluginInterfaceVersionLow;
+    DWORD PluginInterfaceVersionHi;
+    char DefaultIniName[MAX_PATH];
+} ContentDefaultParamStruct;
