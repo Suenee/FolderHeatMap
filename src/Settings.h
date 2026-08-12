@@ -10,6 +10,8 @@ struct Settings {
     double coolingHalfLifeDays = 30.0;
     bool includePathHeat = true;
     double pathDecay = 0.50;
+    int repeatVisitCooldownSeconds = 90;
+    int sessionResetHours = 8;
     bool smoothColors = true;
     int stepsPerLevel = 4;
     std::array<unsigned long, 8> colors{}; // Win32 COLORREF; index 0 is unused/default.
