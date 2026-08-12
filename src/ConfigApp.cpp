@@ -23,8 +23,9 @@ constexpr int IDC_PATH = 1004;
 constexpr int IDC_DECAY = 1005;
 constexpr int IDC_SMOOTH = 1006;
 constexpr int IDC_STEPS = 1007;
-constexpr int IDC_APPLY = 1008;
+constexpr int IDC_SAVE = 1008;
 constexpr int IDC_STATUS = 1009;
+constexpr int IDC_CLOSE = 1010;
 constexpr int IDC_COLOR_BASE = 1100;
 constexpr int IDC_SWATCH_BASE = 1200;
 constexpr int MAX_TC_COLOR_FILTERS = 999;
@@ -97,7 +98,7 @@ COLORREF Interpolate(COLORREF a, COLORREF b, double t) {
 }
 
 void UpdateColorButton(int level) {
-    std::wstring text = L"Úroveň " + std::to_wstring(level);
+    const std::wstring text = L"Level " + std::to_wstring(level);
     SetWindowTextW(g_colorButtons[level], text.c_str());
     if (g_colorSwatches[level]) InvalidateRect(g_colorSwatches[level], nullptr, TRUE);
 }
@@ -174,7 +175,7 @@ bool StopTc() {
 }
 
 void StartTc() {
-    auto exe = FindTcExe();
+    const auto exe = FindTcExe();
     if (!exe.empty()) ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
@@ -302,8 +303,6 @@ bool ApplyTcColorRules() {
     const int expected = WriteManagedColorRules();
     if (expected <= 0) return false;
 
-    // Read back from disk. This catches a wrong INI path immediately instead of
-    // reporting success while Total Commander still sees no generated rules.
     const std::wstring firstFilter = ReadIniString(L"Colors", L"ColorFilter1");
     const std::wstring firstSearch = ManagedSearchName(1);
     const std::wstring firstPlugin = ReadIniString(L"searches", firstSearch + L"_plugin");
@@ -314,7 +313,7 @@ bool ApplyTcColorRules() {
            storedCount == expected;
 }
 
-void Apply(HWND hwnd) {
+void Save(HWND hwnd) {
     wchar_t buf[64]{};
     g_settings.coolingAuto = SendDlgItemMessageW(hwnd, IDC_AUTO, BM_GETCHECK, 0, 0) == BST_CHECKED;
     GetWindowTextW(g_halfEdit, buf, 64);
@@ -327,25 +326,25 @@ void Apply(HWND hwnd) {
     g_settings.stepsPerLevel = std::clamp(_wtoi(buf), 1, 16);
 
     if (!fhm::SaveSettings(g_settingsIni, g_settings)) {
-        MessageBoxW(hwnd, L"Nastavení se nepodařilo uložit.", L"FolderHeatMap", MB_ICONERROR);
+        MessageBoxW(hwnd, L"Settings could not be saved.", L"FolderHeatMap", MB_ICONERROR);
         return;
     }
 
     const bool wasRunning = IsTcRunning();
     if (wasRunning && !StopTc()) {
-        MessageBoxW(hwnd, L"Total Commander se nepodařilo ukončit ani po vynuceném pokusu. Nastavení je uložené, ale barvy nebyly změněny.", L"FolderHeatMap", MB_ICONWARNING);
+        MessageBoxW(hwnd, L"Total Commander could not be closed even after a forced attempt. Settings were saved, but colors were not updated.", L"FolderHeatMap", MB_ICONWARNING);
         return;
     }
 
     if (!ApplyTcColorRules()) {
         if (wasRunning) StartTc();
-        std::wstring msg = L"Nepodařilo se zapsat nebo ověřit barevná pravidla Total Commanderu.\n\nPoužitý wincmd.ini:\n" + g_wincmdIni;
+        const std::wstring msg = L"Could not write or verify Total Commander color rules.\n\nwincmd.ini used:\n" + g_wincmdIni;
         MessageBoxW(hwnd, msg.c_str(), L"FolderHeatMap", MB_ICONWARNING);
         return;
     }
 
     if (wasRunning) StartTc();
-    std::wstring status = L"Uloženo. Barevná mapa byla aktualizována v: " + g_wincmdIni;
+    const std::wstring status = L"Saved. Total Commander color map updated in: " + g_wincmdIni;
     SetWindowTextW(g_status, status.c_str());
 }
 
@@ -360,30 +359,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return c;
             };
 
-            add(L"STATIC", L"Chladnutí", SS_LEFT, 20, 15, 200, 22);
-            add(L"BUTTON", L"Automaticky podle rytmu používání", BS_AUTORADIOBUTTON | WS_GROUP, 30, 42, 280, 22, IDC_AUTO);
-            add(L"BUTTON", L"Ručně", BS_AUTORADIOBUTTON, 30, 68, 100, 22, IDC_MANUAL);
-            add(L"STATIC", L"Poločas (dnů):", SS_LEFT, 145, 70, 110, 20);
+            add(L"STATIC", L"Cooling", SS_LEFT, 20, 15, 200, 22);
+            add(L"BUTTON", L"Automatic, based on usage rhythm", BS_AUTORADIOBUTTON | WS_GROUP, 30, 42, 285, 22, IDC_AUTO);
+            add(L"BUTTON", L"Manual", BS_AUTORADIOBUTTON, 30, 68, 100, 22, IDC_MANUAL);
+            add(L"STATIC", L"Half-life (days):", SS_LEFT, 145, 70, 110, 20);
             g_halfEdit = add(L"EDIT", L"30", WS_BORDER | ES_NUMBER, 260, 67, 60, 24, IDC_HALF);
 
-            add(L"STATIC", L"Teplota cesty", SS_LEFT, 20, 105, 200, 22);
-            add(L"BUTTON", L"Zohlednit horké podadresáře", BS_AUTOCHECKBOX, 30, 132, 260, 22, IDC_PATH);
-            add(L"STATIC", L"Příspěvek na jednu úroveň (%):", SS_LEFT, 30, 161, 220, 20);
+            add(L"STATIC", L"Path heat", SS_LEFT, 20, 105, 200, 22);
+            add(L"BUTTON", L"Include hot descendant folders", BS_AUTOCHECKBOX, 30, 132, 260, 22, IDC_PATH);
+            add(L"STATIC", L"Contribution per level (%):", SS_LEFT, 30, 161, 220, 20);
             g_decayEdit = add(L"EDIT", L"50", WS_BORDER | ES_NUMBER, 260, 158, 60, 24, IDC_DECAY);
 
-            add(L"STATIC", L"Barevná mapa", SS_LEFT, 20, 198, 200, 22);
-            add(L"BUTTON", L"Plynulé přechody mezi úrovněmi", BS_AUTOCHECKBOX, 30, 225, 270, 22, IDC_SMOOTH);
-            add(L"STATIC", L"Mezikroků na úroveň:", SS_LEFT, 320, 227, 150, 20);
-            g_stepsEdit = add(L"EDIT", L"4", WS_BORDER | ES_NUMBER, 475, 224, 50, 24, IDC_STEPS);
+            add(L"STATIC", L"Color map", SS_LEFT, 20, 198, 200, 22);
+            add(L"BUTTON", L"Smooth transitions between levels", BS_AUTOCHECKBOX, 30, 225, 270, 22, IDC_SMOOTH);
+            add(L"STATIC", L"Intermediate steps per level:", SS_LEFT, 320, 227, 180, 20);
+            g_stepsEdit = add(L"EDIT", L"4", WS_BORDER | ES_NUMBER, 505, 224, 50, 24, IDC_STEPS);
             for (int i = 1; i <= 7; ++i) {
                 const int y = 258 + (i - 1) * 34;
                 g_colorButtons[i] = add(L"BUTTON", L"", BS_PUSHBUTTON, 30, y, 180, 28, IDC_COLOR_BASE + i);
                 g_colorSwatches[i] = add(L"STATIC", L"", SS_OWNERDRAW, 218, y + 2, 24, 24, IDC_SWATCH_BASE + i);
             }
-            add(L"STATIC", L"Úroveň 0 = bez zásahu; používá se původní barva Total Commanderu.", SS_LEFT, 275, 260, 360, 42);
-            add(L"STATIC", L"Barvy 1–7 jsou záchytné body. Mezilehlé odstíny vznikají jen mezi nimi.", SS_LEFT, 275, 305, 360, 42);
-            add(L"BUTTON", L"Použít a aktualizovat TC", BS_DEFPUSHBUTTON, 390, 500, 210, 34, IDC_APPLY);
-            g_status = add(L"STATIC", L"", SS_LEFT, 20, 510, 350, 40, IDC_STATUS);
+            add(L"STATIC", L"Level 0 = no override; Total Commander's original color is used.", SS_LEFT, 275, 260, 360, 42);
+            add(L"STATIC", L"Levels 1-7 are color anchors. Intermediate shades are generated between them.", SS_LEFT, 275, 305, 360, 42);
+            add(L"STATIC", L"Heat combines recent work, long-term habit and optional hot-path inheritance. Repeated entries within 90 seconds are ignored for heat.", SS_LEFT, 275, 360, 350, 65);
+
+            add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON, 425, 500, 90, 34, IDC_SAVE);
+            add(L"BUTTON", L"Close", BS_PUSHBUTTON, 525, 500, 90, 34, IDC_CLOSE);
+            g_status = add(L"STATIC", L"", SS_LEFT, 20, 510, 390, 40, IDC_STATUS);
 
             SendDlgItemMessageW(hwnd, g_settings.coolingAuto ? IDC_AUTO : IDC_MANUAL, BM_SETCHECK, BST_CHECKED, 0);
             SendDlgItemMessageW(hwnd, IDC_PATH, BM_SETCHECK, g_settings.includePathHeat ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -425,12 +427,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;
             }
-            if (id == IDC_APPLY) {
-                Apply(hwnd);
+            if (id == IDC_SAVE) {
+                Save(hwnd);
+                return 0;
+            }
+            if (id == IDC_CLOSE) {
+                DestroyWindow(hwnd);
                 return 0;
             }
             return 0;
         }
+
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
 
         case WM_DESTROY:
             PostQuitMessage(0);
@@ -444,7 +454,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     g_instance = instance;
     g_wincmdIni = FindWincmdIni();
     if (g_wincmdIni.empty()) {
-        MessageBoxW(nullptr, L"Nepodařilo se najít wincmd.ini Total Commanderu.", L"FolderHeatMap", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Could not locate Total Commander's wincmd.ini.", L"FolderHeatMap", MB_ICONERROR);
         return 1;
     }
 
@@ -459,19 +469,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     ATOM atom = RegisterClassW(&wc);
     if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        DWORD err = GetLastError();
-        std::wstring msg = L"Nepodařilo se zaregistrovat okno nastavení. Windows chyba: " + std::to_wstring(err);
-        MessageBoxW(nullptr, msg.c_str(), L"FolderHeatMap", MB_ICONERROR);
+        const DWORD err = GetLastError();
+        const std::wstring text = L"Could not register the settings window. Windows error: " + std::to_wstring(err);
+        MessageBoxW(nullptr, text.c_str(), L"FolderHeatMap", MB_ICONERROR);
         return 2;
     }
 
-    HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"FolderHeatMap – Nastavení",
+    HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"FolderHeatMap - Settings",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 660, 590, nullptr, nullptr, instance, nullptr);
     if (!hwnd) {
-        DWORD err = GetLastError();
-        std::wstring msg = L"Nepodařilo se vytvořit okno nastavení. Windows chyba: " + std::to_wstring(err);
-        MessageBoxW(nullptr, msg.c_str(), L"FolderHeatMap", MB_ICONERROR);
+        const DWORD err = GetLastError();
+        const std::wstring text = L"Could not create the settings window. Windows error: " + std::to_wstring(err);
+        MessageBoxW(nullptr, text.c_str(), L"FolderHeatMap", MB_ICONERROR);
         return 3;
     }
 
