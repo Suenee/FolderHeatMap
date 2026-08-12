@@ -17,7 +17,6 @@ constexpr int kFieldHeat = 0;
 constexpr int kFieldVisits = 1;
 constexpr int kFieldLastVisit = 2;
 constexpr int kFieldHeatLevel = 3;
-constexpr int kFieldCount = 4;
 
 struct Activity {
     std::uint64_t visits = 0;
@@ -39,13 +38,16 @@ std::wstring AnsiToWide(const char* text) {
         return {};
     }
 
-    const int length = MultiByteToWideChar(CP_ACP, 0, text, -1, nullptr, 0);
-    if (length <= 1) {
+    const int lengthWithNull = MultiByteToWideChar(CP_ACP, 0, text, -1, nullptr, 0);
+    if (lengthWithNull <= 1) {
         return {};
     }
 
-    std::wstring result(static_cast<size_t>(length - 1), L'\0');
-    MultiByteToWideChar(CP_ACP, 0, text, -1, result.data(), length);
+    std::wstring result(static_cast<size_t>(lengthWithNull), L'\0');
+    if (MultiByteToWideChar(CP_ACP, 0, text, -1, result.data(), lengthWithNull) <= 0) {
+        return {};
+    }
+    result.resize(static_cast<size_t>(lengthWithNull - 1));
     return result;
 }
 
