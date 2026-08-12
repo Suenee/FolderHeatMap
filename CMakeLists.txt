@@ -38,10 +38,12 @@ target_compile_definitions(FolderHeatMapConfig PRIVATE UNICODE _UNICODE WIN32_LE
 target_link_libraries(FolderHeatMapConfig PRIVATE comdlg32 shell32 advapi32)
 
 if(MSVC)
-    target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc)
+    # Repository sources are UTF-8. Make that explicit so Czech UI strings are
+    # compiled into wide string literals correctly regardless of Windows ACP.
+    target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc /utf-8)
     # shellapi.h requires Windows base types. Force windows.h first because
     # ConfigApp uses ShellExecuteW while keeping the source includes compact.
-    target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /FIwindows.h /FIshellapi.h)
+    target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /utf-8 /FIwindows.h /FIshellapi.h)
     set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
 endif()
 
