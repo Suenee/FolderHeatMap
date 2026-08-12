@@ -59,11 +59,31 @@ target_compile_features(FolderHeatMapConfig PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMapConfig PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(FolderHeatMapConfig PRIVATE comdlg32 shell32 advapi32 comctl32)
 
+# Small toolbar/user-command utility. Total Commander can pass a Unicode list
+# of selected items via --list "%WL". It resets direct heat and optionally the
+# complete subtree while keeping file timestamps as new cold baselines.
+add_executable(FolderHeatMapReset WIN32
+    src/ResetApp.cpp
+    src/ResetDatabase.cpp
+    src/Database.cpp
+    src/FolderIdentity.cpp
+    vendor/sqlite/sqlite3.c
+)
+target_include_directories(FolderHeatMapReset PRIVATE src vendor/sqlite)
+target_compile_features(FolderHeatMapReset PRIVATE cxx_std_20)
+target_compile_definitions(FolderHeatMapReset PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+    SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION
+)
+target_link_libraries(FolderHeatMapReset PRIVATE shell32 advapi32)
+
 if(MSVC)
     target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc /utf-8)
     target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /utf-8 /FIwindows.h /FIshellapi.h)
+    target_compile_options(FolderHeatMapReset PRIVATE /W4 /permissive- /EHsc /utf-8)
     set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
 endif()
 
 set_target_properties(FolderHeatMap PROPERTIES PREFIX "" SUFFIX ".wdx64" OUTPUT_NAME "FolderHeatMap")
 set_target_properties(FolderHeatMapConfig PROPERTIES OUTPUT_NAME "FolderHeatMapConfig")
+set_target_properties(FolderHeatMapReset PROPERTIES OUTPUT_NAME "FolderHeatMapReset")
