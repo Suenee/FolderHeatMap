@@ -84,7 +84,7 @@ echo [3/5] Building FolderHeatMap plugin and settings GUI...
 if errorlevel 1 goto build_error
 
 echo [4/5] Preparing dist folder...
-rem The config GUI itself may still be open from testing. Close it before replacing dist files.
+rem Both the settings GUI and Total Commander can lock files directly in dist.
 taskkill /IM FolderHeatMapConfig.exe /T >nul 2>nul
 for /l %%N in (1,1,20) do (
     tasklist /FI "IMAGENAME eq FolderHeatMapConfig.exe" 2>nul | find /I "FolderHeatMapConfig.exe" >nul || goto config_closed
@@ -92,6 +92,12 @@ for /l %%N in (1,1,20) do (
 )
 taskkill /F /IM FolderHeatMapConfig.exe /T >nul 2>nul
 :config_closed
+
+rem TC is currently registered directly against dist\FolderHeatMap.wdx64, so it must be stopped BEFORE dist is overwritten.
+call :is_tc_running
+if "!TC_RUNNING!"=="1" call :stop_tc
+if errorlevel 1 goto tc_stop_error
+
 if not exist dist mkdir dist
 copy /y "build\Release\FolderHeatMap.wdx64" "dist\FolderHeatMap.wdx64" >nul
 if errorlevel 1 goto dist_error
@@ -106,25 +112,9 @@ if not defined TC_PLUGIN goto success
 for %%I in ("%CD%\dist\FolderHeatMap.wdx64") do set "DIST_PLUGIN=%%~fI"
 for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
 
-rem Always check the real process state here; do not rely only on the state captured at script start.
 call :is_tc_running
-if "!TC_RUNNING!"=="1" (
-    echo [TC] Closing all Total Commander instances...
-    taskkill /IM TOTALCMD64.EXE /T >nul 2>nul
-    taskkill /IM TOTALCMD.EXE /T >nul 2>nul
-    for /l %%N in (1,1,20) do (
-        call :is_tc_running
-        if "!TC_RUNNING!"=="0" goto tc_closed
-        timeout /t 1 /nobreak >nul
-    )
-    echo [TC] Normal close timed out - forcing all instances to stop...
-    taskkill /F /IM TOTALCMD64.EXE /T >nul 2>nul
-    taskkill /F /IM TOTALCMD.EXE /T >nul 2>nul
-    timeout /t 1 /nobreak >nul
-    call :is_tc_running
-    if "!TC_RUNNING!"=="1" goto tc_stop_error
-)
-:tc_closed
+if "!TC_RUNNING!"=="1" call :stop_tc
+if errorlevel 1 goto tc_stop_error
 
 if /I "!DIST_PLUGIN!"=="!TC_PLUGIN_FULL!" (
     echo [TC] Registered plugin already points to dist.
@@ -161,6 +151,23 @@ tasklist /FI "IMAGENAME eq TOTALCMD64.EXE" 2>nul | find /I "TOTALCMD64.EXE" >nul
 tasklist /FI "IMAGENAME eq TOTALCMD.EXE" 2>nul | find /I "TOTALCMD.EXE" >nul && set "TC_RUNNING=1"
 exit /b 0
 
+:stop_tc
+echo [TC] Closing all Total Commander instances...
+taskkill /IM TOTALCMD64.EXE /T >nul 2>nul
+taskkill /IM TOTALCMD.EXE /T >nul 2>nul
+for /l %%N in (1,1,20) do (
+    call :is_tc_running
+    if "!TC_RUNNING!"=="0" exit /b 0
+    timeout /t 1 /nobreak >nul
+)
+echo [TC] Normal close timed out - forcing all instances to stop...
+taskkill /F /IM TOTALCMD64.EXE /T >nul 2>nul
+taskkill /F /IM TOTALCMD.EXE /T >nul 2>nul
+timeout /t 1 /nobreak >nul
+call :is_tc_running
+if "!TC_RUNNING!"=="1" exit /b 1
+exit /b 0
+
 :dist_error
 echo ERROR: Could not update the dist folder. A FolderHeatMap file is still locked by another process.
 goto restart_after_error
@@ -190,7 +197,6 @@ echo Build Tools were installed successfully, but Windows requires a restart.
 goto restart_after_error
 
 :restart_after_error
-rem Never create a duplicate TC instance on an error path.
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE (
     call :is_tc_running
     if "!TC_RUNNING!"=="0" start "" "!TC_EXE!"
