@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "UPGRADE_REV=reset-tool-v2"
+set "UPGRADE_REV=reset-tool-v3"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
 set "VSBT_URL=https://aka.ms/vs/17/release/vs_BuildTools.exe"
