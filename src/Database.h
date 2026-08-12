@@ -27,6 +27,14 @@ struct StoredActivity {
     FILETIME lastEffectiveVisit{};
 };
 
+struct StoredFileActivity {
+    FILETIME lastWrite{};
+    std::uint64_t writeEvents = 0;
+    std::uint64_t activeDays = 0;
+    std::int64_t firstActiveDay = 0;
+    std::int64_t lastActiveDay = 0;
+};
+
 class Database {
 public:
     Database() = default;
@@ -42,6 +50,11 @@ public:
     bool RecordVisit(const FolderIdentity& identity, const FILETIME& now, int cooldownSeconds, int sessionResetHours);
     std::optional<StoredActivity> GetActivity(const FolderIdentity& identity);
     std::vector<std::pair<std::wstring, StoredActivity>> GetVolumeActivities(const std::wstring& volumeId);
+
+    bool ObserveFileWrite(const FolderIdentity& identity, const FILETIME& lastWrite);
+    std::optional<StoredFileActivity> GetFileActivity(const FolderIdentity& identity);
+    std::vector<std::pair<std::wstring, StoredFileActivity>> GetVolumeFileActivities(const std::wstring& volumeId);
+
     int GetRecentActiveDays(const FILETIME& now, int windowDays);
 
 private:
