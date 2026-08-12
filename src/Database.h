@@ -16,15 +16,15 @@ struct sqlite3;
 namespace fhm {
 
 struct StoredActivity {
-    std::uint64_t visits = 0;          // Raw TC directory enters, kept for diagnostics.
-    FILETIME lastVisit{};              // Last raw visit.
+    std::uint64_t visits = 0;
+    FILETIME lastVisit{};
 
-    std::uint64_t heatVisits = 0;      // Visits accepted after anti-burst cooldown.
-    std::uint64_t recentVisits = 0;    // Effective visits in the current work session.
-    std::uint64_t activeDays = 0;      // Distinct days on which this folder was effectively used.
-    std::int64_t firstActiveDay = 0;   // FILETIME day key.
-    std::int64_t lastActiveDay = 0;    // FILETIME day key.
-    FILETIME lastEffectiveVisit{};     // Last visit which affected heat.
+    std::uint64_t heatVisits = 0;
+    std::uint64_t recentVisits = 0;
+    std::uint64_t activeDays = 0;
+    std::int64_t firstActiveDay = 0;
+    std::int64_t lastActiveDay = 0;
+    FILETIME lastEffectiveVisit{};
 };
 
 class Database {
@@ -39,7 +39,7 @@ public:
     void Close();
     bool IsOpen() const;
 
-    bool RecordVisit(const FolderIdentity& identity, const FILETIME& now);
+    bool RecordVisit(const FolderIdentity& identity, const FILETIME& now, int cooldownSeconds, int sessionResetHours);
     std::optional<StoredActivity> GetActivity(const FolderIdentity& identity);
     std::vector<std::pair<std::wstring, StoredActivity>> GetVolumeActivities(const std::wstring& volumeId);
     int GetRecentActiveDays(const FILETIME& now, int windowDays);
