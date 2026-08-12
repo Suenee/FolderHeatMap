@@ -11,7 +11,9 @@
 namespace {
 
 constexpr UINT kTcExecuteCommandMessage = WM_USER + 51;
-constexpr WPARAM kTcRereadSourceCommand = 540; // cm_RereadSource
+constexpr WPARAM kTcRereadSourceCommand = 540;       // cm_RereadSource
+constexpr WPARAM kTcSwitchToNextTabCommand = 3005;  // cm_SwitchToNextTab
+constexpr WPARAM kTcSwitchToPrevTabCommand = 3006;  // cm_SwitchToPreviousTab
 
 bool IsTotalCommanderWindow(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) return false;
@@ -27,9 +29,6 @@ BOOL CALLBACK FindTcWindowProc(HWND hwnd, LPARAM lParam) {
 }
 
 HWND FindTotalCommanderWindow() {
-    // The reset utility is normally launched by a TC toolbar button. Capture the
-    // foreground/root window first so multiple-monitor setups use the TC instance
-    // the user actually clicked, rather than an arbitrary TC window.
     HWND foreground = GetForegroundWindow();
     if (foreground) foreground = GetAncestor(foreground, GA_ROOT);
     if (IsTotalCommanderWindow(foreground)) return foreground;
@@ -39,19 +38,31 @@ HWND FindTotalCommanderWindow() {
     return found;
 }
 
+bool SendTcCommand(HWND tcWindow, WPARAM command) {
+    if (!IsTotalCommanderWindow(tcWindow)) return false;
+    DWORD_PTR ignored = 0;
+    return SendMessageTimeoutW(tcWindow, kTcExecuteCommandMessage, command, 0,
+                               SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &ignored) != 0;
+}
+
 void RefreshTotalCommander(HWND tcWindow) {
     if (!IsTotalCommanderWindow(tcWindow)) return;
 
-    // Total Commander exposes internal cm_* commands through WM_USER+51.
-    // cm_RereadSource (540) rereads the active source panel and causes WDX
-    // content/color rules to be evaluated again after the database reset.
-    DWORD_PTR ignored = 0;
-    SendMessageTimeoutW(tcWindow, kTcExecuteCommandMessage, kTcRereadSourceCommand, 0,
-                        SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &ignored);
+    // cm_RereadSource updates ordinary WDX column values, but Total Commander
+    // intentionally keeps cached file-type colors when no filesystem metadata
+    // changed. Switching away from and back to a directory tab forces TC to
+    // rebuild the panel and re-evaluate plugin based color rules as well.
+    SendTcCommand(tcWindow, kTcRereadSourceCommand);
 
-    // Also ask Windows to repaint the TC window immediately. The reread above
-    // updates the data; these calls avoid leaving stale pixels until the next UI
-    // interaction on some systems.
+    // Known TC workaround for cached color filters. Previous -> next preserves
+    // the current tab in normal multi-tab use while forcing a complete color
+    // recalculation. If there is only one tab these commands are harmless no-ops.
+    Sleep(40);
+    SendTcCommand(tcWindow, kTcSwitchToPrevTabCommand);
+    Sleep(80);
+    SendTcCommand(tcWindow, kTcSwitchToNextTabCommand);
+    Sleep(40);
+
     RedrawWindow(tcWindow, nullptr, nullptr,
                  RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 }
@@ -194,9 +205,6 @@ std::wstring MakeAbsolute(const std::wstring& path) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
-    // Capture TC before this process creates any UI. This is important on
-    // multi-monitor systems: the message boxes then use TC as their owner and
-    // Windows keeps them on the same monitor as the TC instance that launched us.
     HWND tcWindow = FindTotalCommanderWindow();
 
     int argc = 0;
@@ -269,10 +277,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             }
             if (ok) ++resetCount; else ++failedCount;
         }
-    } // Close SQLite before asking TC/WDX to reread the panel.
+    }
 
-    // Refresh even after a partial failure: successfully reset items should be
-    // reflected immediately in both WDX columns and TC color filters.
     RefreshTotalCommander(tcWindow);
 
     if (failedCount > 0) {
