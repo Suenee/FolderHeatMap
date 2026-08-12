@@ -103,6 +103,17 @@ bool Database::EnsureSchema() {
         " last_active_day INTEGER NOT NULL DEFAULT 0,"
         " last_effective_visit INTEGER NOT NULL DEFAULT 0"
         ");"
+        "CREATE TABLE IF NOT EXISTS file_activity ("
+        " storage_key TEXT PRIMARY KEY,"
+        " volume_id TEXT NOT NULL,"
+        " relative_path TEXT NOT NULL,"
+        " last_write INTEGER NOT NULL DEFAULT 0,"
+        " write_events INTEGER NOT NULL DEFAULT 0,"
+        " active_days INTEGER NOT NULL DEFAULT 0,"
+        " first_active_day INTEGER NOT NULL DEFAULT 0,"
+        " last_active_day INTEGER NOT NULL DEFAULT 0"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_file_activity_volume_path ON file_activity(volume_id, relative_path);"
         "CREATE TABLE IF NOT EXISTS active_days ("
         " day_key INTEGER PRIMARY KEY,"
         " visits INTEGER NOT NULL DEFAULT 0"
@@ -260,6 +271,117 @@ std::vector<std::pair<std::wstring, StoredActivity>> Database::GetVolumeActiviti
         if (visits > 0) a.visits = static_cast<std::uint64_t>(visits);
         a.lastVisit = Int64ToFileTime(sqlite3_column_int64(st, 2));
         ReadUsageColumns(st, 3, a);
+        out.emplace_back(p ? p : L"", a);
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+bool Database::ObserveFileWrite(const FolderIdentity& identity, const FILETIME& lastWrite) {
+    std::scoped_lock lock(mutex_);
+    if (db_ == nullptr) return false;
+
+    const sqlite3_int64 writeTicks = FileTimeToInt64(lastWrite);
+    if (writeTicks <= 0) return false;
+    const sqlite3_int64 writeDay = writeTicks / kTicksPerDay;
+
+    sqlite3_stmt* st = nullptr;
+    sqlite3_int64 previousWrite = 0;
+    sqlite3_int64 writeEvents = 0;
+    sqlite3_int64 activeDays = 0;
+    sqlite3_int64 firstActiveDay = 0;
+    sqlite3_int64 lastActiveDay = 0;
+
+    static constexpr const char* kRead =
+        "SELECT last_write,write_events,active_days,first_active_day,last_active_day "
+        "FROM file_activity WHERE storage_key=?1;";
+    if (sqlite3_prepare_v2(db_, kRead, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text16(st, 1, identity.storageKey.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        previousWrite = sqlite3_column_int64(st, 0);
+        writeEvents = sqlite3_column_int64(st, 1);
+        activeDays = sqlite3_column_int64(st, 2);
+        firstActiveDay = sqlite3_column_int64(st, 3);
+        lastActiveDay = sqlite3_column_int64(st, 4);
+    }
+    sqlite3_finalize(st);
+    st = nullptr;
+
+    if (previousWrite == writeTicks) return true;
+
+    if (writeEvents == 0) writeEvents = 1;
+    else ++writeEvents;
+    if (lastActiveDay != writeDay) {
+        ++activeDays;
+        lastActiveDay = writeDay;
+        if (firstActiveDay == 0) firstActiveDay = writeDay;
+    }
+
+    static constexpr const char* kWrite =
+        "INSERT INTO file_activity(storage_key,volume_id,relative_path,last_write,write_events,active_days,first_active_day,last_active_day) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8) "
+        "ON CONFLICT(storage_key) DO UPDATE SET volume_id=excluded.volume_id,relative_path=excluded.relative_path,"
+        "last_write=excluded.last_write,write_events=excluded.write_events,active_days=excluded.active_days,"
+        "first_active_day=excluded.first_active_day,last_active_day=excluded.last_active_day;";
+    if (sqlite3_prepare_v2(db_, kWrite, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text16(st, 1, identity.storageKey.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text16(st, 2, identity.volumeId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text16(st, 3, identity.relativePath.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 4, writeTicks);
+    sqlite3_bind_int64(st, 5, writeEvents);
+    sqlite3_bind_int64(st, 6, activeDays);
+    sqlite3_bind_int64(st, 7, firstActiveDay);
+    sqlite3_bind_int64(st, 8, lastActiveDay);
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+std::optional<StoredFileActivity> Database::GetFileActivity(const FolderIdentity& identity) {
+    std::scoped_lock lock(mutex_);
+    if (db_ == nullptr) return std::nullopt;
+    static constexpr const char* kSql =
+        "SELECT last_write,write_events,active_days,first_active_day,last_active_day "
+        "FROM file_activity WHERE storage_key=?1;";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_text16(st, 1, identity.storageKey.c_str(), -1, SQLITE_TRANSIENT);
+    std::optional<StoredFileActivity> result;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        StoredFileActivity a{};
+        a.lastWrite = Int64ToFileTime(sqlite3_column_int64(st, 0));
+        const auto events = sqlite3_column_int64(st, 1);
+        const auto days = sqlite3_column_int64(st, 2);
+        if (events > 0) a.writeEvents = static_cast<std::uint64_t>(events);
+        if (days > 0) a.activeDays = static_cast<std::uint64_t>(days);
+        a.firstActiveDay = sqlite3_column_int64(st, 3);
+        a.lastActiveDay = sqlite3_column_int64(st, 4);
+        result = a;
+    }
+    sqlite3_finalize(st);
+    return result;
+}
+
+std::vector<std::pair<std::wstring, StoredFileActivity>> Database::GetVolumeFileActivities(const std::wstring& volumeId) {
+    std::scoped_lock lock(mutex_);
+    std::vector<std::pair<std::wstring, StoredFileActivity>> out;
+    if (db_ == nullptr) return out;
+    static constexpr const char* kSql =
+        "SELECT relative_path,last_write,write_events,active_days,first_active_day,last_active_day "
+        "FROM file_activity WHERE volume_id=?1;";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &st, nullptr) != SQLITE_OK) return out;
+    sqlite3_bind_text16(st, 1, volumeId.c_str(), -1, SQLITE_TRANSIENT);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const wchar_t* p = static_cast<const wchar_t*>(sqlite3_column_text16(st, 0));
+        StoredFileActivity a{};
+        a.lastWrite = Int64ToFileTime(sqlite3_column_int64(st, 1));
+        const auto events = sqlite3_column_int64(st, 2);
+        const auto days = sqlite3_column_int64(st, 3);
+        if (events > 0) a.writeEvents = static_cast<std::uint64_t>(events);
+        if (days > 0) a.activeDays = static_cast<std::uint64_t>(days);
+        a.firstActiveDay = sqlite3_column_int64(st, 4);
+        a.lastActiveDay = sqlite3_column_int64(st, 5);
         out.emplace_back(p ? p : L"", a);
     }
     sqlite3_finalize(st);
