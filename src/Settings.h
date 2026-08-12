@@ -1,0 +1,23 @@
+#pragma once
+
+#include <array>
+#include <string>
+
+namespace fhm {
+
+struct Settings {
+    bool coolingAuto = true;
+    double coolingHalfLifeDays = 30.0;
+    bool includePathHeat = true;
+    double pathDecay = 0.50;
+    bool smoothColors = true;
+    int stepsPerLevel = 4;
+    std::array<unsigned long, 8> colors{}; // Win32 COLORREF; index 0 is unused/default.
+};
+
+Settings DefaultSettings();
+bool LoadSettings(const std::wstring& iniPath, Settings& settings);
+bool SaveSettings(const std::wstring& iniPath, const Settings& settings);
+std::wstring SettingsPathFromDefaultIni(const std::wstring& defaultIniName);
+
+} // namespace fhm
