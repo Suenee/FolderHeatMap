@@ -1,40 +1,49 @@
-# FolderHeatMap - first WDX test
+# FolderHeatMap - WDX test
 
 Target: Total Commander 11.58 x64 on Windows 10+.
 
-This is an early functional prototype. Activity is stored only in RAM and is reset when Total Commander unloads the plugin or exits.
+This build stores folder activity persistently in an embedded SQLite database.
 
-## Install
+## Upgrade and build
 
-1. Download the `FolderHeatMap-WDX64-test` artifact from the latest successful GitHub Actions build on the `devel` branch.
-2. Extract `FolderHeatMap.wdx64` to a permanent plugin directory, for example:
-   `C:\Tools\TotalCommander\Plugins\wdx\FolderHeatMap\FolderHeatMap.wdx64`
-3. In Total Commander open Configuration -> Options -> Plugins -> Content plugins (.WDX) -> Configure.
-4. Add `FolderHeatMap.wdx64`.
+1. Pull the latest `devel` branch.
+2. Run `upgrade.cmd`.
+3. The script automatically prepares the pinned SQLite amalgamation dependency and builds `dist\FolderHeatMap.wdx64`.
 
-## Create a test custom columns view
+## Install / replace plugin
 
-Create a Custom columns view and add these FolderHeatMap fields:
+Use `dist\FolderHeatMap.wdx64` as the installed Total Commander content plugin. If Total Commander has the old DLL loaded, close Total Commander before replacing the file and start it again afterwards.
+
+## Custom columns
+
+The FolderHeatMap view can use these fields:
 
 - Heat
 - Visits
 - Last Visit
 - Heat Level
 
-The fields are intentionally returned only for directories.
+Fields are intentionally returned only for directories.
 
-## Test procedure
+## Persistence test
 
-1. Switch a panel to the custom columns view containing FolderHeatMap fields.
-2. Enter several directories and return to their parent directories.
-3. Revisit one directory several times.
-4. Verify that `Visits` increases for visited directories and that untouched directories remain at `0`.
-5. Verify that `Heat` and `Heat Level` increase with repeated visits.
-6. Click the Heat column header. The default sort direction should put hotter folders first.
-7. If available, repeat the test with a removable drive, reconnecting the same volume under a different drive letter. The same relative folder should retain its identity during the same Total Commander/plugin lifetime.
+1. Navigate through several directories in the FolderHeatMap custom-columns view.
+2. Revisit one directory several times and note its `Visits` value.
+3. Close all Total Commander windows.
+4. Start Total Commander again and return to the same parent directory.
+5. Verify that the previous `Visits`, `Last Visit` and heat history are still present.
+6. Enter the directory once more and verify that `Visits` continues from the stored value instead of starting from zero.
 
-## Important prototype limitation
+## Removable-drive identity test
 
-The official WDX state callback `contst_readnewdir` is emitted when Total Commander reads a file list in Custom columns or Thumbnails view. It is not emitted merely by switching from Full view into Custom columns view. This first test therefore focuses on navigation while the FolderHeatMap custom view is active.
+1. Visit a directory on a removable local volume and note its `Visits` value.
+2. Close Total Commander and disconnect the drive.
+3. Reconnect the same volume under a different drive letter if possible.
+4. Start Total Commander and open the same relative path.
+5. Verify that the old history is found. Local folder identity is based on volume GUID plus relative path, not the drive letter.
 
-Persistence (SQLite), configuration UI, color anchors 0-7 and generated Total Commander color rules come after this navigation/identity test is confirmed.
+## Navigation limitation under test
+
+The WDX callback `contst_readnewdir` is emitted when Total Commander reads a file list in Custom columns or Thumbnails view. It is not emitted merely by switching from Full view into Custom columns view. FolderHeatMap currently counts navigation observed through this callback.
+
+Color anchors 0-7 and generated Total Commander color rules are the next visualization milestone.
