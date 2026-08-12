@@ -39,7 +39,9 @@ target_link_libraries(FolderHeatMapConfig PRIVATE comdlg32 shell32 advapi32)
 
 if(MSVC)
     target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc)
-    target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /FIshellapi.h)
+    # shellapi.h requires Windows base types. Force windows.h first because
+    # ConfigApp uses ShellExecuteW while keeping the source includes compact.
+    target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /FIwindows.h /FIshellapi.h)
     set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
 endif()
 
