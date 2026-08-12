@@ -12,6 +12,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare SQLite 3.53.4
+        shell: pwsh
+        run: |
+          $url = 'https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip'
+          Invoke-WebRequest -Uri $url -OutFile sqlite.zip
+          Expand-Archive sqlite.zip -DestinationPath sqlite-src -Force
+          $src = Get-ChildItem sqlite-src -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path vendor/sqlite | Out-Null
+          Copy-Item (Join-Path $src.FullName 'sqlite3.c') vendor/sqlite/sqlite3.c
+          Copy-Item (Join-Path $src.FullName 'sqlite3.h') vendor/sqlite/sqlite3.h
+
       - name: Configure x64
         run: cmake -S . -B build -A x64
 
