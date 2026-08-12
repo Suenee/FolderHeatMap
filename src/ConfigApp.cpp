@@ -17,8 +17,8 @@
 #include <vector>
 
 namespace {
-constexpr int IDC_AUTO = 1001;
-constexpr int IDC_MANUAL = 1002;
+constexpr int IDC_AUTO_FHM = 1001;
+constexpr int IDC_MANUAL_FHM = 1002;
 constexpr int IDC_HALF = 1003;
 constexpr int IDC_PATH = 1004;
 constexpr int IDC_DECAY = 1005;
@@ -28,23 +28,24 @@ constexpr int IDC_STEPS = 1008;
 constexpr int IDC_SAVE = 1009;
 constexpr int IDC_STATUS = 1010;
 constexpr int IDC_CANCEL = 1011;
-constexpr int IDC_HELP = 1012;
+constexpr int IDC_HELP_BUTTON = 1012;
 constexpr int IDC_COOLDOWN = 1013;
 constexpr int IDC_SESSION = 1014;
 constexpr int IDC_HALF_SPIN = 1015;
 constexpr int IDC_STEPS_SPIN = 1016;
 constexpr int IDC_COOLDOWN_SPIN = 1017;
 constexpr int IDC_SESSION_SPIN = 1018;
-constexpr int IDC_COLOR_BASE = 1100;
 constexpr int IDC_SWATCH_BASE = 1200;
 constexpr int MAX_TC_COLOR_FILTERS = 999;
 constexpr int MAX_MANAGED_SEARCHES = 128;
+constexpr wchar_t WINDOW_CLASS[] = L"FolderHeatMapConfigWindow";
+constexpr wchar_t SINGLE_INSTANCE_MUTEX[] = L"Local\\FolderHeatMapConfig.SingleInstance";
 
 fhm::Settings g_settings;
 std::wstring g_wincmdIni;
 std::wstring g_settingsIni;
-std::array<HWND, 8> g_colorButtons{};
 std::array<HWND, 8> g_colorSwatches{};
+std::array<std::wstring, 8> g_swatchTooltips{};
 HWND g_halfEdit{};
 HWND g_decaySlider{};
 HWND g_decayValue{};
@@ -56,11 +57,12 @@ HWND g_tooltip{};
 HFONT g_boldFont{};
 HBRUSH g_windowBrush{};
 HINSTANCE g_instance{};
+HANDLE g_singleInstanceMutex{};
 COLORREF g_level0Color = RGB(0, 0, 0);
 
 std::wstring ExpandEnvironment(const std::wstring& value) {
     if (value.empty()) return {};
-    DWORD needed = ExpandEnvironmentStringsW(value.c_str(), nullptr, 0);
+    const DWORD needed = ExpandEnvironmentStringsW(value.c_str(), nullptr, 0);
     if (!needed) return value;
     std::vector<wchar_t> buffer(needed);
     if (!ExpandEnvironmentStringsW(value.c_str(), buffer.data(), needed)) return value;
@@ -71,9 +73,8 @@ std::wstring QueryRegString(HKEY root, const wchar_t* subkey, const wchar_t* val
     wchar_t buffer[2048]{};
     DWORD type = 0;
     DWORD size = sizeof(buffer);
-    if (RegGetValueW(root, subkey, value, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, &type, buffer, &size) == ERROR_SUCCESS) {
+    if (RegGetValueW(root, subkey, value, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, &type, buffer, &size) == ERROR_SUCCESS)
         return ExpandEnvironment(buffer);
-    }
     return {};
 }
 
@@ -93,13 +94,10 @@ std::wstring FindWincmdIni() {
         const auto expanded = ExpandEnvironment(env);
         if (CanUseIni(expanded)) return expanded;
     }
-
     auto p = QueryRegString(HKEY_CURRENT_USER, L"Software\\Ghisler\\Total Commander", L"IniFileName");
     if (CanUseIni(p)) return p;
-
     p = QueryRegString(HKEY_LOCAL_MACHINE, L"Software\\Ghisler\\Total Commander", L"IniFileName");
     if (CanUseIni(p)) return p;
-
     wchar_t appData[2048]{};
     n = GetEnvironmentVariableW(L"APPDATA", appData, 2048);
     if (n > 0 && n < 2048) {
@@ -111,19 +109,16 @@ std::wstring FindWincmdIni() {
 
 std::wstring PromptForWincmdIni() {
     MessageBoxW(nullptr,
-        L"FolderHeatMap needs read/write access to Total Commander's wincmd.ini before settings can be used.\n\n"
-        L"Please select the wincmd.ini used by Total Commander. You can find its location in Total Commander under Help > About Total Commander > INI files.",
+        L"FolderHeatMap needs read/write access to Total Commander's wincmd.ini.\n\n"
+        L"Please select the wincmd.ini used by Total Commander. Its location is shown under Help > About Total Commander > INI files.",
         L"FolderHeatMap - Total Commander configuration required", MB_OK | MB_ICONINFORMATION);
-
     wchar_t file[MAX_PATH] = L"wincmd.ini";
-    wchar_t initial[MAX_PATH]{};
-    DWORD n = GetEnvironmentVariableW(L"APPDATA", initial, MAX_PATH);
+    wchar_t appData[MAX_PATH]{};
     std::wstring initialDir;
-    if (n > 0 && n < MAX_PATH) initialDir = (std::filesystem::path(initial) / L"GHISLER").wstring();
-
+    const DWORD n = GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) initialDir = (std::filesystem::path(appData) / L"GHISLER").wstring();
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = nullptr;
     ofn.lpstrFilter = L"Total Commander INI (wincmd.ini)\0wincmd.ini\0INI files (*.ini)\0*.ini\0All files (*.*)\0*.*\0\0";
     ofn.lpstrFile = file;
     ofn.nMaxFile = MAX_PATH;
@@ -131,7 +126,6 @@ std::wstring PromptForWincmdIni() {
     ofn.lpstrTitle = L"Select Total Commander wincmd.ini";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&ofn)) return {};
-
     const std::wstring selected = file;
     if (!CanUseIni(selected)) {
         MessageBoxW(nullptr, L"The selected file is not writable. FolderHeatMap cannot continue until wincmd.ini is accessible.",
@@ -148,35 +142,21 @@ std::wstring ReadIniString(const wchar_t* section, const std::wstring& key) {
 }
 
 COLORREF TcBaseColor() {
-    const int value = GetPrivateProfileIntW(L"Colors", L"ForeColor", -1, g_wincmdIni.c_str());
-    return value < 0 ? GetSysColor(COLOR_WINDOWTEXT) : static_cast<COLORREF>(value);
+    const std::wstring value = ReadIniString(L"Colors", L"ForeColor");
+    if (value.empty()) return GetSysColor(COLOR_WINDOWTEXT);
+    wchar_t* end = nullptr;
+    const unsigned long parsed = wcstoul(value.c_str(), &end, 10);
+    return end != value.c_str() ? static_cast<COLORREF>(parsed) : GetSysColor(COLOR_WINDOWTEXT);
+}
+
+bool WriteTcBaseColor(COLORREF color) {
+    const std::wstring value = std::to_wstring(static_cast<unsigned long>(color));
+    return WritePrivateProfileStringW(L"Colors", L"ForeColor", value.c_str(), g_wincmdIni.c_str()) != FALSE;
 }
 
 COLORREF Interpolate(COLORREF a, COLORREF b, double t) {
-    auto mix = [t](int x, int y) {
-        return std::clamp(static_cast<int>(x + (y - x) * t + 0.5), 0, 255);
-    };
+    auto mix = [t](int x, int y) { return std::clamp(static_cast<int>(x + (y - x) * t + 0.5), 0, 255); };
     return RGB(mix(GetRValue(a), GetRValue(b)), mix(GetGValue(a), GetGValue(b)), mix(GetBValue(a), GetBValue(b)));
-}
-
-void UpdateColorButton(int level) {
-    const std::wstring text = L"Level " + std::to_wstring(level);
-    SetWindowTextW(g_colorButtons[level], text.c_str());
-    if (g_colorSwatches[level]) InvalidateRect(g_colorSwatches[level], nullptr, TRUE);
-}
-
-void ChooseLevelColor(HWND hwnd, int level) {
-    if (level < 1 || level > 7) return;
-    static COLORREF custom[16]{};
-    CHOOSECOLORW cc{sizeof(cc)};
-    cc.hwndOwner = hwnd;
-    cc.rgbResult = static_cast<COLORREF>(g_settings.colors[level]);
-    cc.lpCustColors = custom;
-    cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-    if (ChooseColorW(&cc)) {
-        g_settings.colors[level] = cc.rgbResult;
-        UpdateColorButton(level);
-    }
 }
 
 void AddTooltip(HWND control, const wchar_t* text) {
@@ -188,6 +168,20 @@ void AddTooltip(HWND control, const wchar_t* text) {
     ti.uId = reinterpret_cast<UINT_PTR>(control);
     ti.lpszText = const_cast<wchar_t*>(text);
     SendMessageW(g_tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+}
+
+void ChooseColor(HWND hwnd, int level) {
+    if (level < 0 || level > 7) return;
+    static COLORREF custom[16]{};
+    CHOOSECOLORW cc{sizeof(cc)};
+    cc.hwndOwner = hwnd;
+    cc.rgbResult = level == 0 ? g_level0Color : static_cast<COLORREF>(g_settings.colors[level]);
+    cc.lpCustColors = custom;
+    cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+    if (!ChooseColorW(&cc)) return;
+    if (level == 0) g_level0Color = cc.rgbResult;
+    else g_settings.colors[level] = cc.rgbResult;
+    InvalidateRect(g_colorSwatches[level], nullptr, TRUE);
 }
 
 HWND AddSpin(HWND hwnd, HWND buddy, int id, int minValue, int maxValue) {
@@ -242,10 +236,7 @@ BOOL CALLBACK CloseTcWindow(HWND hwnd, LPARAM) {
 bool StopTc() {
     if (!IsTcRunning()) return true;
     EnumWindows(CloseTcWindow, 0);
-    for (int i = 0; i < 50; ++i) {
-        Sleep(100);
-        if (!IsTcRunning()) return true;
-    }
+    for (int i = 0; i < 50; ++i) { Sleep(100); if (!IsTcRunning()) return true; }
     for (DWORD pid : TcProcessIds()) {
         HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
         if (!process) continue;
@@ -253,10 +244,7 @@ bool StopTc() {
         WaitForSingleObject(process, 3000);
         CloseHandle(process);
     }
-    for (int i = 0; i < 30; ++i) {
-        if (!IsTcRunning()) return true;
-        Sleep(100);
-    }
+    for (int i = 0; i < 30; ++i) { if (!IsTcRunning()) return true; Sleep(100); }
     return !IsTcRunning();
 }
 
@@ -282,13 +270,10 @@ bool IsManagedColorFilter(const std::wstring& value) { return value.rfind(L">Fol
 
 void DeleteSearch(const std::wstring& name) {
     static const wchar_t* suffixes[] = {L"_SearchFor", L"_SearchIn", L"_SearchText", L"_SearchFlags", L"_plugin"};
-    for (const auto* suffix : suffixes)
-        WritePrivateProfileStringW(L"searches", (name + suffix).c_str(), nullptr, g_wincmdIni.c_str());
+    for (const auto* suffix : suffixes) WritePrivateProfileStringW(L"searches", (name + suffix).c_str(), nullptr, g_wincmdIni.c_str());
 }
 
-void CleanupManagedSearches() {
-    for (int i = 1; i <= MAX_MANAGED_SEARCHES; ++i) DeleteSearch(ManagedSearchName(i));
-}
+void CleanupManagedSearches() { for (int i = 1; i <= MAX_MANAGED_SEARCHES; ++i) DeleteSearch(ManagedSearchName(i)); }
 
 struct ExistingColorRule { std::wstring filter, color, colorDark; };
 
@@ -334,12 +319,10 @@ int WriteManagedColorRules() {
         existing.push_back({filter, ReadIniString(L"Colors", base + L"Color"), ReadIniString(L"Colors", base + L"ColorDark")});
     }
     for (int i = 1; i <= MAX_TC_COLOR_FILTERS; ++i) DeleteColorRuleIndex(i);
-
     const int steps = g_settings.smoothColors ? std::clamp(g_settings.stepsPerLevel, 1, 16) : 1;
     int tcRuleIndex = 1;
     int managedCount = 0;
     constexpr double EPSILON = 0.001;
-
     {
         const std::wstring searchName = ManagedSearchName(++managedCount);
         CreateManagedSearch(searchName, 7.0 - EPSILON);
@@ -367,7 +350,7 @@ int WriteManagedColorRules() {
 }
 
 bool ApplyTcColorRules() {
-    if (!CanUseIni(g_wincmdIni)) return false;
+    if (!CanUseIni(g_wincmdIni) || !WriteTcBaseColor(g_level0Color)) return false;
     const int expected = WriteManagedColorRules();
     if (expected <= 0) return false;
     const std::wstring firstSearch = ManagedSearchName(1);
@@ -379,25 +362,29 @@ bool ApplyTcColorRules() {
 int EditInt(HWND edit, int minValue, int maxValue) {
     wchar_t buf[32]{};
     GetWindowTextW(edit, buf, 32);
-    return std::clamp(_wtoi(buf), minValue, maxValue);
+    const int value = std::clamp(_wtoi(buf), minValue, maxValue);
+    SetWindowTextW(edit, std::to_wstring(value).c_str());
+    return value;
 }
 
 void UpdateEnabledState(HWND hwnd) {
-    const bool manual = SendDlgItemMessageW(hwnd, IDC_MANUAL, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool manual = SendDlgItemMessageW(hwnd, IDC_MANUAL_FHM, BM_GETCHECK, 0, 0) == BST_CHECKED;
     EnableWindow(g_halfEdit, manual);
     EnableWindow(GetDlgItem(hwnd, IDC_HALF_SPIN), manual);
-    EnableWindow(g_decaySlider, SendDlgItemMessageW(hwnd, IDC_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    EnableWindow(g_stepsEdit, SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    EnableWindow(GetDlgItem(hwnd, IDC_STEPS_SPIN), IsWindowEnabled(g_stepsEdit));
+    const bool path = SendDlgItemMessageW(hwnd, IDC_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    EnableWindow(g_decaySlider, path);
+    const bool smooth = SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    EnableWindow(g_stepsEdit, smooth);
+    EnableWindow(GetDlgItem(hwnd, IDC_STEPS_SPIN), smooth);
 }
 
 void Save(HWND hwnd) {
     if (!CanUseIni(g_wincmdIni)) {
-        MessageBoxW(hwnd, L"Total Commander's wincmd.ini is no longer accessible. Reopen FolderHeatMap Settings and select a writable INI file.", L"FolderHeatMap", MB_ICONERROR);
+        MessageBoxW(hwnd, L"Total Commander's wincmd.ini is no longer accessible. Reopen FolderHeatMap Settings and select a writable INI file.",
+            L"FolderHeatMap", MB_ICONERROR);
         return;
     }
-
-    g_settings.coolingAuto = SendDlgItemMessageW(hwnd, IDC_AUTO, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    g_settings.coolingAuto = SendDlgItemMessageW(hwnd, IDC_AUTO_FHM, BM_GETCHECK, 0, 0) == BST_CHECKED;
     g_settings.coolingHalfLifeDays = EditInt(g_halfEdit, 1, 365);
     g_settings.includePathHeat = SendDlgItemMessageW(hwnd, IDC_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED;
     g_settings.pathDecay = static_cast<double>(SendMessageW(g_decaySlider, TBM_GETPOS, 0, 0)) / 100.0;
@@ -405,15 +392,14 @@ void Save(HWND hwnd) {
     g_settings.sessionResetHours = EditInt(g_sessionEdit, 1, 24);
     g_settings.smoothColors = SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_GETCHECK, 0, 0) == BST_CHECKED;
     g_settings.stepsPerLevel = EditInt(g_stepsEdit, 1, 16);
-
     if (!fhm::SaveSettings(g_settingsIni, g_settings)) {
         MessageBoxW(hwnd, L"Settings could not be saved.", L"FolderHeatMap", MB_ICONERROR);
         return;
     }
-
     const bool wasRunning = IsTcRunning();
     if (wasRunning && !StopTc()) {
-        MessageBoxW(hwnd, L"Total Commander could not be closed even after a forced attempt. Settings were saved, but colors were not updated.", L"FolderHeatMap", MB_ICONWARNING);
+        MessageBoxW(hwnd, L"Total Commander could not be closed even after a forced attempt. Settings were saved, but Total Commander colors were not updated.",
+            L"FolderHeatMap", MB_ICONWARNING);
         return;
     }
     if (!ApplyTcColorRules()) {
@@ -423,17 +409,31 @@ void Save(HWND hwnd) {
         return;
     }
     if (wasRunning) StartTc();
-    SetWindowTextW(g_status, L"Saved. Total Commander color map updated.");
+    SetWindowTextW(g_status, L"Saved.");
 }
 
 void ShowHelp(HWND hwnd) {
     MessageBoxW(hwnd,
-        L"Cooling\nAutomatic mode learns your usage rhythm. Manual mode uses a fixed 1-365 day half-life.\n\n"
+        L"Cooling\nAutomatic learns cooling speed from your Total Commander usage rhythm. Manual uses a fixed half-life from 1 to 365 days.\n\n"
+        L"Activity tuning\nRepeat cooldown prevents rapid re-entry from inflating Heat. Session reset defines when recent work starts a new session.\n\n"
         L"Path heat\nA hot descendant can keep its parent path warm. Contribution is reduced for every level upward.\n\n"
-        L"Activity tuning\nRepeat visit cooldown prevents rapid re-entry from inflating heat. Session reset defines when recent work starts a new session.\n\n"
-        L"Color map\nLevel 0 shows Total Commander's base text color and cannot be edited. Levels 1-7 are editable anchors; click either a level button or its color square.\n\n"
-        L"Save updates FolderHeatMap settings and Total Commander color rules. Cancel closes without saving current changes.",
+        L"Color map\nColors 0-7 are shown left to right. Color 0 is Total Commander's base text color (Colors / ForeColor), so changing it changes the normal Total Commander text color too. Colors 1-7 are FolderHeatMap heat anchors.\n\n"
+        L"Save writes settings and refreshes Total Commander. Cancel closes without saving current changes.",
         L"FolderHeatMap - Help", MB_OK | MB_ICONINFORMATION);
+}
+
+void BringExistingWindowToFront() {
+    HWND hwnd = nullptr;
+    for (int i = 0; i < 30 && !hwnd; ++i) {
+        hwnd = FindWindowW(WINDOW_CLASS, nullptr);
+        if (!hwnd) Sleep(50);
+    }
+    if (!hwnd) return;
+    if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+    ShowWindow(hwnd, SW_SHOW);
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetForegroundWindow(hwnd);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -444,7 +444,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             GetObjectW(font, sizeof(lf), &lf);
             lf.lfWeight = FW_SEMIBOLD;
             g_boldFont = CreateFontIndirectW(&lf);
-
             auto add = [&](const wchar_t* cls, const wchar_t* txt, DWORD style, int x, int y, int w, int h, int id = 0) {
                 HWND c = CreateWindowExW(0, cls, txt, WS_CHILD | WS_VISIBLE | style, x, y, w, h, hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), g_instance, nullptr);
@@ -456,76 +455,67 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (c && g_boldFont) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(g_boldFont), TRUE);
                 return c;
             };
-
             g_tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP,
                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, nullptr, g_instance, nullptr);
             SendMessageW(g_tooltip, TTM_SETMAXTIPWIDTH, 0, 360);
 
-            header(L"Cooling", 20, 16, 250);
-            HWND autoBtn = add(L"BUTTON", L"Automatic", BS_AUTORADIOBUTTON | WS_GROUP, 28, 40, 92, 22, IDC_AUTO);
-            HWND manualBtn = add(L"BUTTON", L"Manual", BS_AUTORADIOBUTTON, 126, 40, 76, 22, IDC_MANUAL);
-            add(L"STATIC", L"Half-life:", SS_LEFT, 28, 70, 70, 20);
-            g_halfEdit = add(L"EDIT", L"30", WS_BORDER | ES_NUMBER | ES_CENTER, 98, 67, 55, 24, IDC_HALF);
+            header(L"Cooling", 18, 14, 255);
+            HWND autoBtn = add(L"BUTTON", L"Automatic", BS_AUTORADIOBUTTON | WS_GROUP, 26, 38, 92, 22, IDC_AUTO_FHM);
+            HWND manualBtn = add(L"BUTTON", L"Manual", BS_AUTORADIOBUTTON, 122, 38, 74, 22, IDC_MANUAL_FHM);
+            add(L"STATIC", L"Half-life:", SS_LEFT, 26, 69, 65, 20);
+            g_halfEdit = add(L"EDIT", L"30", WS_BORDER | ES_NUMBER | ES_CENTER, 92, 66, 56, 21, IDC_HALF);
             AddSpin(hwnd, g_halfEdit, IDC_HALF_SPIN, 1, 365);
-            add(L"STATIC", L"days", SS_LEFT, 160, 70, 36, 20);
+            add(L"STATIC", L"days", SS_LEFT, 154, 69, 36, 20);
 
-            header(L"Activity tuning", 310, 16, 250);
-            add(L"STATIC", L"Repeat cooldown:", SS_LEFT, 318, 43, 105, 20);
-            g_cooldownEdit = add(L"EDIT", L"90", WS_BORDER | ES_NUMBER | ES_CENTER, 430, 40, 58, 24, IDC_COOLDOWN);
+            header(L"Activity tuning", 300, 14, 255);
+            add(L"STATIC", L"Repeat cooldown:", SS_LEFT, 308, 41, 108, 20);
+            g_cooldownEdit = add(L"EDIT", L"90", WS_BORDER | ES_NUMBER | ES_CENTER, 420, 38, 58, 21, IDC_COOLDOWN);
             AddSpin(hwnd, g_cooldownEdit, IDC_COOLDOWN_SPIN, 0, 600);
-            add(L"STATIC", L"sec", SS_LEFT, 495, 43, 30, 20);
-            add(L"STATIC", L"Session reset:", SS_LEFT, 318, 73, 105, 20);
-            g_sessionEdit = add(L"EDIT", L"8", WS_BORDER | ES_NUMBER | ES_CENTER, 430, 70, 58, 24, IDC_SESSION);
+            add(L"STATIC", L"sec", SS_LEFT, 486, 41, 30, 20);
+            add(L"STATIC", L"Session reset:", SS_LEFT, 308, 71, 108, 20);
+            g_sessionEdit = add(L"EDIT", L"8", WS_BORDER | ES_NUMBER | ES_CENTER, 420, 68, 58, 21, IDC_SESSION);
             AddSpin(hwnd, g_sessionEdit, IDC_SESSION_SPIN, 1, 24);
-            add(L"STATIC", L"hours", SS_LEFT, 495, 73, 42, 20);
+            add(L"STATIC", L"hours", SS_LEFT, 486, 71, 42, 20);
 
-            header(L"Path heat", 20, 112, 250);
-            HWND pathBtn = add(L"BUTTON", L"Include hot descendants", BS_AUTOCHECKBOX, 28, 136, 180, 22, IDC_PATH);
-            add(L"STATIC", L"Contribution:", SS_LEFT, 28, 167, 78, 20);
-            g_decaySlider = add(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS, 105, 160, 125, 28, IDC_DECAY);
+            header(L"Path heat", 18, 108, 255);
+            HWND pathBtn = add(L"BUTTON", L"Include hot descendants", BS_AUTOCHECKBOX, 26, 132, 180, 22, IDC_PATH);
+            add(L"STATIC", L"Contribution:", SS_LEFT, 26, 161, 78, 20);
+            g_decaySlider = add(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS, 102, 154, 126, 28, IDC_DECAY);
             SendMessageW(g_decaySlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
-            g_decayValue = add(L"STATIC", L"50%", SS_RIGHT, 235, 166, 40, 20, IDC_DECAY_VALUE);
+            g_decayValue = add(L"STATIC", L"50%", SS_RIGHT, 232, 160, 40, 20, IDC_DECAY_VALUE);
 
-            header(L"Color behavior", 310, 112, 250);
-            HWND smoothBtn = add(L"BUTTON", L"Smooth transitions", BS_AUTOCHECKBOX, 318, 136, 150, 22, IDC_SMOOTH);
-            add(L"STATIC", L"Steps per level:", SS_LEFT, 318, 167, 105, 20);
-            g_stepsEdit = add(L"EDIT", L"4", WS_BORDER | ES_NUMBER | ES_CENTER, 430, 164, 58, 24, IDC_STEPS);
+            header(L"Color behavior", 300, 108, 255);
+            HWND smoothBtn = add(L"BUTTON", L"Smooth transitions", BS_AUTOCHECKBOX, 308, 132, 150, 22, IDC_SMOOTH);
+            add(L"STATIC", L"Steps per level:", SS_LEFT, 308, 161, 108, 20);
+            g_stepsEdit = add(L"EDIT", L"4", WS_BORDER | ES_NUMBER | ES_CENTER, 420, 158, 58, 21, IDC_STEPS);
             AddSpin(hwnd, g_stepsEdit, IDC_STEPS_SPIN, 1, 16);
 
-            header(L"Color map", 20, 208, 540);
+            header(L"Color map", 18, 204, 80);
+            const int swatchX = 92;
             for (int i = 0; i <= 7; ++i) {
-                const int col = i < 4 ? 0 : 1;
-                const int row = i < 4 ? i : i - 4;
-                const int x = col == 0 ? 28 : 310;
-                const int y = 234 + row * 34;
-                g_colorButtons[i] = add(L"BUTTON", L"", BS_PUSHBUTTON, x, y, 105, 24, IDC_COLOR_BASE + i);
-                g_colorSwatches[i] = add(L"STATIC", L"", SS_OWNERDRAW | (i == 0 ? 0 : SS_NOTIFY), x + 113, y + 1, 23, 22, IDC_SWATCH_BASE + i);
-                UpdateColorButton(i);
-                if (i == 0) EnableWindow(g_colorButtons[i], FALSE);
+                const int x = swatchX + i * 31;
+                g_colorSwatches[i] = add(L"STATIC", L"", SS_OWNERDRAW | SS_NOTIFY, x, 199, 27, 27, IDC_SWATCH_BASE + i);
+                g_swatchTooltips[i] = i == 0 ? L"Color level 0 - Total Commander base text color." : L"Color level " + std::to_wstring(i) + L".";
+                AddTooltip(g_colorSwatches[i], g_swatchTooltips[i].c_str());
             }
 
-            HWND helpBtn = add(L"BUTTON", L"Help", BS_PUSHBUTTON, 20, 400, 78, 30, IDC_HELP);
-            add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON, 404, 400, 78, 30, IDC_SAVE);
-            add(L"BUTTON", L"Cancel", BS_PUSHBUTTON, 490, 400, 78, 30, IDC_CANCEL);
-            g_status = add(L"STATIC", L"", SS_LEFT, 110, 406, 280, 32, IDC_STATUS);
+            HWND helpBtn = add(L"BUTTON", L"Help", BS_PUSHBUTTON, 18, 252, 76, 29, IDC_HELP_BUTTON);
+            add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON, 394, 252, 76, 29, IDC_SAVE);
+            add(L"BUTTON", L"Cancel", BS_PUSHBUTTON, 478, 252, 76, 29, IDC_CANCEL);
+            g_status = add(L"STATIC", L"", SS_LEFT, 108, 258, 270, 22, IDC_STATUS);
 
-            AddTooltip(autoBtn, L"Learns cooling speed from how many days you actively use Total Commander.");
+            AddTooltip(autoBtn, L"Learns cooling speed from your Total Commander usage rhythm.");
             AddTooltip(manualBtn, L"Use a fixed cooling half-life instead of automatic learning.");
-            AddTooltip(g_halfEdit, L"Manual cooling half-life, from 1 to 365 days.");
+            AddTooltip(g_halfEdit, L"Manual cooling half-life. Range: 1-365 days.");
             AddTooltip(pathBtn, L"Let the hottest descendant contribute heat to its parent path.");
-            AddTooltip(g_decaySlider, L"Percentage of descendant heat retained for each level upward, from 0% to 100%.");
-            AddTooltip(g_cooldownEdit, L"Repeated entries into the same folder inside this interval still increase Visits, but do not increase Heat. Range: 0-600 seconds.");
-            AddTooltip(g_sessionEdit, L"After this idle gap, the next effective visit starts a new recent-work session. Range: 1-24 hours.");
-            AddTooltip(smoothBtn, L"Generate intermediate Total Commander colors between the seven anchor levels.");
-            AddTooltip(g_stepsEdit, L"Number of generated intermediate color steps per heat level. Range: 1-16.");
-            AddTooltip(helpBtn, L"Show an explanation of the heat model and settings.");
-            for (int i = 1; i <= 7; ++i) {
-                AddTooltip(g_colorButtons[i], L"Choose the anchor color for this heat level.");
-                AddTooltip(g_colorSwatches[i], L"Click the color square to choose the anchor color.");
-            }
-            AddTooltip(g_colorButtons[0], L"Read-only preview of Total Commander's base text color.");
+            AddTooltip(g_decaySlider, L"Descendant heat retained per directory level. Range: 0-100%.");
+            AddTooltip(g_cooldownEdit, L"Repeated entries inside this interval do not increase Heat. Range: 0-600 seconds.");
+            AddTooltip(g_sessionEdit, L"Idle gap after which recent work starts a new session. Range: 1-24 hours.");
+            AddTooltip(smoothBtn, L"Generate intermediate Total Commander colors between heat anchors.");
+            AddTooltip(g_stepsEdit, L"Intermediate color steps per heat level. Range: 1-16.");
+            AddTooltip(helpBtn, L"Show help for FolderHeatMap settings.");
 
-            SendDlgItemMessageW(hwnd, g_settings.coolingAuto ? IDC_AUTO : IDC_MANUAL, BM_SETCHECK, BST_CHECKED, 0);
+            SendDlgItemMessageW(hwnd, g_settings.coolingAuto ? IDC_AUTO_FHM : IDC_MANUAL_FHM, BM_SETCHECK, BST_CHECKED, 0);
             SendDlgItemMessageW(hwnd, IDC_PATH, BM_SETCHECK, g_settings.includePathHeat ? BST_CHECKED : BST_UNCHECKED, 0);
             SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_SETCHECK, g_settings.smoothColors ? BST_CHECKED : BST_UNCHECKED, 0);
             SetWindowTextW(g_halfEdit, std::to_wstring(static_cast<int>(g_settings.coolingHalfLifeDays)).c_str());
@@ -533,27 +523,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(g_sessionEdit, std::to_wstring(g_settings.sessionResetHours).c_str());
             SetWindowTextW(g_stepsEdit, std::to_wstring(g_settings.stepsPerLevel).c_str());
             SendMessageW(g_decaySlider, TBM_SETPOS, TRUE, static_cast<LPARAM>(std::lround(g_settings.pathDecay * 100.0)));
-            const std::wstring decayText = std::to_wstring(static_cast<int>(std::lround(g_settings.pathDecay * 100.0))) + L"%";
-            SetWindowTextW(g_decayValue, decayText.c_str());
+            SetWindowTextW(g_decayValue, (std::to_wstring(static_cast<int>(std::lround(g_settings.pathDecay * 100.0))) + L"%").c_str());
             UpdateEnabledState(hwnd);
             return 0;
         }
-
         case WM_HSCROLL:
             if (reinterpret_cast<HWND>(lp) == g_decaySlider) {
                 const int value = static_cast<int>(SendMessageW(g_decaySlider, TBM_GETPOS, 0, 0));
-                const std::wstring text = std::to_wstring(value) + L"%";
-                SetWindowTextW(g_decayValue, text.c_str());
+                SetWindowTextW(g_decayValue, (std::to_wstring(value) + L"%").c_str());
                 return 0;
             }
             break;
-
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wp);
             SetBkMode(dc, TRANSPARENT);
             return reinterpret_cast<LRESULT>(g_windowBrush);
         }
-
         case WM_DRAWITEM: {
             const auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
             if (dis && dis->CtlID >= IDC_SWATCH_BASE && dis->CtlID <= IDC_SWATCH_BASE + 7) {
@@ -568,31 +553,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
-
         case WM_COMMAND: {
             const int id = LOWORD(wp);
-            if (id >= IDC_COLOR_BASE + 1 && id <= IDC_COLOR_BASE + 7) {
-                ChooseLevelColor(hwnd, id - IDC_COLOR_BASE);
+            if (id >= IDC_SWATCH_BASE && id <= IDC_SWATCH_BASE + 7 && HIWORD(wp) == STN_CLICKED) {
+                ChooseColor(hwnd, id - IDC_SWATCH_BASE);
                 return 0;
             }
-            if (id >= IDC_SWATCH_BASE + 1 && id <= IDC_SWATCH_BASE + 7 && HIWORD(wp) == STN_CLICKED) {
-                ChooseLevelColor(hwnd, id - IDC_SWATCH_BASE);
-                return 0;
-            }
-            if (id == IDC_AUTO || id == IDC_MANUAL || id == IDC_PATH || id == IDC_SMOOTH) {
+            if (id == IDC_AUTO_FHM || id == IDC_MANUAL_FHM || id == IDC_PATH || id == IDC_SMOOTH) {
                 UpdateEnabledState(hwnd);
                 return 0;
             }
-            if (id == IDC_HELP) { ShowHelp(hwnd); return 0; }
+            if (id == IDC_HELP_BUTTON) { ShowHelp(hwnd); return 0; }
             if (id == IDC_SAVE) { Save(hwnd); return 0; }
             if (id == IDC_CANCEL) { DestroyWindow(hwnd); return 0; }
             return 0;
         }
-
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
-
         case WM_DESTROY:
             if (g_boldFont) { DeleteObject(g_boldFont); g_boldFont = nullptr; }
             PostQuitMessage(0);
@@ -604,13 +582,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     g_instance = instance;
+    g_singleInstanceMutex = CreateMutexW(nullptr, TRUE, SINGLE_INSTANCE_MUTEX);
+    if (!g_singleInstanceMutex) return 4;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        BringExistingWindowToFront();
+        CloseHandle(g_singleInstanceMutex);
+        g_singleInstanceMutex = nullptr;
+        return 0;
+    }
 
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_BAR_CLASSES | ICC_UPDOWN_CLASS | ICC_WIN95_CLASSES};
     InitCommonControlsEx(&icc);
 
     g_wincmdIni = FindWincmdIni();
     if (g_wincmdIni.empty()) g_wincmdIni = PromptForWincmdIni();
-    if (g_wincmdIni.empty()) return 1;
+    if (g_wincmdIni.empty()) { CloseHandle(g_singleInstanceMutex); return 1; }
 
     g_settingsIni = fhm::SettingsPathFromDefaultIni(g_wincmdIni);
     fhm::LoadSettings(g_settingsIni, g_settings);
@@ -624,39 +610,43 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = instance;
-    wc.lpszClassName = L"FolderHeatMapConfigWindow";
+    wc.lpszClassName = WINDOW_CLASS;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = g_windowBrush;
     wc.hIcon = appIcon;
     wc.hIconSm = smallIcon ? smallIcon : appIcon;
-    ATOM atom = RegisterClassExW(&wc);
+    const ATOM atom = RegisterClassExW(&wc);
     if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         const DWORD err = GetLastError();
-        const std::wstring text = L"Could not register the settings window. Windows error: " + std::to_wstring(err);
-        MessageBoxW(nullptr, text.c_str(), L"FolderHeatMap", MB_ICONERROR);
+        MessageBoxW(nullptr, (L"Could not register the settings window. Windows error: " + std::to_wstring(err)).c_str(), L"FolderHeatMap", MB_ICONERROR);
+        CloseHandle(g_singleInstanceMutex);
         return 2;
     }
 
-    HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"FolderHeatMap - Settings",
+    HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, WINDOW_CLASS, L"FolderHeatMap - Settings",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 480, nullptr, nullptr, instance, nullptr);
+        CW_USEDEFAULT, CW_USEDEFAULT, 590, 330, nullptr, nullptr, instance, nullptr);
     if (!hwnd) {
         const DWORD err = GetLastError();
-        const std::wstring text = L"Could not create the settings window. Windows error: " + std::to_wstring(err);
-        MessageBoxW(nullptr, text.c_str(), L"FolderHeatMap", MB_ICONERROR);
+        MessageBoxW(nullptr, (L"Could not create the settings window. Windows error: " + std::to_wstring(err)).c_str(), L"FolderHeatMap", MB_ICONERROR);
+        CloseHandle(g_singleInstanceMutex);
         return 3;
     }
 
     if (appIcon) SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(appIcon));
     if (smallIcon) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
-
     ShowWindow(hwnd, show == 0 ? SW_SHOWNORMAL : show);
     UpdateWindow(hwnd);
     SetForegroundWindow(hwnd);
+
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+
+    ReleaseMutex(g_singleInstanceMutex);
+    CloseHandle(g_singleInstanceMutex);
+    g_singleInstanceMutex = nullptr;
     return 0;
 }
