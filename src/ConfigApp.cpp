@@ -22,11 +22,13 @@ constexpr int IDC_STEPS = 1007;
 constexpr int IDC_APPLY = 1008;
 constexpr int IDC_STATUS = 1009;
 constexpr int IDC_COLOR_BASE = 1100;
+constexpr int IDC_SWATCH_BASE = 1200;
 
 fhm::Settings g_settings;
 std::wstring g_wincmdIni;
 std::wstring g_settingsIni;
 std::array<HWND, 8> g_colorButtons{};
+std::array<HWND, 8> g_colorSwatches{};
 HWND g_halfEdit{};
 HWND g_decayEdit{};
 HWND g_stepsEdit{};
@@ -50,12 +52,6 @@ std::wstring FindWincmdIni() {
     return QueryRegString(HKEY_LOCAL_MACHINE, L"Software\\Ghisler\\Total Commander", L"IniFileName");
 }
 
-std::wstring HexColor(COLORREF c) {
-    wchar_t s[32]{};
-    swprintf_s(s, L"#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
-    return s;
-}
-
 COLORREF Interpolate(COLORREF a, COLORREF b, double t) {
     auto mix = [t](int x, int y) {
         return std::clamp(static_cast<int>(x + (y - x) * t + 0.5), 0, 255);
@@ -64,8 +60,9 @@ COLORREF Interpolate(COLORREF a, COLORREF b, double t) {
 }
 
 void UpdateColorButton(int level) {
-    std::wstring text = L"Úroveň " + std::to_wstring(level) + L"   " + HexColor(static_cast<COLORREF>(g_settings.colors[level]));
+    std::wstring text = L"Úroveň " + std::to_wstring(level);
     SetWindowTextW(g_colorButtons[level], text.c_str());
+    if (g_colorSwatches[level]) InvalidateRect(g_colorSwatches[level], nullptr, TRUE);
 }
 
 bool IsTcRunning() {
@@ -101,18 +98,6 @@ bool StopTc() {
 void StartTc() {
     auto exe = FindTcExe();
     if (!exe.empty()) ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
-std::wstring ReadIniSection(const wchar_t* section) {
-    std::vector<wchar_t> buffer(65536);
-    DWORD n = GetPrivateProfileSectionW(section, buffer.data(), static_cast<DWORD>(buffer.size()), g_wincmdIni.c_str());
-    if (!n) return {};
-    std::wstring out;
-    for (const wchar_t* p = buffer.data(); *p; p += wcslen(p) + 1) {
-        out += p;
-        out += L'\n';
-    }
-    return out;
 }
 
 void WriteManagedColorRules() {
@@ -207,7 +192,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             add(L"STATIC", L"Mezikroků na úroveň:", SS_LEFT, 320, 227, 150, 20);
             g_stepsEdit = add(L"EDIT", L"4", WS_BORDER | ES_NUMBER, 475, 224, 50, 24, IDC_STEPS);
             for (int i = 1; i <= 7; ++i) {
-                g_colorButtons[i] = add(L"BUTTON", L"", BS_PUSHBUTTON, 30, 258 + (i - 1) * 34, 220, 28, IDC_COLOR_BASE + i);
+                const int y = 258 + (i - 1) * 34;
+                g_colorButtons[i] = add(L"BUTTON", L"", BS_PUSHBUTTON, 30, y, 180, 28, IDC_COLOR_BASE + i);
+                g_colorSwatches[i] = add(L"STATIC", L"", SS_OWNERDRAW, 218, y + 2, 24, 24, IDC_SWATCH_BASE + i);
             }
             add(L"STATIC", L"Úroveň 0 = bez zásahu; používá se původní barva Total Commanderu.", SS_LEFT, 275, 260, 360, 42);
             add(L"STATIC", L"Barvy 1–7 jsou záchytné body. Mezilehlé odstíny vznikají jen mezi nimi.", SS_LEFT, 275, 305, 360, 42);
@@ -222,6 +209,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(g_stepsEdit, std::to_wstring(g_settings.stepsPerLevel).c_str());
             for (int i = 1; i <= 7; ++i) UpdateColorButton(i);
             return 0;
+        }
+
+        case WM_DRAWITEM: {
+            const auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+            if (dis && dis->CtlID >= IDC_SWATCH_BASE + 1 && dis->CtlID <= IDC_SWATCH_BASE + 7) {
+                const int level = static_cast<int>(dis->CtlID) - IDC_SWATCH_BASE;
+                RECT r = dis->rcItem;
+                HBRUSH brush = CreateSolidBrush(static_cast<COLORREF>(g_settings.colors[level]));
+                FillRect(dis->hDC, &r, brush);
+                DeleteObject(brush);
+                FrameRect(dis->hDC, &r, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+                return TRUE;
+            }
+            break;
         }
 
         case WM_COMMAND: {
