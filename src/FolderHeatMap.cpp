@@ -17,6 +17,8 @@ constexpr int kFieldVisits = 1;
 constexpr int kFieldLastVisit = 2;
 constexpr int kFieldHeatLevel = 3;
 constexpr int kFieldColorStep = 4;
+constexpr int kFieldWrites = 5;
+constexpr int kFieldLastWrite = 6;
 constexpr double kTicksPerDay = 10000000.0 * 60.0 * 60.0 * 24.0;
 
 fhm::Database g_database;
@@ -126,6 +128,27 @@ double DirectHeat(const fhm::StoredActivity& a, double halfLifeDays) {
     return std::clamp(high + 0.30 * low, 0.0, 7.0);
 }
 
+double FileHeat(const fhm::StoredFileActivity& a, double halfLifeDays) {
+    if (!FileTimeTicks(a.lastWrite)) return 0.0;
+
+    const double writeHalfLife = std::clamp(halfLifeDays * 0.14, 0.5, 21.0);
+    const double recent = 6.4 * std::exp(-std::log(2.0) * DaysAgo(a.lastWrite) / writeHalfLife);
+
+    if (!a.activeDays || !a.writeEvents) return std::clamp(recent, 0.0, 7.0);
+    const std::int64_t today = CurrentDayKey();
+    const std::int64_t first = a.firstActiveDay > 0 ? a.firstActiveDay : today;
+    const double spanDays = static_cast<double>(std::max<std::int64_t>(1, today - first + 1));
+    const double frequency = std::clamp(static_cast<double>(a.activeDays) / spanDays, 0.0, 1.0);
+    const double maturity = 1.0 - std::exp(-static_cast<double>(a.writeEvents) / 8.0);
+    const double habitBase = 4.4 * maturity * (0.45 + 0.55 * std::sqrt(frequency));
+    const double habitHalfLife = std::clamp(halfLifeDays * 2.0, 10.0, 365.0);
+    const double habit = habitBase * std::exp(-std::log(2.0) * DaysAgo(a.lastWrite) / habitHalfLife);
+
+    const double high = std::max(recent, habit);
+    const double low = std::min(recent, habit);
+    return std::clamp(high + 0.22 * low, 0.0, 7.0);
+}
+
 int ComponentDepth(const std::wstring& relative) {
     if (relative.empty()) return 0;
     int depth = 1;
@@ -140,19 +163,52 @@ bool IsDescendantOf(const std::wstring& child, const std::wstring& parent) {
     return child[parent.size()] == L'\\';
 }
 
+std::wstring ParentRelativePath(const std::wstring& path) {
+    const size_t pos = path.find_last_of(L'\\');
+    return pos == std::wstring::npos ? L"" : path.substr(0, pos);
+}
+
+bool GetLastWriteTime(const std::wstring& path, FILETIME& lastWrite) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return false;
+    if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return false;
+    lastWrite = data.ftLastWriteTime;
+    return FileTimeTicks(lastWrite) != 0;
+}
+
 double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::StoredActivity>& direct) {
     const double halfLife = EffectiveHalfLifeDays();
     double result = direct ? DirectHeat(*direct, halfLife) : 0.0;
-    if (!g_settings.includePathHeat || g_settings.pathDecay <= 0.0) return result;
 
     const int baseDepth = ComponentDepth(id.relativePath);
-    const auto activities = g_database.GetVolumeActivities(id.volumeId);
-    for (const auto& [relative, activity] : activities) {
-        if (!IsDescendantOf(relative, id.relativePath)) continue;
-        const int distance = std::max(1, ComponentDepth(relative) - baseDepth);
-        const double inherited = DirectHeat(activity, halfLife) * std::pow(g_settings.pathDecay, distance);
-        result = std::max(result, inherited);
+
+    if (g_settings.includePathHeat && g_settings.pathDecay > 0.0) {
+        const auto activities = g_database.GetVolumeActivities(id.volumeId);
+        for (const auto& [relative, activity] : activities) {
+            if (!IsDescendantOf(relative, id.relativePath)) continue;
+            const int distance = std::max(1, ComponentDepth(relative) - baseDepth);
+            const double inherited = DirectHeat(activity, halfLife) * std::pow(g_settings.pathDecay, distance);
+            result = std::max(result, inherited);
+        }
     }
+
+    if (g_settings.fileHeatEnabled && g_settings.fileContribution > 0.0) {
+        const auto files = g_database.GetVolumeFileActivities(id.volumeId);
+        for (const auto& [relative, activity] : files) {
+            const std::wstring parent = ParentRelativePath(relative);
+            int distance = -1;
+            if (_wcsicmp(parent.c_str(), id.relativePath.c_str()) == 0) {
+                distance = 0;
+            } else if (g_settings.includePathHeat && IsDescendantOf(parent, id.relativePath)) {
+                distance = std::max(1, ComponentDepth(parent) - baseDepth);
+            }
+            if (distance < 0) continue;
+            const double pathFactor = distance == 0 ? 1.0 : std::pow(g_settings.pathDecay, distance);
+            const double inherited = FileHeat(activity, halfLife) * g_settings.fileContribution * pathFactor;
+            result = std::max(result, inherited);
+        }
+    }
+
     return std::clamp(result, 0.0, 7.0);
 }
 
@@ -167,7 +223,6 @@ int HeatToColorStep(double heat) {
 }
 
 int GetValueForDirectory(const std::wstring& path, int fieldIndex, void* fieldValue) {
-    if (!fhm::IsDirectory(path)) return ft_fieldempty;
     const auto id = fhm::ResolveFolderIdentity(path);
     if (!id) return ft_fieldempty;
     const auto activity = g_database.GetActivity(*id);
@@ -181,6 +236,44 @@ int GetValueForDirectory(const std::wstring& path, int fieldIndex, void* fieldVa
             *static_cast<FILETIME*>(fieldValue) = activity->lastVisit; return ft_datetime;
         case kFieldHeatLevel: *static_cast<int*>(fieldValue) = HeatToLevel(heat); return ft_numeric_32;
         case kFieldColorStep: *static_cast<int*>(fieldValue) = HeatToColorStep(heat); return ft_numeric_32;
+        case kFieldWrites:
+        case kFieldLastWrite:
+            return ft_fieldempty;
+        default: return ft_nosuchfield;
+    }
+}
+
+int GetValueForFile(const std::wstring& path, int fieldIndex, void* fieldValue) {
+    if (!g_settings.fileHeatEnabled) return ft_fieldempty;
+
+    FILETIME lastWrite{};
+    if (!GetLastWriteTime(path, lastWrite)) return ft_fieldempty;
+    const auto id = fhm::ResolveFolderIdentity(path);
+    if (!id) return ft_fieldempty;
+
+    g_database.ObserveFileWrite(*id, lastWrite);
+    auto activity = g_database.GetFileActivity(*id);
+    if (!activity) {
+        fhm::StoredFileActivity fallback{};
+        fallback.lastWrite = lastWrite;
+        fallback.writeEvents = 1;
+        fallback.activeDays = 1;
+        const auto day = static_cast<std::int64_t>(FileTimeTicks(lastWrite) / static_cast<ULONGLONG>(kTicksPerDay));
+        fallback.firstActiveDay = day;
+        fallback.lastActiveDay = day;
+        activity = fallback;
+    }
+
+    const double heat = FileHeat(*activity, EffectiveHalfLifeDays());
+    switch (fieldIndex) {
+        case kFieldHeat: *static_cast<double*>(fieldValue) = heat; return ft_numeric_floating;
+        case kFieldHeatLevel: *static_cast<int*>(fieldValue) = HeatToLevel(heat); return ft_numeric_32;
+        case kFieldColorStep: *static_cast<int*>(fieldValue) = HeatToColorStep(heat); return ft_numeric_32;
+        case kFieldWrites: *static_cast<__int64*>(fieldValue) = static_cast<__int64>(activity->writeEvents); return ft_numeric_64;
+        case kFieldLastWrite: *static_cast<FILETIME*>(fieldValue) = activity->lastWrite; return ft_datetime;
+        case kFieldVisits:
+        case kFieldLastVisit:
+            return ft_fieldempty;
         default: return ft_nosuchfield;
     }
 }
@@ -202,6 +295,8 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
         case kFieldLastVisit: CopyAnsi(fieldName, maxlen, "Last Visit"); return ft_datetime;
         case kFieldHeatLevel: CopyAnsi(fieldName, maxlen, "Heat Level"); return ft_numeric_32;
         case kFieldColorStep: CopyAnsi(fieldName, maxlen, "Heat Color Step"); return ft_numeric_32;
+        case kFieldWrites: CopyAnsi(fieldName, maxlen, "Writes"); return ft_numeric_64;
+        case kFieldLastWrite: CopyAnsi(fieldName, maxlen, "Last Write"); return ft_datetime;
         default: return ft_nomorefields;
     }
 }
@@ -209,7 +304,9 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
 extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int) {
     if (!fileName || !fieldValue) return ft_fileerror;
     if (!g_settingsPath.empty()) fhm::LoadSettings(g_settingsPath, g_settings);
-    return GetValueForDirectory(fileName, fieldIndex, fieldValue);
+    return fhm::IsDirectory(fileName)
+        ? GetValueForDirectory(fileName, fieldIndex, fieldValue)
+        : GetValueForFile(fileName, fieldIndex, fieldValue);
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, int fieldIndex, int unitIndex, void* fieldValue, int maxlen, int flags) {
@@ -219,7 +316,7 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, i
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fieldIndex) {
-    return (fieldIndex >= kFieldHeat && fieldIndex <= kFieldColorStep) ? -1 : 1;
+    return (fieldIndex >= kFieldHeat && fieldIndex <= kFieldLastWrite) ? -1 : 1;
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
