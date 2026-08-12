@@ -28,9 +28,28 @@ target_compile_definitions(FolderHeatMap PRIVATE
     SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION
 )
 
+# The approved configurator artwork is stored as Base64 so it can live in the
+# repository through text-only tooling. Decode it during configure and embed it
+# as the native Windows executable/window icon.
+set(FHM_CONFIG_ICON_B64 "${CMAKE_SOURCE_DIR}/assets/FolderHeatMapConfig.ico.b64")
+set(FHM_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+set(FHM_CONFIG_ICON "${FHM_GENERATED_DIR}/FolderHeatMapConfig.ico")
+set(FHM_CONFIG_RC "${FHM_GENERATED_DIR}/FolderHeatMapConfig.rc")
+file(MAKE_DIRECTORY "${FHM_GENERATED_DIR}")
+execute_process(
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+        "[IO.File]::WriteAllBytes('${FHM_CONFIG_ICON}', [Convert]::FromBase64String([IO.File]::ReadAllText('${FHM_CONFIG_ICON_B64}').Trim()))"
+    RESULT_VARIABLE FHM_ICON_DECODE_RESULT
+)
+if(NOT FHM_ICON_DECODE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_CONFIG_ICON}")
+    message(FATAL_ERROR "Could not decode FolderHeatMap configurator icon.")
+endif()
+file(WRITE "${FHM_CONFIG_RC}" "IDI_FHM_CONFIG ICON \"${FHM_CONFIG_ICON}\"\n")
+
 add_executable(FolderHeatMapConfig WIN32
     src/ConfigApp.cpp
     src/Settings.cpp
+    "${FHM_CONFIG_RC}"
 )
 target_include_directories(FolderHeatMapConfig PRIVATE src)
 target_compile_features(FolderHeatMapConfig PRIVATE cxx_std_20)
@@ -38,11 +57,8 @@ target_compile_definitions(FolderHeatMapConfig PRIVATE UNICODE _UNICODE WIN32_LE
 target_link_libraries(FolderHeatMapConfig PRIVATE comdlg32 shell32 advapi32)
 
 if(MSVC)
-    # Repository sources are UTF-8. Make that explicit so Czech UI strings are
-    # compiled into wide string literals correctly regardless of Windows ACP.
+    # Repository sources are UTF-8.
     target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc /utf-8)
-    # shellapi.h requires Windows base types. Force windows.h first because
-    # ConfigApp uses ShellExecuteW while keeping the source includes compact.
     target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /utf-8 /FIwindows.h /FIshellapi.h)
     set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
 endif()
