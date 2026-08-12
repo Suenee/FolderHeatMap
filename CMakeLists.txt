@@ -46,8 +46,11 @@ if(NOT FHM_ICON_DECODE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_CONFIG_ICON}")
 endif()
 file(WRITE "${FHM_CONFIG_RC}" "IDI_FHM_CONFIG ICON \"${FHM_CONFIG_ICON}\"\n")
 
+# ConfigAppCompile.cpp is the tuned/working configurator entry point. It wraps
+# the shared ConfigApp.cpp backend and deliberately includes the Win32 headers
+# before it, avoiding Windows resource macro collisions.
 add_executable(FolderHeatMapConfig WIN32
-    src/ConfigApp.cpp
+    src/ConfigAppCompile.cpp
     src/Settings.cpp
     "${FHM_CONFIG_RC}"
 )
