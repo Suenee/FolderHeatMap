@@ -27,9 +27,14 @@ if defined TC_PATH (
     if not defined TC_EXE if exist "!TC_PATH!\TOTALCMD.EXE" set "TC_EXE=!TC_PATH!\TOTALCMD.EXE"
 )
 
-if defined TC_INI if exist "!TC_INI!" (
-    for /f "usebackq delims=" %%I in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ini=$env:TC_INI; $cp=$env:TC_PATH; $in=$false; foreach($line in Get-Content -LiteralPath $ini){ if($line -match '^\s*\[ContentPlugins\]\s*$'){ $in=$true; continue }; if($in -and $line -match '^\s*\['){ break }; if($in -and $line -match '^\s*\d+\s*=\s*(.+FolderHeatMap\.wdx64?)\s*$'){ $p=$matches[1].Trim().Trim('"'); $p=$p.Replace('%%COMMANDER_PATH%%',$cp); Write-Output $p; break } }"`) do set "TC_PLUGIN=%%I"
-)
+rem Find FolderHeatMap registration without embedding a complex PowerShell
+rem expression inside a parenthesized CMD block. The previous approach could
+rem break CMD parsing with "$p was unexpected at this time".
+if not defined TC_INI goto tc_plugin_detected
+if not exist "!TC_INI!" goto tc_plugin_detected
+for /f "usebackq tokens=1,* delims==" %%A in (`findstr /I /C:"FolderHeatMap.wdx64" "!TC_INI!" 2^>nul`) do if not defined TC_PLUGIN set "TC_PLUGIN=%%B"
+if defined TC_PLUGIN set "TC_PLUGIN=!TC_PLUGIN:"=!"
+:tc_plugin_detected
 
 echo ============================================================
 echo  FolderHeatMap - one-click upgrade/build/deploy
@@ -39,7 +44,7 @@ if defined TC_INI echo [TC] Configuration:   !TC_INI!
 if defined TC_PLUGIN echo [TC] Registered plugin: !TC_PLUGIN!
 echo.
 
-rem Remember whether TC was running. We stop it only immediately before deployment.
+rem Remember whether TC was running. Stop it only immediately before deployment.
 tasklist /FI "IMAGENAME eq TOTALCMD64.EXE" 2>nul | find /I "TOTALCMD64.EXE" >nul && set "TC_WAS_RUNNING=1"
 tasklist /FI "IMAGENAME eq TOTALCMD.EXE" 2>nul | find /I "TOTALCMD.EXE" >nul && set "TC_WAS_RUNNING=1"
 
@@ -95,7 +100,6 @@ if not defined TC_PLUGIN goto success
 for %%I in ("%CD%\dist\FolderHeatMap.wdx64") do set "DIST_PLUGIN=%%~fI"
 for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
 
-rem If TC was running, close it before replacing the loaded plugin.
 if "!TC_WAS_RUNNING!"=="1" (
     echo [TC] Total Commander is running - closing it for plugin update...
     taskkill /IM TOTALCMD64.EXE /T >nul 2>nul
