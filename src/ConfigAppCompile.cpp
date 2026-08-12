@@ -16,8 +16,6 @@
 
 #ifdef _MSC_VER
 #pragma warning(push)
-// The backend contains one harmless Win32 UINT/int comparison. Keep the
-// release build clean until that API boundary is normalized in the backend.
 #pragma warning(disable : 4389)
 #endif
 
@@ -30,6 +28,41 @@
 #endif
 
 namespace {
+
+constexpr int IDC_FILE_HEAT = 1401;
+constexpr int IDC_FILE_CONTRIBUTION = 1402;
+constexpr int IDC_FILE_CONTRIBUTION_SPIN = 1403;
+HWND g_fileContributionEdit{};
+
+int ReadFileContribution(bool normalize = false) {
+    return EditInt(g_fileContributionEdit, 0, 100, normalize);
+}
+
+bool FileSettingsDirty(HWND hwnd) {
+    const bool enabled = SendDlgItemMessageW(hwnd, IDC_FILE_HEAT, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const int contribution = ReadFileContribution(false);
+    return enabled != g_savedSettings.fileHeatEnabled ||
+        contribution != static_cast<int>(std::lround(g_savedSettings.fileContribution * 100.0));
+}
+
+void UpdateSaveStateWithFile(HWND hwnd) {
+    UpdateSaveState(hwnd);
+    if (FileSettingsDirty(hwnd)) EnableWindow(g_saveButton, TRUE);
+}
+
+void UpdateEnabledStateWithFile(HWND hwnd) {
+    UpdateEnabledState(hwnd);
+    const bool enabled = SendDlgItemMessageW(hwnd, IDC_FILE_HEAT, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    EnableWindow(g_fileContributionEdit, enabled);
+    EnableWindow(GetDlgItem(hwnd, IDC_FILE_CONTRIBUTION_SPIN), enabled);
+    UpdateSaveStateWithFile(hwnd);
+}
+
+void SaveWithFile(HWND hwnd) {
+    g_settings.fileHeatEnabled = SendDlgItemMessageW(hwnd, IDC_FILE_HEAT, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    g_settings.fileContribution = ReadFileContribution(true) / 100.0;
+    Save(hwnd);
+}
 
 LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -66,7 +99,6 @@ LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hwnd, nullptr, g_instance, nullptr);
             SendMessageW(g_tooltip, TTM_SETMAXTIPWIDTH, 0, 420);
 
-            // Top settings area: two balanced columns.
             header(L"Cooling", 28, 18, 210);
             HWND autoBtn = add(L"BUTTON", L"Automatic",
                 BS_AUTORADIOBUTTON | WS_GROUP, 36, 44, 92, 22, IDC_AUTO_FHM);
@@ -99,6 +131,14 @@ LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             AddSpin(hwnd, g_decayEdit, IDC_DECAY_SPIN, 0, 100);
             add(L"STATIC", L"%", SS_LEFT, 186, 186, 20, 20);
 
+            HWND fileHeatBtn = add(L"BUTTON", L"File heat",
+                BS_AUTOCHECKBOX, 36, 216, 120, 22, IDC_FILE_HEAT);
+            add(L"STATIC", L"File contribution:", SS_LEFT, 36, 250, 96, 20);
+            g_fileContributionEdit = add(L"EDIT", L"50", WS_BORDER | ES_NUMBER | ES_CENTER,
+                136, 246, 58, 22, IDC_FILE_CONTRIBUTION);
+            AddSpin(hwnd, g_fileContributionEdit, IDC_FILE_CONTRIBUTION_SPIN, 0, 100);
+            add(L"STATIC", L"%", SS_LEFT, 202, 250, 20, 20);
+
             header(L"Color behavior", 292, 126, 220);
             HWND smoothBtn = add(L"BUTTON", L"Smooth transitions",
                 BS_AUTOCHECKBOX, 300, 152, 154, 22, IDC_SMOOTH);
@@ -107,10 +147,9 @@ LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 412, 182, 58, 22, IDC_STEPS);
             AddSpin(hwnd, g_stepsEdit, IDC_STEPS_SPIN, 1, 16);
 
-            // Approved heat-map presentation: centered title, then one wide strip.
-            header(L"Color heat map", 28, 230, 484, SS_CENTER);
+            header(L"Color heat map", 28, 294, 484, SS_CENTER);
             constexpr int stripX = 28;
-            constexpr int stripY = 258;
+            constexpr int stripY = 322;
             constexpr int stripWidth = 484;
             constexpr int gap = 2;
             constexpr int swatchHeight = 36;
@@ -129,19 +168,21 @@ LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
 
             HWND helpBtn = add(L"BUTTON", L"Help", BS_PUSHBUTTON,
-                28, 326, 78, 30, IDC_HELP_BUTTON);
+                28, 390, 78, 30, IDC_HELP_BUTTON);
             g_saveButton = add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON,
-                356, 326, 78, 30, IDC_SAVE);
+                356, 390, 78, 30, IDC_SAVE);
             add(L"BUTTON", L"Cancel", BS_PUSHBUTTON,
-                442, 326, 78, 30, IDC_CANCEL);
+                442, 390, 78, 30, IDC_CANCEL);
 
             AddTooltip(autoBtn, L"Learns cooling speed from your Total Commander usage rhythm.");
             AddTooltip(manualBtn, L"Use a fixed cooling half-life instead of automatic learning.");
             AddTooltip(g_halfEdit, L"Manual cooling half-life. Range: 1-365 days.");
-            AddTooltip(pathBtn, L"Let the hottest descendant contribute heat to its parent path.");
-            AddTooltip(g_decayEdit, L"Descendant heat retained per directory level. Range: 0-100%.");
-            AddTooltip(g_cooldownEdit, L"Repeated entries inside this interval do not increase Heat. Range: 0-600 seconds.");
-            AddTooltip(g_sessionEdit, L"Idle gap after which recent work starts a new session. Range: 1-24 hours.");
+            AddTooltip(pathBtn, L"Let hot descendant folders contribute heat to their parent path.");
+            AddTooltip(g_decayEdit, L"Heat retained per directory level when propagating upward. Range: 0-100%.");
+            AddTooltip(fileHeatBtn, L"Color files from write activity. A file becomes hot when its Last Write timestamp changes; merely displaying it does not count as a visit.");
+            AddTooltip(g_fileContributionEdit, L"How strongly the hottest file warms its containing folder. Range: 0-100%.");
+            AddTooltip(g_cooldownEdit, L"Repeated directory entries inside this interval do not increase Heat. Range: 0-600 seconds.");
+            AddTooltip(g_sessionEdit, L"Idle gap after which recent directory work starts a new session. Range: 1-24 hours.");
             AddTooltip(smoothBtn, L"Generate intermediate Total Commander colors between heat anchors.");
             AddTooltip(g_stepsEdit, L"Intermediate color steps per heat level. Range: 1-16.");
             AddTooltip(helpBtn, L"Show help for FolderHeatMap settings.");
@@ -151,6 +192,8 @@ LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 BM_SETCHECK, BST_CHECKED, 0);
             SendDlgItemMessageW(hwnd, IDC_PATH, BM_SETCHECK,
                 g_settings.includePathHeat ? BST_CHECKED : BST_UNCHECKED, 0);
+            SendDlgItemMessageW(hwnd, IDC_FILE_HEAT, BM_SETCHECK,
+                g_settings.fileHeatEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
             SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_SETCHECK,
                 g_settings.smoothColors ? BST_CHECKED : BST_UNCHECKED, 0);
 
@@ -162,12 +205,14 @@ LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 std::to_wstring(g_settings.sessionResetHours).c_str());
             SetWindowTextW(g_decayEdit,
                 std::to_wstring(static_cast<int>(std::lround(g_settings.pathDecay * 100.0))).c_str());
+            SetWindowTextW(g_fileContributionEdit,
+                std::to_wstring(static_cast<int>(std::lround(g_settings.fileContribution * 100.0))).c_str());
             SetWindowTextW(g_stepsEdit,
                 std::to_wstring(g_settings.stepsPerLevel).c_str());
 
             g_initializing = false;
-            UpdateEnabledState(hwnd);
-            UpdateSaveState(hwnd);
+            UpdateEnabledStateWithFile(hwnd);
+            UpdateSaveStateWithFile(hwnd);
             return 0;
         }
 
@@ -201,20 +246,21 @@ LRESULT CALLBACK ConfigWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             if (id >= IDC_SWATCH_BASE && id <= IDC_SWATCH_BASE + 7 && code == STN_CLICKED) {
                 ChooseColor(hwnd, id - IDC_SWATCH_BASE);
+                UpdateSaveStateWithFile(hwnd);
                 return 0;
             }
             if (id == IDC_AUTO_FHM || id == IDC_MANUAL_FHM ||
-                id == IDC_PATH || id == IDC_SMOOTH) {
-                UpdateEnabledState(hwnd);
+                id == IDC_PATH || id == IDC_SMOOTH || id == IDC_FILE_HEAT) {
+                UpdateEnabledStateWithFile(hwnd);
                 return 0;
             }
             if ((id == IDC_HALF || id == IDC_DECAY || id == IDC_STEPS ||
-                 id == IDC_COOLDOWN || id == IDC_SESSION) && code == EN_CHANGE) {
-                UpdateSaveState(hwnd);
+                 id == IDC_COOLDOWN || id == IDC_SESSION || id == IDC_FILE_CONTRIBUTION) && code == EN_CHANGE) {
+                UpdateSaveStateWithFile(hwnd);
                 return 0;
             }
             if (id == IDC_HELP_BUTTON) { ShowHelp(hwnd); return 0; }
-            if (id == IDC_SAVE) { Save(hwnd); return 0; }
+            if (id == IDC_SAVE) { SaveWithFile(hwnd); return 0; }
             if (id == IDC_CANCEL) { DestroyWindow(hwnd); return 0; }
             return 0;
         }
@@ -297,7 +343,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     HWND hwnd = CreateWindowExW(
         WS_EX_APPWINDOW, WINDOW_CLASS, L"FolderHeatMap - Settings",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 556, 414,
+        CW_USEDEFAULT, CW_USEDEFAULT, 556, 478,
         nullptr, nullptr, instance, nullptr);
     if (!hwnd) {
         const DWORD err = GetLastError();
