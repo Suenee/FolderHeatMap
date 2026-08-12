@@ -10,6 +10,8 @@ struct Settings {
     double coolingHalfLifeDays = 30.0;
     bool includePathHeat = true;
     double pathDecay = 0.50;
+    bool fileHeatEnabled = true;
+    double fileContribution = 0.50;
     int repeatVisitCooldownSeconds = 90;
     int sessionResetHours = 8;
     bool smoothColors = true;
