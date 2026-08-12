@@ -22,11 +22,9 @@ constexpr int IDC_MANUAL_FHM = 1002;
 constexpr int IDC_HALF = 1003;
 constexpr int IDC_PATH = 1004;
 constexpr int IDC_DECAY = 1005;
-constexpr int IDC_DECAY_VALUE = 1006;
 constexpr int IDC_SMOOTH = 1007;
 constexpr int IDC_STEPS = 1008;
 constexpr int IDC_SAVE = 1009;
-constexpr int IDC_STATUS = 1010;
 constexpr int IDC_CANCEL = 1011;
 constexpr int IDC_HELP_BUTTON = 1012;
 constexpr int IDC_COOLDOWN = 1013;
@@ -35,6 +33,7 @@ constexpr int IDC_HALF_SPIN = 1015;
 constexpr int IDC_STEPS_SPIN = 1016;
 constexpr int IDC_COOLDOWN_SPIN = 1017;
 constexpr int IDC_SESSION_SPIN = 1018;
+constexpr int IDC_DECAY_SPIN = 1019;
 constexpr int IDC_SWATCH_BASE = 1200;
 constexpr int MAX_TC_COLOR_FILTERS = 999;
 constexpr int MAX_MANAGED_SEARCHES = 128;
@@ -42,23 +41,25 @@ constexpr wchar_t WINDOW_CLASS[] = L"FolderHeatMapConfigWindow";
 constexpr wchar_t SINGLE_INSTANCE_MUTEX[] = L"Local\\FolderHeatMapConfig.SingleInstance";
 
 fhm::Settings g_settings;
+fhm::Settings g_savedSettings;
 std::wstring g_wincmdIni;
 std::wstring g_settingsIni;
 std::array<HWND, 8> g_colorSwatches{};
 std::array<std::wstring, 8> g_swatchTooltips{};
 HWND g_halfEdit{};
-HWND g_decaySlider{};
-HWND g_decayValue{};
+HWND g_decayEdit{};
 HWND g_stepsEdit{};
 HWND g_cooldownEdit{};
 HWND g_sessionEdit{};
-HWND g_status{};
+HWND g_saveButton{};
 HWND g_tooltip{};
 HFONT g_boldFont{};
 HBRUSH g_windowBrush{};
 HINSTANCE g_instance{};
 HANDLE g_singleInstanceMutex{};
 COLORREF g_level0Color = RGB(0, 0, 0);
+COLORREF g_savedLevel0Color = RGB(0, 0, 0);
+bool g_initializing = true;
 
 std::wstring ExpandEnvironment(const std::wstring& value) {
     if (value.empty()) return {};
@@ -170,6 +171,47 @@ void AddTooltip(HWND control, const wchar_t* text) {
     SendMessageW(g_tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
 }
 
+int EditInt(HWND edit, int minValue, int maxValue, bool normalize = false) {
+    wchar_t buf[32]{};
+    GetWindowTextW(edit, buf, 32);
+    const int value = std::clamp(_wtoi(buf), minValue, maxValue);
+    if (normalize) SetWindowTextW(edit, std::to_wstring(value).c_str());
+    return value;
+}
+
+bool SettingsEqual(const fhm::Settings& a, const fhm::Settings& b) {
+    if (a.coolingAuto != b.coolingAuto ||
+        std::abs(a.coolingHalfLifeDays - b.coolingHalfLifeDays) > 0.0001 ||
+        a.includePathHeat != b.includePathHeat ||
+        std::abs(a.pathDecay - b.pathDecay) > 0.0001 ||
+        a.repeatVisitCooldownSeconds != b.repeatVisitCooldownSeconds ||
+        a.sessionResetHours != b.sessionResetHours ||
+        a.smoothColors != b.smoothColors ||
+        a.stepsPerLevel != b.stepsPerLevel) return false;
+    for (size_t i = 0; i < a.colors.size(); ++i) if (a.colors[i] != b.colors[i]) return false;
+    return true;
+}
+
+fhm::Settings ReadUiSettings(HWND hwnd, bool normalize) {
+    fhm::Settings s = g_settings;
+    s.coolingAuto = SendDlgItemMessageW(hwnd, IDC_AUTO_FHM, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s.coolingHalfLifeDays = EditInt(g_halfEdit, 1, 365, normalize);
+    s.includePathHeat = SendDlgItemMessageW(hwnd, IDC_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s.pathDecay = EditInt(g_decayEdit, 0, 100, normalize) / 100.0;
+    s.repeatVisitCooldownSeconds = EditInt(g_cooldownEdit, 0, 600, normalize);
+    s.sessionResetHours = EditInt(g_sessionEdit, 1, 24, normalize);
+    s.smoothColors = SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s.stepsPerLevel = EditInt(g_stepsEdit, 1, 16, normalize);
+    return s;
+}
+
+void UpdateSaveState(HWND hwnd) {
+    if (g_initializing || !g_saveButton) return;
+    const auto current = ReadUiSettings(hwnd, false);
+    const bool dirty = !SettingsEqual(current, g_savedSettings) || g_level0Color != g_savedLevel0Color;
+    EnableWindow(g_saveButton, dirty ? TRUE : FALSE);
+}
+
 void ChooseColor(HWND hwnd, int level) {
     if (level < 0 || level > 7) return;
     static COLORREF custom[16]{};
@@ -182,6 +224,7 @@ void ChooseColor(HWND hwnd, int level) {
     if (level == 0) g_level0Color = cc.rgbResult;
     else g_settings.colors[level] = cc.rgbResult;
     InvalidateRect(g_colorSwatches[level], nullptr, TRUE);
+    UpdateSaveState(hwnd);
 }
 
 HWND AddSpin(HWND hwnd, HWND buddy, int id, int minValue, int maxValue) {
@@ -359,23 +402,17 @@ bool ApplyTcColorRules() {
         GetPrivateProfileIntW(L"FolderHeatMap", L"ManagedColorRuleCount", 0, g_wincmdIni.c_str()) == expected;
 }
 
-int EditInt(HWND edit, int minValue, int maxValue) {
-    wchar_t buf[32]{};
-    GetWindowTextW(edit, buf, 32);
-    const int value = std::clamp(_wtoi(buf), minValue, maxValue);
-    SetWindowTextW(edit, std::to_wstring(value).c_str());
-    return value;
-}
-
 void UpdateEnabledState(HWND hwnd) {
     const bool manual = SendDlgItemMessageW(hwnd, IDC_MANUAL_FHM, BM_GETCHECK, 0, 0) == BST_CHECKED;
     EnableWindow(g_halfEdit, manual);
     EnableWindow(GetDlgItem(hwnd, IDC_HALF_SPIN), manual);
     const bool path = SendDlgItemMessageW(hwnd, IDC_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    EnableWindow(g_decaySlider, path);
+    EnableWindow(g_decayEdit, path);
+    EnableWindow(GetDlgItem(hwnd, IDC_DECAY_SPIN), path);
     const bool smooth = SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_GETCHECK, 0, 0) == BST_CHECKED;
     EnableWindow(g_stepsEdit, smooth);
     EnableWindow(GetDlgItem(hwnd, IDC_STEPS_SPIN), smooth);
+    UpdateSaveState(hwnd);
 }
 
 void Save(HWND hwnd) {
@@ -384,14 +421,7 @@ void Save(HWND hwnd) {
             L"FolderHeatMap", MB_ICONERROR);
         return;
     }
-    g_settings.coolingAuto = SendDlgItemMessageW(hwnd, IDC_AUTO_FHM, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    g_settings.coolingHalfLifeDays = EditInt(g_halfEdit, 1, 365);
-    g_settings.includePathHeat = SendDlgItemMessageW(hwnd, IDC_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    g_settings.pathDecay = static_cast<double>(SendMessageW(g_decaySlider, TBM_GETPOS, 0, 0)) / 100.0;
-    g_settings.repeatVisitCooldownSeconds = EditInt(g_cooldownEdit, 0, 600);
-    g_settings.sessionResetHours = EditInt(g_sessionEdit, 1, 24);
-    g_settings.smoothColors = SendDlgItemMessageW(hwnd, IDC_SMOOTH, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    g_settings.stepsPerLevel = EditInt(g_stepsEdit, 1, 16);
+    g_settings = ReadUiSettings(hwnd, true);
     if (!fhm::SaveSettings(g_settingsIni, g_settings)) {
         MessageBoxW(hwnd, L"Settings could not be saved.", L"FolderHeatMap", MB_ICONERROR);
         return;
@@ -409,7 +439,9 @@ void Save(HWND hwnd) {
         return;
     }
     if (wasRunning) StartTc();
-    SetWindowTextW(g_status, L"Saved.");
+    g_savedSettings = g_settings;
+    g_savedLevel0Color = g_level0Color;
+    UpdateSaveState(hwnd);
 }
 
 void ShowHelp(HWND hwnd) {
@@ -417,8 +449,8 @@ void ShowHelp(HWND hwnd) {
         L"Cooling\nAutomatic learns cooling speed from your Total Commander usage rhythm. Manual uses a fixed half-life from 1 to 365 days.\n\n"
         L"Activity tuning\nRepeat cooldown prevents rapid re-entry from inflating Heat. Session reset defines when recent work starts a new session.\n\n"
         L"Path heat\nA hot descendant can keep its parent path warm. Contribution is reduced for every level upward.\n\n"
-        L"Color map\nColors 0-7 are shown left to right. Color 0 is Total Commander's base text color (Colors / ForeColor), so changing it changes the normal Total Commander text color too. Colors 1-7 are FolderHeatMap heat anchors.\n\n"
-        L"Save writes settings and refreshes Total Commander. Cancel closes without saving current changes.",
+        L"Color heat map\nColors 0-7 are shown left to right. Level 0 is Total Commander's base text color and is editable. Levels 1-7 are FolderHeatMap heat anchors.\n\n"
+        L"Save is enabled only when something has changed. Save writes settings and refreshes Total Commander; Cancel closes without saving current changes.",
         L"FolderHeatMap - Help", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -455,60 +487,71 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (c && g_boldFont) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(g_boldFont), TRUE);
                 return c;
             };
+
             g_tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP,
                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, nullptr, g_instance, nullptr);
             SendMessageW(g_tooltip, TTM_SETMAXTIPWIDTH, 0, 360);
 
-            header(L"Cooling", 18, 14, 255);
-            HWND autoBtn = add(L"BUTTON", L"Automatic", BS_AUTORADIOBUTTON | WS_GROUP, 26, 38, 92, 22, IDC_AUTO_FHM);
-            HWND manualBtn = add(L"BUTTON", L"Manual", BS_AUTORADIOBUTTON, 122, 38, 74, 22, IDC_MANUAL_FHM);
-            add(L"STATIC", L"Half-life:", SS_LEFT, 26, 69, 65, 20);
-            g_halfEdit = add(L"EDIT", L"30", WS_BORDER | ES_NUMBER | ES_CENTER, 92, 66, 56, 21, IDC_HALF);
+            // Two-column settings area, based on the approved layout.
+            header(L"Cooling", 28, 18, 190);
+            HWND autoBtn = add(L"BUTTON", L"Automatic", BS_AUTORADIOBUTTON | WS_GROUP, 36, 44, 92, 22, IDC_AUTO_FHM);
+            HWND manualBtn = add(L"BUTTON", L"Manual", BS_AUTORADIOBUTTON, 132, 44, 78, 22, IDC_MANUAL_FHM);
+            add(L"STATIC", L"Half-life:", SS_LEFT, 36, 76, 62, 20);
+            g_halfEdit = add(L"EDIT", L"30", WS_BORDER | ES_NUMBER | ES_CENTER, 100, 72, 58, 22, IDC_HALF);
             AddSpin(hwnd, g_halfEdit, IDC_HALF_SPIN, 1, 365);
-            add(L"STATIC", L"days", SS_LEFT, 154, 69, 36, 20);
+            add(L"STATIC", L"days", SS_LEFT, 166, 76, 34, 20);
 
-            header(L"Activity tuning", 300, 14, 255);
-            add(L"STATIC", L"Repeat cooldown:", SS_LEFT, 308, 41, 108, 20);
-            g_cooldownEdit = add(L"EDIT", L"90", WS_BORDER | ES_NUMBER | ES_CENTER, 420, 38, 58, 21, IDC_COOLDOWN);
+            header(L"Activity tuning", 292, 18, 190);
+            add(L"STATIC", L"Repeat cooldown:", SS_LEFT, 300, 48, 108, 20);
+            g_cooldownEdit = add(L"EDIT", L"90", WS_BORDER | ES_NUMBER | ES_CENTER, 412, 44, 58, 22, IDC_COOLDOWN);
             AddSpin(hwnd, g_cooldownEdit, IDC_COOLDOWN_SPIN, 0, 600);
-            add(L"STATIC", L"sec", SS_LEFT, 486, 41, 30, 20);
-            add(L"STATIC", L"Session reset:", SS_LEFT, 308, 71, 108, 20);
-            g_sessionEdit = add(L"EDIT", L"8", WS_BORDER | ES_NUMBER | ES_CENTER, 420, 68, 58, 21, IDC_SESSION);
+            add(L"STATIC", L"sec", SS_LEFT, 478, 48, 28, 20);
+            add(L"STATIC", L"Session reset:", SS_LEFT, 300, 80, 108, 20);
+            g_sessionEdit = add(L"EDIT", L"8", WS_BORDER | ES_NUMBER | ES_CENTER, 412, 76, 58, 22, IDC_SESSION);
             AddSpin(hwnd, g_sessionEdit, IDC_SESSION_SPIN, 1, 24);
-            add(L"STATIC", L"hours", SS_LEFT, 486, 71, 42, 20);
+            add(L"STATIC", L"hours", SS_LEFT, 478, 80, 42, 20);
 
-            header(L"Path heat", 18, 108, 255);
-            HWND pathBtn = add(L"BUTTON", L"Include hot descendants", BS_AUTOCHECKBOX, 26, 132, 180, 22, IDC_PATH);
-            add(L"STATIC", L"Contribution:", SS_LEFT, 26, 161, 78, 20);
-            g_decaySlider = add(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS, 102, 154, 126, 28, IDC_DECAY);
-            SendMessageW(g_decaySlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
-            g_decayValue = add(L"STATIC", L"50%", SS_RIGHT, 232, 160, 40, 20, IDC_DECAY_VALUE);
+            header(L"Path heat", 28, 122, 190);
+            HWND pathBtn = add(L"BUTTON", L"Include hot descendants", BS_AUTOCHECKBOX, 36, 148, 182, 22, IDC_PATH);
+            add(L"STATIC", L"Contribution:", SS_LEFT, 36, 180, 82, 20);
+            g_decayEdit = add(L"EDIT", L"50", WS_BORDER | ES_NUMBER | ES_CENTER, 120, 176, 58, 22, IDC_DECAY);
+            AddSpin(hwnd, g_decayEdit, IDC_DECAY_SPIN, 0, 100);
+            add(L"STATIC", L"%", SS_LEFT, 186, 180, 20, 20);
 
-            header(L"Color behavior", 300, 108, 255);
-            HWND smoothBtn = add(L"BUTTON", L"Smooth transitions", BS_AUTOCHECKBOX, 308, 132, 150, 22, IDC_SMOOTH);
-            add(L"STATIC", L"Steps per level:", SS_LEFT, 308, 161, 108, 20);
-            g_stepsEdit = add(L"EDIT", L"4", WS_BORDER | ES_NUMBER | ES_CENTER, 420, 158, 58, 21, IDC_STEPS);
+            header(L"Color behavior", 292, 122, 190);
+            HWND smoothBtn = add(L"BUTTON", L"Smooth transitions", BS_AUTOCHECKBOX, 300, 148, 154, 22, IDC_SMOOTH);
+            add(L"STATIC", L"Steps per level:", SS_LEFT, 300, 180, 108, 20);
+            g_stepsEdit = add(L"EDIT", L"4", WS_BORDER | ES_NUMBER | ES_CENTER, 412, 176, 58, 22, IDC_STEPS);
             AddSpin(hwnd, g_stepsEdit, IDC_STEPS_SPIN, 1, 16);
 
-            header(L"Color map", 18, 204, 80);
-            const int swatchX = 92;
+            // Centered title and a full-width, contiguous heat strip.
+            HWND heatTitle = header(L"Color heat map", 0, 218, 540);
+            if (heatTitle) SetWindowLongPtrW(heatTitle, GWL_STYLE, GetWindowLongPtrW(heatTitle, GWL_STYLE) | SS_CENTER);
+            const int stripX = 28;
+            const int stripY = 246;
+            const int stripWidth = 484;
+            const int gap = 2;
+            const int swatchWidth = (stripWidth - gap * 7) / 8;
+            int x = stripX;
             for (int i = 0; i <= 7; ++i) {
-                const int x = swatchX + i * 31;
-                g_colorSwatches[i] = add(L"STATIC", L"", SS_OWNERDRAW | SS_NOTIFY, x, 199, 27, 27, IDC_SWATCH_BASE + i);
-                g_swatchTooltips[i] = i == 0 ? L"Color level 0 - Total Commander base text color." : L"Color level " + std::to_wstring(i) + L".";
+                const int w = (i == 7) ? (stripX + stripWidth - x) : swatchWidth;
+                g_colorSwatches[i] = add(L"STATIC", L"", SS_OWNERDRAW | SS_NOTIFY, x, stripY, w, 34, IDC_SWATCH_BASE + i);
+                g_swatchTooltips[i] = i == 0
+                    ? L"Heat level 0 color - Total Commander base text color (editable)."
+                    : L"Heat level " + std::to_wstring(i) + L" color.";
                 AddTooltip(g_colorSwatches[i], g_swatchTooltips[i].c_str());
+                x += w + gap;
             }
 
-            HWND helpBtn = add(L"BUTTON", L"Help", BS_PUSHBUTTON, 18, 252, 76, 29, IDC_HELP_BUTTON);
-            add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON, 394, 252, 76, 29, IDC_SAVE);
-            add(L"BUTTON", L"Cancel", BS_PUSHBUTTON, 478, 252, 76, 29, IDC_CANCEL);
-            g_status = add(L"STATIC", L"", SS_LEFT, 108, 258, 270, 22, IDC_STATUS);
+            HWND helpBtn = add(L"BUTTON", L"Help", BS_PUSHBUTTON, 28, 304, 78, 30, IDC_HELP_BUTTON);
+            g_saveButton = add(L"BUTTON", L"Save", BS_DEFPUSHBUTTON, 356, 304, 78, 30, IDC_SAVE);
+            add(L"BUTTON", L"Cancel", BS_PUSHBUTTON, 442, 304, 78, 30, IDC_CANCEL);
 
             AddTooltip(autoBtn, L"Learns cooling speed from your Total Commander usage rhythm.");
             AddTooltip(manualBtn, L"Use a fixed cooling half-life instead of automatic learning.");
             AddTooltip(g_halfEdit, L"Manual cooling half-life. Range: 1-365 days.");
             AddTooltip(pathBtn, L"Let the hottest descendant contribute heat to its parent path.");
-            AddTooltip(g_decaySlider, L"Descendant heat retained per directory level. Range: 0-100%.");
+            AddTooltip(g_decayEdit, L"Descendant heat retained per directory level. Range: 0-100%.");
             AddTooltip(g_cooldownEdit, L"Repeated entries inside this interval do not increase Heat. Range: 0-600 seconds.");
             AddTooltip(g_sessionEdit, L"Idle gap after which recent work starts a new session. Range: 1-24 hours.");
             AddTooltip(smoothBtn, L"Generate intermediate Total Commander colors between heat anchors.");
@@ -521,24 +564,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(g_halfEdit, std::to_wstring(static_cast<int>(g_settings.coolingHalfLifeDays)).c_str());
             SetWindowTextW(g_cooldownEdit, std::to_wstring(g_settings.repeatVisitCooldownSeconds).c_str());
             SetWindowTextW(g_sessionEdit, std::to_wstring(g_settings.sessionResetHours).c_str());
+            SetWindowTextW(g_decayEdit, std::to_wstring(static_cast<int>(std::lround(g_settings.pathDecay * 100.0))).c_str());
             SetWindowTextW(g_stepsEdit, std::to_wstring(g_settings.stepsPerLevel).c_str());
-            SendMessageW(g_decaySlider, TBM_SETPOS, TRUE, static_cast<LPARAM>(std::lround(g_settings.pathDecay * 100.0)));
-            SetWindowTextW(g_decayValue, (std::to_wstring(static_cast<int>(std::lround(g_settings.pathDecay * 100.0))) + L"%").c_str());
+            g_initializing = false;
             UpdateEnabledState(hwnd);
+            UpdateSaveState(hwnd);
             return 0;
         }
-        case WM_HSCROLL:
-            if (reinterpret_cast<HWND>(lp) == g_decaySlider) {
-                const int value = static_cast<int>(SendMessageW(g_decaySlider, TBM_GETPOS, 0, 0));
-                SetWindowTextW(g_decayValue, (std::to_wstring(value) + L"%").c_str());
-                return 0;
-            }
-            break;
+
         case WM_CTLCOLORSTATIC: {
             HDC dc = reinterpret_cast<HDC>(wp);
             SetBkMode(dc, TRANSPARENT);
             return reinterpret_cast<LRESULT>(g_windowBrush);
         }
+
         case WM_DRAWITEM: {
             const auto* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
             if (dis && dis->CtlID >= IDC_SWATCH_BASE && dis->CtlID <= IDC_SWATCH_BASE + 7) {
@@ -553,9 +592,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         }
+
         case WM_COMMAND: {
             const int id = LOWORD(wp);
-            if (id >= IDC_SWATCH_BASE && id <= IDC_SWATCH_BASE + 7 && HIWORD(wp) == STN_CLICKED) {
+            const int code = HIWORD(wp);
+            if (id >= IDC_SWATCH_BASE && id <= IDC_SWATCH_BASE + 7 && code == STN_CLICKED) {
                 ChooseColor(hwnd, id - IDC_SWATCH_BASE);
                 return 0;
             }
@@ -563,14 +604,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 UpdateEnabledState(hwnd);
                 return 0;
             }
+            if ((id == IDC_HALF || id == IDC_DECAY || id == IDC_STEPS || id == IDC_COOLDOWN || id == IDC_SESSION) && code == EN_CHANGE) {
+                UpdateSaveState(hwnd);
+                return 0;
+            }
             if (id == IDC_HELP_BUTTON) { ShowHelp(hwnd); return 0; }
             if (id == IDC_SAVE) { Save(hwnd); return 0; }
             if (id == IDC_CANCEL) { DestroyWindow(hwnd); return 0; }
             return 0;
         }
+
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
+
         case WM_DESTROY:
             if (g_boldFont) { DeleteObject(g_boldFont); g_boldFont = nullptr; }
             PostQuitMessage(0);
@@ -591,7 +638,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
         return 0;
     }
 
-    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_BAR_CLASSES | ICC_UPDOWN_CLASS | ICC_WIN95_CLASSES};
+    INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_UPDOWN_CLASS | ICC_WIN95_CLASSES};
     InitCommonControlsEx(&icc);
 
     g_wincmdIni = FindWincmdIni();
@@ -600,11 +647,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
 
     g_settingsIni = fhm::SettingsPathFromDefaultIni(g_wincmdIni);
     fhm::LoadSettings(g_settingsIni, g_settings);
+    g_savedSettings = g_settings;
     g_level0Color = TcBaseColor();
+    g_savedLevel0Color = g_level0Color;
     g_windowBrush = GetSysColorBrush(COLOR_WINDOW);
 
     HICON appIcon = static_cast<HICON>(LoadImageW(instance, L"IDI_FHM_CONFIG", IMAGE_ICON, 0, 0, LR_DEFAULTSIZE));
-    HICON smallIcon = static_cast<HICON>(LoadImageW(instance, L"IDI_FHM_CONFIG", IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+    HICON smallIcon = static_cast<HICON>(LoadImageW(instance, L"IDI_FHM_CONFIG", IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -618,17 +668,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     const ATOM atom = RegisterClassExW(&wc);
     if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         const DWORD err = GetLastError();
-        MessageBoxW(nullptr, (L"Could not register the settings window. Windows error: " + std::to_wstring(err)).c_str(), L"FolderHeatMap", MB_ICONERROR);
+        MessageBoxW(nullptr, (L"Could not register the settings window. Windows error: " + std::to_wstring(err)).c_str(),
+            L"FolderHeatMap", MB_ICONERROR);
         CloseHandle(g_singleInstanceMutex);
         return 2;
     }
 
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, WINDOW_CLASS, L"FolderHeatMap - Settings",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 590, 330, nullptr, nullptr, instance, nullptr);
+        CW_USEDEFAULT, CW_USEDEFAULT, 556, 386, nullptr, nullptr, instance, nullptr);
     if (!hwnd) {
         const DWORD err = GetLastError();
-        MessageBoxW(nullptr, (L"Could not create the settings window. Windows error: " + std::to_wstring(err)).c_str(), L"FolderHeatMap", MB_ICONERROR);
+        MessageBoxW(nullptr, (L"Could not create the settings window. Windows error: " + std::to_wstring(err)).c_str(),
+            L"FolderHeatMap", MB_ICONERROR);
         CloseHandle(g_singleInstanceMutex);
         return 3;
     }
