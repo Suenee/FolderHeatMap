@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <array>
@@ -76,8 +77,27 @@ void UpdateColorButton(int level) {
     if (g_colorSwatches[level]) InvalidateRect(g_colorSwatches[level], nullptr, TRUE);
 }
 
+std::vector<DWORD> TcProcessIds() {
+    std::vector<DWORD> result;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return result;
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (_wcsicmp(entry.szExeFile, L"TOTALCMD64.EXE") == 0 ||
+                _wcsicmp(entry.szExeFile, L"TOTALCMD.EXE") == 0) {
+                result.push_back(entry.th32ProcessID);
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return result;
+}
+
 bool IsTcRunning() {
-    return FindWindowW(L"TTOTAL_CMD", nullptr) != nullptr;
+    return !TcProcessIds().empty();
 }
 
 std::wstring FindTcExe() {
@@ -95,15 +115,37 @@ std::wstring FindTcExe() {
     return {};
 }
 
+BOOL CALLBACK CloseTcWindow(HWND hwnd, LPARAM) {
+    wchar_t cls[128]{};
+    if (GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls))) > 0 && wcscmp(cls, L"TTOTAL_CMD") == 0) {
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+    return TRUE;
+}
+
 bool StopTc() {
-    HWND hwnd = FindWindowW(L"TTOTAL_CMD", nullptr);
-    if (!hwnd) return true;
-    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    if (!IsTcRunning()) return true;
+
+    EnumWindows(CloseTcWindow, 0);
     for (int i = 0; i < 50; ++i) {
         Sleep(100);
-        if (!FindWindowW(L"TTOTAL_CMD", nullptr)) return true;
+        if (!IsTcRunning()) return true;
     }
-    return false;
+
+    const auto remaining = TcProcessIds();
+    for (DWORD pid : remaining) {
+        HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+        if (!process) continue;
+        TerminateProcess(process, 0);
+        WaitForSingleObject(process, 3000);
+        CloseHandle(process);
+    }
+
+    for (int i = 0; i < 30; ++i) {
+        if (!IsTcRunning()) return true;
+        Sleep(100);
+    }
+    return !IsTcRunning();
 }
 
 void StartTc() {
@@ -160,8 +202,6 @@ void WriteColorRuleIndex(int index, const ExistingColorRule& rule) {
 }
 
 void CreateManagedSearch(const std::wstring& name, double threshold) {
-    // This mirrors the exact format produced by Total Commander 11.58 when
-    // a saved search is created through: Define selection -> Plugins.
     WritePrivateProfileStringW(L"searches", (name + L"_SearchFor").c_str(), L"", g_wincmdIni.c_str());
     WritePrivateProfileStringW(L"searches", (name + L"_SearchIn").c_str(), L"", g_wincmdIni.c_str());
     WritePrivateProfileStringW(L"searches", (name + L"_SearchText").c_str(), L"", g_wincmdIni.c_str());
@@ -182,8 +222,6 @@ void WriteManagedColorRules() {
     CleanupManagedSearches();
     RemoveLegacyColorKeys();
 
-    // Preserve all user-created TC color filters, but put FolderHeatMap rules
-    // first so a generic user filter cannot hide the heat color of a hot folder.
     std::vector<ExistingColorRule> existing;
     existing.reserve(32);
     for (int i = 1; i <= MAX_TC_COLOR_FILTERS; ++i) {
@@ -199,15 +237,8 @@ void WriteManagedColorRules() {
     const int steps = g_settings.smoothColors ? std::clamp(g_settings.stepsPerLevel, 1, 16) : 1;
     int tcRuleIndex = 1;
     int managedCount = 0;
-
-    // TC saved-search plugin expressions are most reliable as a single
-    // comparison (e.g. "folderheatmap.Heat > 4"). Therefore we build
-    // descending thresholds. The first matching color rule wins.
-    // A tiny epsilon makes exact level values (4.000 etc.) belong to that level
-    // while still using the proven '>' operator written by TC itself.
     constexpr double EPSILON = 0.001;
 
-    // Level 7 catches everything at 7 and above.
     {
         const std::wstring searchName = ManagedSearchName(++managedCount);
         CreateManagedSearch(searchName, 7.0 - EPSILON);
@@ -215,8 +246,6 @@ void WriteManagedColorRules() {
             std::to_wstring(static_cast<unsigned long>(static_cast<COLORREF>(g_settings.colors[7]))), L""});
     }
 
-    // Descend from the hottest interval to the coolest so higher heat never
-    // gets swallowed by a lower threshold.
     for (int level = 6; level >= 1; --level) {
         const COLORREF from = static_cast<COLORREF>(g_settings.colors[level]);
         const COLORREF to = static_cast<COLORREF>(g_settings.colors[level + 1]);
@@ -231,7 +260,6 @@ void WriteManagedColorRules() {
         }
     }
 
-    // Append the user's original TC color filters unchanged.
     for (const auto& rule : existing) {
         if (tcRuleIndex > MAX_TC_COLOR_FILTERS) break;
         WriteColorRuleIndex(tcRuleIndex++, rule);
@@ -267,7 +295,7 @@ void Apply(HWND hwnd) {
 
     const bool wasRunning = IsTcRunning();
     if (wasRunning && !StopTc()) {
-        MessageBoxW(hwnd, L"Total Commander se nepodařilo ukončit. Nastavení je uložené, ale barvy nebyly změněny.", L"FolderHeatMap", MB_ICONWARNING);
+        MessageBoxW(hwnd, L"Total Commander se nepodařilo ukončit ani po vynuceném pokusu. Nastavení je uložené, ale barvy nebyly změněny.", L"FolderHeatMap", MB_ICONWARNING);
         return;
     }
 
