@@ -8,6 +8,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct sqlite3;
 
@@ -32,6 +34,8 @@ public:
 
     bool RecordVisit(const FolderIdentity& identity, const FILETIME& now);
     std::optional<StoredActivity> GetActivity(const FolderIdentity& identity);
+    std::vector<std::pair<std::wstring, StoredActivity>> GetVolumeActivities(const std::wstring& volumeId);
+    int GetRecentActiveDays(const FILETIME& now, int windowDays);
 
 private:
     bool EnsureSchema();
