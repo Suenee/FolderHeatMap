@@ -79,16 +79,18 @@ if exist build rmdir /s /q build
 rem Legacy versions occasionally left an executable in the repository root.
 rem It must never shadow the deployed dist copy.
 if exist "FolderHeatMapConfig.exe" del /f /q "FolderHeatMapConfig.exe" >nul 2>nul
+if exist "FolderHeatMapReset.exe" del /f /q "FolderHeatMapReset.exe" >nul 2>nul
 echo [2/5] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
-echo [3/5] Building FolderHeatMap plugin and settings GUI...
+echo [3/5] Building FolderHeatMap plugin, settings GUI and reset utility...
 "%CMAKE%" --build build --config Release
 if errorlevel 1 goto build_error
 
 echo [4/5] Preparing dist folder...
-rem Both the settings GUI and Total Commander can lock files directly in dist.
+rem The settings GUI and reset utility may lock files directly in dist.
 taskkill /IM FolderHeatMapConfig.exe >nul 2>nul
+taskkill /IM FolderHeatMapReset.exe >nul 2>nul
 for /l %%N in (1,1,20) do (
     tasklist /FI "IMAGENAME eq FolderHeatMapConfig.exe" 2>nul | find /I "FolderHeatMapConfig.exe" >nul || goto config_closed
     timeout /t 1 /nobreak >nul
@@ -105,6 +107,8 @@ if not exist dist mkdir dist
 copy /y "build\Release\FolderHeatMap.wdx64" "dist\FolderHeatMap.wdx64" >nul
 if errorlevel 1 goto dist_error
 copy /y "build\Release\FolderHeatMapConfig.exe" "dist\FolderHeatMapConfig.exe" >nul
+if errorlevel 1 goto dist_error
+copy /y "build\Release\FolderHeatMapReset.exe" "dist\FolderHeatMapReset.exe" >nul
 if errorlevel 1 goto dist_error
 copy /y "configure.cmd" "dist\configure.cmd" >nul
 copy /y "README.md" "dist\README.md" >nul
@@ -134,6 +138,7 @@ echo.
 echo SUCCESS.
 echo Plugin:    %CD%\dist\FolderHeatMap.wdx64
 echo Settings:  %CD%\dist\FolderHeatMapConfig.exe
+echo Reset:     %CD%\dist\FolderHeatMapReset.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE (
     call :is_tc_running
     if "!TC_RUNNING!"=="0" (
