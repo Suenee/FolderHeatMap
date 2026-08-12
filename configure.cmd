@@ -2,9 +2,10 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
+rem Always prefer the deployed configurator. Do not launch stale copies from
+rem the repository root; upgrade.cmd removes those legacy copies as well.
 set "CONFIG_EXE="
-if exist "FolderHeatMapConfig.exe" set "CONFIG_EXE=%CD%\FolderHeatMapConfig.exe"
-if not defined CONFIG_EXE if exist "dist\FolderHeatMapConfig.exe" set "CONFIG_EXE=%CD%\dist\FolderHeatMapConfig.exe"
+if exist "dist\FolderHeatMapConfig.exe" set "CONFIG_EXE=%CD%\dist\FolderHeatMapConfig.exe"
 if not defined CONFIG_EXE if exist "build\Release\FolderHeatMapConfig.exe" set "CONFIG_EXE=%CD%\build\Release\FolderHeatMapConfig.exe"
 
 if not defined CONFIG_EXE (
@@ -44,7 +45,6 @@ if "%RC%"=="2" (
 )
 
 echo.
-echo IMPORTANT: If src\ConfigApp.cpp changed after your last successful upgrade,
-echo run upgrade.cmd before testing configure.cmd, otherwise dist contains the old EXE.
+echo IMPORTANT: Run upgrade.cmd after source changes before testing configure.cmd.
 pause
 exit /b %RC%
