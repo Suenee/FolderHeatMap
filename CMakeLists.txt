@@ -28,9 +28,7 @@ target_compile_definitions(FolderHeatMap PRIVATE
     SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION
 )
 
-# The approved configurator artwork is stored as Base64 so it can live in the
-# repository through text-only tooling. Decode it during configure and embed it
-# as the native Windows executable/window icon.
+# Configurator native icon.
 set(FHM_CONFIG_ICON_B64 "${CMAKE_SOURCE_DIR}/assets/FolderHeatMapConfig.ico.b64")
 set(FHM_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 set(FHM_CONFIG_ICON "${FHM_GENERATED_DIR}/FolderHeatMapConfig.ico")
@@ -46,9 +44,6 @@ if(NOT FHM_ICON_DECODE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_CONFIG_ICON}")
 endif()
 file(WRITE "${FHM_CONFIG_RC}" "IDI_FHM_CONFIG ICON \"${FHM_CONFIG_ICON}\"\n")
 
-# ConfigAppCompile.cpp is the tuned/working configurator entry point. It wraps
-# the shared ConfigApp.cpp backend and deliberately includes the Win32 headers
-# before it, avoiding Windows resource macro collisions.
 add_executable(FolderHeatMapConfig WIN32
     src/ConfigAppCompile.cpp
     src/Settings.cpp
@@ -59,9 +54,6 @@ target_compile_features(FolderHeatMapConfig PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMapConfig PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(FolderHeatMapConfig PRIVATE comdlg32 shell32 advapi32 comctl32)
 
-# Small toolbar/user-command utility. Total Commander can pass a Unicode list
-# of selected items via --list "%WL". It resets direct heat and optionally the
-# complete subtree while keeping file timestamps as new cold baselines.
 add_executable(FolderHeatMapReset WIN32
     src/ResetApp.cpp
     src/ResetDatabase.cpp
@@ -78,8 +70,14 @@ target_compile_definitions(FolderHeatMapReset PRIVATE
 target_link_libraries(FolderHeatMapReset PRIVATE shell32 advapi32)
 
 if(MSVC)
+    # Force-include the async facade only into FolderHeatMap.cpp. The header
+    # aliases fhm::Database after Database.h has been parsed, so the existing
+    # plugin code uses AsyncDatabase while Database.cpp/reset stay unchanged.
+    set_source_files_properties(src/FolderHeatMap.cpp PROPERTIES
+        COMPILE_DEFINITIONS "FHM_USE_ASYNC_DATABASE"
+        COMPILE_OPTIONS "/FIAsyncCache.h"
+    )
     target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc /utf-8)
-    set_source_files_properties(src/FolderHeatMap.cpp PROPERTIES COMPILE_OPTIONS "/FIUseAsyncCache.h")
     target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /utf-8 /FIwindows.h /FIshellapi.h)
     target_compile_options(FolderHeatMapReset PRIVATE /W4 /permissive- /EHsc /utf-8)
     set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
