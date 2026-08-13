@@ -145,7 +145,23 @@ public:
     }
 
     int GetRecentActiveDays(const FILETIME& now, int windowDays) {
-        return database_.GetRecentActiveDays(now, windowDays);
+        // Auto-cooling changes slowly. Avoid repeating this aggregate SQLite
+        // query for every WDX field request in the same panel refresh.
+        const auto tick = std::chrono::steady_clock::now();
+        {
+            std::scoped_lock lock(activeDaysMutex_);
+            if (activeDaysValid_ && tick - activeDaysUpdated_ < activeDaysLifetime_ && windowDays == activeDaysWindow_)
+                return activeDaysValue_;
+        }
+        const int value = database_.GetRecentActiveDays(now, windowDays);
+        {
+            std::scoped_lock lock(activeDaysMutex_);
+            activeDaysValue_ = value;
+            activeDaysWindow_ = windowDays;
+            activeDaysUpdated_ = tick;
+            activeDaysValid_ = true;
+        }
+        return value;
     }
 
 private:
@@ -159,7 +175,8 @@ private:
         std::wstring volumeId;
     };
 
-    static constexpr auto cacheLifetime_ = std::chrono::seconds(2);
+    static constexpr auto cacheLifetime_ = std::chrono::seconds(5);
+    static constexpr auto activeDaysLifetime_ = std::chrono::seconds(30);
 
     void Queue(Job job) {
         std::scoped_lock lock(queueMutex_);
@@ -242,6 +259,20 @@ private:
     std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> fileUpdated_;
     std::unordered_map<std::wstring, bool> folderRefreshPending_;
     std::unordered_map<std::wstring, bool> fileRefreshPending_;
+
+    std::mutex activeDaysMutex_;
+    bool activeDaysValid_ = false;
+    int activeDaysWindow_ = 0;
+    int activeDaysValue_ = 0;
+    std::chrono::steady_clock::time_point activeDaysUpdated_{};
 };
 
 } // namespace fhm
+
+// FolderHeatMap.cpp historically names the facade fhm::Database. For the WDX
+// target only, CMake force-includes this header before FolderHeatMap.cpp and
+// enables this alias. Database.cpp and the reset utility keep the synchronous
+// class untouched.
+#ifdef FHM_USE_ASYNC_DATABASE
+#define Database AsyncDatabase
+#endif
