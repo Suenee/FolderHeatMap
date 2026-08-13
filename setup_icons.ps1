@@ -50,7 +50,7 @@ function Find-WincmdIni {
 }
 
 function Read-FhmColor([int]$level) {
-    $defaults = @(0, 7925840, 5954690, 4643272, 4312565, 3644410, 3955445, 7870197)
+    $defaults = @(0, 7915600, 5954690, 4645320, 4312565, 3644410, 3955445, 7882485)
     $settingsIni = Join-Path (Split-Path -Parent $script:WincmdIni) 'FolderHeatMap.ini'
     if (-not (Test-Path -LiteralPath $settingsIni)) { return [uint32]$defaults[$level] }
     $sb = New-Object System.Text.StringBuilder 64
@@ -66,7 +66,7 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
     $g = [int](($colorRef -shr 8) -band 0xff)
     $b = [int](($colorRef -shr 16) -band 0xff)
 
-    $bmp = New-Object System.Drawing.Bitmap 32,32,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+    $bmp = New-Object System.Drawing.Bitmap -ArgumentList 32,32,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb
     $gfx = [System.Drawing.Graphics]::FromImage($bmp)
     try {
         $gfx.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -74,10 +74,10 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
         $base = [System.Drawing.Color]::FromArgb(255,$r,$g,$b)
         $dark = [System.Drawing.Color]::FromArgb(255,[Math]::Max(0,$r-65),[Math]::Max(0,$g-65),[Math]::Max(0,$b-65))
         $light = [System.Drawing.Color]::FromArgb(255,[Math]::Min(255,$r+55),[Math]::Min(255,$g+55),[Math]::Min(255,$b+55))
-        $shadow = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(70,0,0,0))
-        $fill = New-Object System.Drawing.SolidBrush $base
-        $tab = New-Object System.Drawing.SolidBrush $light
-        $pen = New-Object System.Drawing.Pen $dark,1.4
+        $shadow = New-Object System.Drawing.SolidBrush -ArgumentList ([System.Drawing.Color]::FromArgb(70,0,0,0))
+        $fill = New-Object System.Drawing.SolidBrush -ArgumentList $base
+        $tab = New-Object System.Drawing.SolidBrush -ArgumentList $light
+        $pen = New-Object System.Drawing.Pen -ArgumentList $dark,1.4
         try {
             $gfx.FillRectangle($shadow, 4,10,25,18)
             $gfx.FillRectangle($tab, 3,6,11,7)
@@ -86,7 +86,7 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
             $gfx.DrawLine($pen,3,10,3,7)
             $gfx.DrawLine($pen,3,7,13,7)
             $gfx.DrawLine($pen,13,7,16,10)
-            $highlight = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(150,255,255,255)),1
+            $highlight = New-Object System.Drawing.Pen -ArgumentList ([System.Drawing.Color]::FromArgb(150,255,255,255)),1
             try { $gfx.DrawLine($highlight,5,12,26,12) } finally { $highlight.Dispose() }
         } finally {
             $shadow.Dispose(); $fill.Dispose(); $tab.Dispose(); $pen.Dispose()
@@ -97,7 +97,7 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
             $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
             $data = $png.ToArray()
             $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-            $bw = New-Object System.IO.BinaryWriter $fs
+            $bw = New-Object System.IO.BinaryWriter -ArgumentList $fs
             try {
                 $bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]1)
                 $bw.Write([byte]32); $bw.Write([byte]32); $bw.Write([byte]0); $bw.Write([byte]0)
