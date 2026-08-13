@@ -17,6 +17,11 @@ struct Settings {
     bool smoothColors = true;
     int stepsPerLevel = 4;
     std::array<unsigned long, 8> colors{}; // Win32 COLORREF; index 0 is unused/default.
+
+    // Optional custom source artwork for folder heat levels 1-7.
+    // Empty = use the automatically generated folder icon based on the heat color.
+    // Level 0 deliberately stays empty/read-only and uses Total Commander's normal folder icon.
+    std::array<std::wstring, 8> folderIconSources{};
 };
 
 Settings DefaultSettings();
