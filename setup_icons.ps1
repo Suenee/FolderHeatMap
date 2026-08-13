@@ -21,6 +21,12 @@ function Read-IniValue([string]$section, [string]$key, [string]$default = '') {
     $sb.ToString()
 }
 
+function Read-IniValueFrom([string]$file, [string]$section, [string]$key, [string]$default = '') {
+    $sb = New-Object System.Text.StringBuilder 8192
+    [void][FhmIni]::GetPrivateProfileString($section, $key, $default, $sb, [uint32]$sb.Capacity, $file)
+    $sb.ToString()
+}
+
 function Write-IniValue([string]$section, [string]$key, [AllowNull()][string]$value) {
     if (-not [FhmIni]::WritePrivateProfileString($section, $key, $value, $script:WincmdIni)) {
         throw "Could not update [$section] $key in $script:WincmdIni"
@@ -35,7 +41,6 @@ function Expand-Value([string]$value) {
 function Find-WincmdIni {
     $candidate = Expand-Value $env:COMMANDER_INI
     if ($candidate -and (Test-Path -LiteralPath $candidate)) { return (Resolve-Path -LiteralPath $candidate).Path }
-
     foreach ($regPath in @('HKCU:\Software\Ghisler\Total Commander','HKLM:\Software\Ghisler\Total Commander')) {
         try {
             $value = (Get-ItemProperty -LiteralPath $regPath -Name IniFileName -ErrorAction Stop).IniFileName
@@ -43,7 +48,6 @@ function Find-WincmdIni {
             if ($candidate -and (Test-Path -LiteralPath $candidate)) { return (Resolve-Path -LiteralPath $candidate).Path }
         } catch {}
     }
-
     $candidate = Join-Path $env:APPDATA 'GHISLER\wincmd.ini'
     if (Test-Path -LiteralPath $candidate) { return (Resolve-Path -LiteralPath $candidate).Path }
     throw 'Could not locate Total Commander wincmd.ini.'
@@ -51,13 +55,33 @@ function Find-WincmdIni {
 
 function Read-FhmColor([int]$level) {
     $defaults = @(0, 7915600, 5954690, 4645320, 4312565, 3644410, 3955445, 7882485)
-    $settingsIni = Join-Path (Split-Path -Parent $script:WincmdIni) 'FolderHeatMap.ini'
-    if (-not (Test-Path -LiteralPath $settingsIni)) { return [uint32]$defaults[$level] }
-    $sb = New-Object System.Text.StringBuilder 64
-    [void][FhmIni]::GetPrivateProfileString('Colors', "Color$level", [string]$defaults[$level], $sb, [uint32]$sb.Capacity, $settingsIni)
+    if (-not (Test-Path -LiteralPath $script:SettingsIni)) { return [uint32]$defaults[$level] }
+    $raw = Read-IniValueFrom $script:SettingsIni 'Colors' "Color$level" ([string]$defaults[$level])
     $parsed = 0L
-    if ([Int64]::TryParse($sb.ToString(), [ref]$parsed)) { return [uint32]$parsed }
+    if ([Int64]::TryParse($raw, [ref]$parsed)) { return [uint32]$parsed }
     [uint32]$defaults[$level]
+}
+
+function Read-FhmIconSource([int]$level) {
+    if (-not (Test-Path -LiteralPath $script:SettingsIni)) { return '' }
+    Expand-Value (Read-IniValueFrom $script:SettingsIni 'FolderIcons' "IconSource$level" '')
+}
+
+function Save-BitmapAsIco([System.Drawing.Bitmap]$bmp, [string]$path) {
+    $png = [System.IO.MemoryStream]::new()
+    try {
+        $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
+        $data = $png.ToArray()
+        $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+        $bw = [System.IO.BinaryWriter]::new($fs)
+        try {
+            $bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]1)
+            $bw.Write([byte]32); $bw.Write([byte]32); $bw.Write([byte]0); $bw.Write([byte]0)
+            $bw.Write([uint16]1); $bw.Write([uint16]32)
+            $bw.Write([uint32]$data.Length); $bw.Write([uint32]22)
+            $bw.Write($data)
+        } finally { $bw.Dispose(); $fs.Dispose() }
+    } finally { $png.Dispose() }
 }
 
 function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
@@ -65,10 +89,6 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
     $r = [int]($colorRef -band 0xff)
     $g = [int](($colorRef -shr 8) -band 0xff)
     $b = [int](($colorRef -shr 16) -band 0xff)
-
-    # Use the .NET constructor directly. Windows PowerShell's New-Object
-    # argument binder can stringify PixelFormat and fail to select the
-    # Bitmap(Int32, Int32, PixelFormat) overload.
     $bmp = [System.Drawing.Bitmap]::new(32, 32, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $gfx = [System.Drawing.Graphics]::FromImage($bmp)
     try {
@@ -91,28 +111,39 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
             $gfx.DrawLine($pen,13,7,16,10)
             $highlight = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(150,255,255,255), [single]1.0)
             try { $gfx.DrawLine($highlight,5,12,26,12) } finally { $highlight.Dispose() }
-        } finally {
-            $shadow.Dispose(); $fill.Dispose(); $tab.Dispose(); $pen.Dispose()
-        }
-
-        $png = [System.IO.MemoryStream]::new()
-        try {
-            $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
-            $data = $png.ToArray()
-            $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-            $bw = [System.IO.BinaryWriter]::new($fs)
-            try {
-                $bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]1)
-                $bw.Write([byte]32); $bw.Write([byte]32); $bw.Write([byte]0); $bw.Write([byte]0)
-                $bw.Write([uint16]1); $bw.Write([uint16]32)
-                $bw.Write([uint32]$data.Length); $bw.Write([uint32]22)
-                $bw.Write($data)
-            } finally { $bw.Dispose(); $fs.Dispose() }
-        } finally { $png.Dispose() }
+        } finally { $shadow.Dispose(); $fill.Dispose(); $tab.Dispose(); $pen.Dispose() }
+        Save-BitmapAsIco $bmp $path
     } finally { $gfx.Dispose(); $bmp.Dispose() }
 }
 
+function Write-CustomFolderIcon([string]$source, [string]$path) {
+    Add-Type -AssemblyName System.Drawing
+    if (-not (Test-Path -LiteralPath $source)) { throw "Custom icon source not found: $source" }
+    if ([IO.Path]::GetExtension($source).Equals('.ico', [StringComparison]::OrdinalIgnoreCase)) {
+        Copy-Item -LiteralPath $source -Destination $path -Force
+        return
+    }
+    $image = [System.Drawing.Image]::FromFile($source)
+    try {
+        $bmp = [System.Drawing.Bitmap]::new(32, 32, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+        try {
+            $gfx.Clear([System.Drawing.Color]::Transparent)
+            $gfx.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $gfx.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+            $scale = [Math]::Min(32.0 / $image.Width, 32.0 / $image.Height)
+            $w = [Math]::Max(1, [int][Math]::Round($image.Width * $scale))
+            $h = [Math]::Max(1, [int][Math]::Round($image.Height * $scale))
+            $x = [int]((32 - $w) / 2)
+            $y = [int]((32 - $h) / 2)
+            $gfx.DrawImage($image, $x, $y, $w, $h)
+            Save-BitmapAsIco $bmp $path
+        } finally { $gfx.Dispose(); $bmp.Dispose() }
+    } finally { $image.Dispose() }
+}
+
 $script:WincmdIni = Find-WincmdIni
+$script:SettingsIni = Join-Path (Split-Path -Parent $script:WincmdIni) 'FolderHeatMap.ini'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $backup = "$script:WincmdIni.fhm-icons-$stamp.bak"
 Copy-Item -LiteralPath $script:WincmdIni -Destination $backup -Force
@@ -140,7 +171,10 @@ if ($Remove) {
 $iconDir = Join-Path (Split-Path -Parent $script:WincmdIni) 'FolderHeatMapIcons'
 New-Item -ItemType Directory -Path $iconDir -Force | Out-Null
 for ($level=1; $level -le 7; $level++) {
-    Write-HeatFolderIcon (Join-Path $iconDir "heat-$level.ico") (Read-FhmColor $level)
+    $target = Join-Path $iconDir "heat-$level.ico"
+    $source = Read-FhmIconSource $level
+    if ($source) { Write-CustomFolderIcon $source $target }
+    else { Write-HeatFolderIcon $target (Read-FhmColor $level) }
 }
 
 $start = 1
@@ -163,7 +197,6 @@ for ($level=7; $level -ge 1; $level--) {
     Write-IniValue 'searches' ($name + '_SearchFlags') '0|002002000020||||||||22221|0000|||'
     $threshold = ([double]$level - 0.001).ToString('0.000', [Globalization.CultureInfo]::InvariantCulture)
     Write-IniValue 'searches' ($name + '_plugin') "folderheatmap.Heat > $threshold"
-
     $base = "Filter$slot"
     Write-IniValue 'Associations' $base (">$name")
     Write-IniValue 'Associations' ($base + '.icon') (Join-Path $iconDir "heat-$level.ico")
