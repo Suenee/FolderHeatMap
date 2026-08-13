@@ -79,6 +79,7 @@ target_link_libraries(FolderHeatMapReset PRIVATE shell32 advapi32)
 
 if(MSVC)
     target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc /utf-8)
+    set_source_files_properties(src/FolderHeatMap.cpp PROPERTIES COMPILE_OPTIONS "/FIUseAsyncCache.h")
     target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /utf-8 /FIwindows.h /FIshellapi.h)
     target_compile_options(FolderHeatMapReset PRIVATE /W4 /permissive- /EHsc /utf-8)
     set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
