@@ -18,6 +18,12 @@ unsigned long ReadColor(const std::wstring& ini, int index, unsigned long fallba
     const unsigned long parsed = wcstoul(value, &end, 10);
     return end != value ? parsed : fallback;
 }
+
+std::wstring ReadString(const std::wstring& ini, const wchar_t* section, const wchar_t* key) {
+    wchar_t value[32768]{};
+    GetPrivateProfileStringW(section, key, L"", value, static_cast<DWORD>(std::size(value)), ini.c_str());
+    return value;
+}
 }
 
 Settings DefaultSettings() {
@@ -46,7 +52,12 @@ bool LoadSettings(const std::wstring& iniPath, Settings& s) {
     s.smoothColors = GetPrivateProfileIntW(L"Colors", L"Smooth", 1, iniPath.c_str()) != 0;
     s.stepsPerLevel = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Colors", L"StepsPerLevel", 4, iniPath.c_str())), 1, 16);
     const Settings defaults = DefaultSettings();
-    for (int i = 1; i <= 7; ++i) s.colors[i] = ReadColor(iniPath, i, defaults.colors[i]);
+    for (int i = 1; i <= 7; ++i) {
+        s.colors[i] = ReadColor(iniPath, i, defaults.colors[i]);
+        wchar_t key[32]{};
+        swprintf_s(key, L"IconSource%d", i);
+        s.folderIconSources[i] = ReadString(iniPath, L"FolderIcons", key);
+    }
     return true;
 }
 
@@ -73,6 +84,12 @@ bool SaveSettings(const std::wstring& iniPath, const Settings& s) {
         wchar_t key[32]{}; wchar_t value[32]{};
         swprintf_s(key, L"Color%d", i); swprintf_s(value, L"%lu", s.colors[i]);
         ok &= WritePrivateProfileStringW(L"Colors", key, value, iniPath.c_str()) != FALSE;
+
+        wchar_t iconKey[32]{};
+        swprintf_s(iconKey, L"IconSource%d", i);
+        ok &= WritePrivateProfileStringW(L"FolderIcons", iconKey,
+            s.folderIconSources[i].empty() ? nullptr : s.folderIconSources[i].c_str(),
+            iniPath.c_str()) != FALSE;
     }
     return ok;
 }
