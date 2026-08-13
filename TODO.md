@@ -12,6 +12,5 @@
 ## Later experiments
 
 - Optional tracking of actual file reads/opens in Total Commander, separate from write-based File Heat.
-- Heat-colored folder icons (green -> yellow -> orange -> red) using Total Commander capabilities, after File Heat behavior is stable.
-- Folder icon colors should be configurable similarly to the current heat color map in the configurator, not hard-coded.
 - Find a less visible way to force Total Commander to fully re-evaluate FolderHeatMap color rules after a heat reset without the current previous-tab/next-tab flicker. Keep the tab-switch workaround as the reliable fallback if no cleaner mechanism exists.
+- Decide how FolderHeatMap should handle tracked files and folders when they are deleted or moved to the Recycle Bin, including cleanup of stale database records and the resulting inherited heat of parent folders.
