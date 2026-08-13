@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "UPGRADE_REV=icon-map-v1"
+set "UPGRADE_REV=async-cache-v1"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
 set "VSBT_URL=https://aka.ms/vs/17/release/vs_BuildTools.exe"
