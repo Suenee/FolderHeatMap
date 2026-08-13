@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "UPGRADE_REV=reset-tool-v3"
+set "UPGRADE_REV=icon-map-v1"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
 set "VSBT_URL=https://aka.ms/vs/17/release/vs_BuildTools.exe"
@@ -89,7 +89,6 @@ echo [3/5] Building plugin, settings GUI and reset utility...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
-rem Fail before touching Total Commander if any expected artifact is missing.
 if not exist "build\Release\FolderHeatMap.wdx64" goto missing_artifact
 if not exist "build\Release\FolderHeatMapConfig.exe" goto missing_artifact
 if not exist "build\Release\FolderHeatMapReset.exe" goto missing_reset_artifact
@@ -118,6 +117,8 @@ copy /y "build\Release\FolderHeatMapReset.exe" "dist\FolderHeatMapReset.exe" >nu
 if errorlevel 1 goto dist_error
 if not exist "dist\FolderHeatMapReset.exe" goto missing_reset_dist
 copy /y "configure.cmd" "dist\configure.cmd" >nul
+copy /y "setup_icons.cmd" "dist\setup_icons.cmd" >nul
+copy /y "setup_icons.ps1" "dist\setup_icons.ps1" >nul
 copy /y "README.md" "dist\README.md" >nul
 copy /y "TESTING.md" "dist\TESTING.md" >nul
 
@@ -146,6 +147,7 @@ echo SUCCESS.
 echo Plugin:    %CD%\dist\FolderHeatMap.wdx64
 echo Settings:  %CD%\dist\FolderHeatMapConfig.exe
 echo Reset:     %CD%\dist\FolderHeatMapReset.exe
+echo Icon setup:%CD%\dist\setup_icons.ps1
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE (
     call :is_tc_running
     if "!TC_RUNNING!"=="0" (
@@ -156,7 +158,7 @@ if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE (
     )
 )
 echo.
-echo Run configure.cmd to change heat behavior and colors.
+echo Run configure.cmd to change heat behavior, colors and folder icons.
 pause
 exit /b 0
 
