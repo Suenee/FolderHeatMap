@@ -66,7 +66,10 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
     $g = [int](($colorRef -shr 8) -band 0xff)
     $b = [int](($colorRef -shr 16) -band 0xff)
 
-    $bmp = New-Object System.Drawing.Bitmap -ArgumentList 32,32,[System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+    # Use the .NET constructor directly. Windows PowerShell's New-Object
+    # argument binder can stringify PixelFormat and fail to select the
+    # Bitmap(Int32, Int32, PixelFormat) overload.
+    $bmp = [System.Drawing.Bitmap]::new(32, 32, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $gfx = [System.Drawing.Graphics]::FromImage($bmp)
     try {
         $gfx.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -74,10 +77,10 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
         $base = [System.Drawing.Color]::FromArgb(255,$r,$g,$b)
         $dark = [System.Drawing.Color]::FromArgb(255,[Math]::Max(0,$r-65),[Math]::Max(0,$g-65),[Math]::Max(0,$b-65))
         $light = [System.Drawing.Color]::FromArgb(255,[Math]::Min(255,$r+55),[Math]::Min(255,$g+55),[Math]::Min(255,$b+55))
-        $shadow = New-Object System.Drawing.SolidBrush -ArgumentList ([System.Drawing.Color]::FromArgb(70,0,0,0))
-        $fill = New-Object System.Drawing.SolidBrush -ArgumentList $base
-        $tab = New-Object System.Drawing.SolidBrush -ArgumentList $light
-        $pen = New-Object System.Drawing.Pen -ArgumentList $dark,1.4
+        $shadow = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(70,0,0,0))
+        $fill = [System.Drawing.SolidBrush]::new($base)
+        $tab = [System.Drawing.SolidBrush]::new($light)
+        $pen = [System.Drawing.Pen]::new($dark, [single]1.4)
         try {
             $gfx.FillRectangle($shadow, 4,10,25,18)
             $gfx.FillRectangle($tab, 3,6,11,7)
@@ -86,18 +89,18 @@ function Write-HeatFolderIcon([string]$path, [uint32]$colorRef) {
             $gfx.DrawLine($pen,3,10,3,7)
             $gfx.DrawLine($pen,3,7,13,7)
             $gfx.DrawLine($pen,13,7,16,10)
-            $highlight = New-Object System.Drawing.Pen -ArgumentList ([System.Drawing.Color]::FromArgb(150,255,255,255)),1
+            $highlight = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(150,255,255,255), [single]1.0)
             try { $gfx.DrawLine($highlight,5,12,26,12) } finally { $highlight.Dispose() }
         } finally {
             $shadow.Dispose(); $fill.Dispose(); $tab.Dispose(); $pen.Dispose()
         }
 
-        $png = New-Object System.IO.MemoryStream
+        $png = [System.IO.MemoryStream]::new()
         try {
             $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
             $data = $png.ToArray()
             $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-            $bw = New-Object System.IO.BinaryWriter -ArgumentList $fs
+            $bw = [System.IO.BinaryWriter]::new($fs)
             try {
                 $bw.Write([uint16]0); $bw.Write([uint16]1); $bw.Write([uint16]1)
                 $bw.Write([byte]32); $bw.Write([byte]32); $bw.Write([byte]0); $bw.Write([byte]0)
@@ -114,7 +117,6 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $backup = "$script:WincmdIni.fhm-icons-$stamp.bak"
 Copy-Item -LiteralPath $script:WincmdIni -Destination $backup -Force
 
-# Remove previous FolderHeatMap-managed icon associations without touching the user's own associations.
 for ($i=1; $i -le 999; $i++) {
     $base = "Filter$i"
     $value = Read-IniValue 'Associations' $base ''
@@ -141,7 +143,6 @@ for ($level=1; $level -le 7; $level++) {
     Write-HeatFolderIcon (Join-Path $iconDir "heat-$level.ico") (Read-FhmColor $level)
 }
 
-# Find the first block of seven unused association slots. Existing associations are left untouched.
 $start = 1
 while ($start -le 993) {
     $free = $true
@@ -153,14 +154,12 @@ while ($start -le 993) {
 }
 if ($start -gt 993) { throw 'No free block of seven Internal Association slots was found.' }
 
-# High heat must be tested first because the first matching internal association wins.
 $slot = $start
 for ($level=7; $level -ge 1; $level--) {
     $name = "FolderHeatMap Icon $level"
     Write-IniValue 'searches' ($name + '_SearchFor') ''
     Write-IniValue 'searches' ($name + '_SearchIn') ''
     Write-IniValue 'searches' ($name + '_SearchText') ''
-    # Explicit Directory attribute is required by Total Commander 11.50+ for folder icons.
     Write-IniValue 'searches' ($name + '_SearchFlags') '0|002002000020||||||||22221|0000|||'
     $threshold = ([double]$level - 0.001).ToString('0.000', [Globalization.CultureInfo]::InvariantCulture)
     Write-IniValue 'searches' ($name + '_plugin') "folderheatmap.Heat > $threshold"
