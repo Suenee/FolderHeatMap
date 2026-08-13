@@ -56,6 +56,8 @@ public:
             std::scoped_lock lock(cacheMutex_);
             folderCache_.clear();
             fileCache_.clear();
+            directFolderCache_.clear();
+            directFileCache_.clear();
             folderUpdated_.clear();
             fileUpdated_.clear();
             folderRefreshPending_.clear();
@@ -80,7 +82,13 @@ public:
     }
 
     std::optional<StoredActivity> GetActivity(const FolderIdentity& identity) {
-        return database_.GetActivity(identity);
+        {
+            std::scoped_lock lock(cacheMutex_);
+            const auto it = directFolderCache_.find(identity.storageKey);
+            if (it != directFolderCache_.end()) return it->second;
+        }
+        QueueRefresh(JobType::RefreshFolders, identity.volumeId);
+        return std::nullopt;
     }
 
     std::vector<std::pair<std::wstring, StoredActivity>> GetVolumeActivities(const std::wstring& volumeId) {
@@ -111,7 +119,13 @@ public:
     }
 
     std::optional<StoredFileActivity> GetFileActivity(const FolderIdentity& identity) {
-        return database_.GetFileActivity(identity);
+        {
+            std::scoped_lock lock(cacheMutex_);
+            const auto it = directFileCache_.find(identity.storageKey);
+            if (it != directFileCache_.end()) return it->second;
+        }
+        QueueRefresh(JobType::RefreshFiles, identity.volumeId);
+        return std::nullopt;
     }
 
     std::vector<std::pair<std::wstring, StoredFileActivity>> GetVolumeFileActivities(const std::wstring& volumeId) {
@@ -145,8 +159,6 @@ public:
     }
 
     int GetRecentActiveDays(const FILETIME& now, int windowDays) {
-        // Auto-cooling changes slowly. Avoid repeating this aggregate SQLite
-        // query for every WDX field request in the same panel refresh.
         const auto tick = std::chrono::steady_clock::now();
         {
             std::scoped_lock lock(activeDaysMutex_);
@@ -175,8 +187,8 @@ private:
         std::wstring volumeId;
     };
 
-    static constexpr auto cacheLifetime_ = std::chrono::seconds(5);
-    static constexpr auto activeDaysLifetime_ = std::chrono::seconds(30);
+    static constexpr auto cacheLifetime_ = std::chrono::seconds(10);
+    static constexpr auto activeDaysLifetime_ = std::chrono::seconds(60);
 
     void Queue(Job job) {
         std::scoped_lock lock(queueMutex_);
@@ -219,14 +231,22 @@ private:
                 case JobType::Visit:
                     database_.RecordVisit(job.identity, job.time, job.cooldownSeconds, job.sessionResetHours);
                     InvalidateVolume(job.identity.volumeId);
+                    QueueRefresh(JobType::RefreshFolders, job.identity.volumeId);
                     break;
                 case JobType::FileWrite:
                     database_.ObserveFileWrite(job.identity, job.time);
                     InvalidateVolume(job.identity.volumeId);
+                    QueueRefresh(JobType::RefreshFiles, job.identity.volumeId);
                     break;
                 case JobType::RefreshFolders: {
                     auto data = database_.GetVolumeActivities(job.volumeId);
                     std::scoped_lock lock(cacheMutex_);
+                    for (auto it = directFolderCache_.begin(); it != directFolderCache_.end();) {
+                        if (it->first.rfind(job.volumeId + L"|", 0) == 0) it = directFolderCache_.erase(it);
+                        else ++it;
+                    }
+                    for (const auto& [relative, activity] : data)
+                        directFolderCache_[job.volumeId + L"|" + relative] = activity;
                     folderCache_[job.volumeId] = std::move(data);
                     folderUpdated_[job.volumeId] = std::chrono::steady_clock::now();
                     folderRefreshPending_[job.volumeId] = false;
@@ -235,6 +255,12 @@ private:
                 case JobType::RefreshFiles: {
                     auto data = database_.GetVolumeFileActivities(job.volumeId);
                     std::scoped_lock lock(cacheMutex_);
+                    for (auto it = directFileCache_.begin(); it != directFileCache_.end();) {
+                        if (it->first.rfind(job.volumeId + L"|", 0) == 0) it = directFileCache_.erase(it);
+                        else ++it;
+                    }
+                    for (const auto& [relative, activity] : data)
+                        directFileCache_[job.volumeId + L"|" + relative] = activity;
                     fileCache_[job.volumeId] = std::move(data);
                     fileUpdated_[job.volumeId] = std::chrono::steady_clock::now();
                     fileRefreshPending_[job.volumeId] = false;
@@ -255,6 +281,8 @@ private:
     std::mutex cacheMutex_;
     std::unordered_map<std::wstring, std::vector<std::pair<std::wstring, StoredActivity>>> folderCache_;
     std::unordered_map<std::wstring, std::vector<std::pair<std::wstring, StoredFileActivity>>> fileCache_;
+    std::unordered_map<std::wstring, StoredActivity> directFolderCache_;
+    std::unordered_map<std::wstring, StoredFileActivity> directFileCache_;
     std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> folderUpdated_;
     std::unordered_map<std::wstring, std::chrono::steady_clock::time_point> fileUpdated_;
     std::unordered_map<std::wstring, bool> folderRefreshPending_;
@@ -269,10 +297,6 @@ private:
 
 } // namespace fhm
 
-// FolderHeatMap.cpp historically names the facade fhm::Database. For the WDX
-// target only, CMake force-includes this header before FolderHeatMap.cpp and
-// enables this alias. Database.cpp and the reset utility keep the synchronous
-// class untouched.
 #ifdef FHM_USE_ASYNC_DATABASE
 #define Database AsyncDatabase
 #endif
