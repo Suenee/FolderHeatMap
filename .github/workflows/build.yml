@@ -34,7 +34,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item build/Release/FolderHeatMap.wdx64 package/FolderHeatMap.wdx64
+          Copy-Item build/Release/FolderHeatMapEngine.exe package/FolderHeatMapEngine.exe
           Copy-Item build/Release/FolderHeatMapConfig.exe package/FolderHeatMapConfig.exe
+          Copy-Item build/Release/FolderHeatMapReset.exe package/FolderHeatMapReset.exe
           Copy-Item configure.cmd package/configure.cmd
           Copy-Item README.md package/README.md
           Copy-Item TESTING.md package/TESTING.md
