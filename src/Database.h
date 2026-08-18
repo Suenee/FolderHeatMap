@@ -35,6 +35,18 @@ struct StoredFileActivity {
     std::int64_t lastActiveDay = 0;
 };
 
+struct RuntimeCacheRecord {
+    std::wstring path;
+    std::uint32_t flags = 0;
+    double heat = 0.0;
+    std::int64_t visits = 0;
+    std::int64_t writes = 0;
+    FILETIME lastVisit{};
+    FILETIME lastWrite{};
+    std::int32_t heatLevel = 0;
+    std::int32_t colorStep = 0;
+};
+
 class Database {
 public:
     Database() = default;
@@ -54,6 +66,11 @@ public:
     bool ObserveFileWrite(const FolderIdentity& identity, const FILETIME& lastWrite);
     std::optional<StoredFileActivity> GetFileActivity(const FolderIdentity& identity);
     std::vector<std::pair<std::wstring, StoredFileActivity>> GetVolumeFileActivities(const std::wstring& volumeId);
+
+    // Runtime cache persistence. SQLite is a durable backup of the latest
+    // complete RAM generation, never the foreground source for WDX reads.
+    bool SaveRuntimeCache(const std::vector<RuntimeCacheRecord>& records);
+    std::vector<RuntimeCacheRecord> LoadRuntimeCache();
 
     // Reset only the selected item's own activity. For files, currentLastWrite
     // becomes the new cold baseline so the same timestamp cannot immediately
