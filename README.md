@@ -1,12 +1,12 @@
 # FolderHeatMap
 
-FolderHeatMap is an open-source Total Commander content plugin that builds a visual heat map of folders based on how recently, frequently and regularly they are used.
+FolderHeatMap is an open-source Total Commander content plugin that builds a visual heat map of folders and, optionally, files based on how recently, frequently and regularly they are used or changed.
 
-The project targets Total Commander on Windows 10+ and intentionally tracks directories only.
+The project targets Total Commander on Windows 10+.
 
 ## Core idea
 
-Only folders that are actually used are stored. A folder that has never been seen has an implicit heat value of `0` and does not need a database record.
+Only items with useful activity history need persistent records. An unseen item has an implicit heat value of `0`.
 
 The plugin exposes these fields to Total Commander:
 
@@ -15,12 +15,33 @@ The plugin exposes these fields to Total Commander:
 - `Last Visit`
 - `Heat Level` - integer level 0-7
 - `Heat Color Step` - internal helper for visualization
+- `Writes` - tracked file modification count
+- `Last Write`
 
-Raw history is kept separate from the scoring model so the heat algorithm can evolve without throwing away folder history.
+Raw history is kept separate from the scoring model so the heat algorithm can evolve without throwing away usage history.
+
+## Runtime architecture 1.00
+
+FolderHeatMap 1.00 deliberately separates Total Commander from all expensive work.
+
+`FolderHeatMap.wdx64` is a dumb read-only client. Its hot path reads only the latest complete generation from shared RAM. It performs no filesystem analysis, SQLite queries, heat calculations or background scheduling while Total Commander asks for a displayed value.
+
+`FolderHeatMapEngine.exe` runs separately from Total Commander and owns all analysis. It uses two worker roles:
+
+- **FAST worker** - real user navigation first, then high-probability predictive prefetch.
+- **SLOW worker** - persistence, file-write observation, durable rebuilds and lower-priority preparation.
+
+Real navigation always outranks prediction. The current directory never receives partially calculated values. A completed batch for the directory being viewed remains hidden until the user leaves; it can then be used immediately on a later visit. Predicted folders may already be complete before the user opens them.
+
+Shared RAM is double-buffered and switched atomically. Total Commander therefore sees one complete cache generation or another, never an in-progress generation.
+
+SQLite is persistence/backup, not the foreground data source. The engine stores both activity history and the latest complete runtime cache so a later process can restore useful values without rebuilding everything from zero.
+
+When the final Total Commander client closes, the engine enters graceful shutdown. Predictive work is discarded, FAST can help drain remaining persistence work, completed RAM state is written to SQLite, and only then does the engine exit.
 
 ## Intelligent heat model
 
-Heat is not a simple visit counter. The current model combines three signals: recent work, long-term habit and optional hot-path inheritance.
+Heat is not a simple visit counter. The current model combines recent work, long-term habit and optional hot-path inheritance.
 
 ### Recent heat
 
@@ -40,13 +61,11 @@ Manual mode allows a fixed cooling half-life from 1 to 365 days.
 
 ### Hot path inheritance
 
-Optionally, parent folders inherit part of the hottest descendant's heat:
+Optionally, parent folders inherit heat from active descendants with configurable path decay. Descendant influence becomes weaker with distance from the parent.
 
-```text
-inherited heat = descendant heat × path contribution ^ depth
-```
+### File Heat
 
-Only the hottest descendant path is used. Heat from many mildly warm children is deliberately not added together.
+Optional File Heat uses observed file modification timestamps and write history. File Heat can also contribute to the temperature of parent folders. Expensive file observation happens in the background engine, never in the WDX foreground path.
 
 ## Temperature scale and colors
 
@@ -64,17 +83,26 @@ Conceptually:
 DEFAULT -> cool ----------------------------------------------------------> hot
 ```
 
-The color model applies to folders only, so existing file-type colors in Total Commander are preserved. FolderHeatMap generates native Total Commander saved-search color filters in `wincmd.ini` and keeps existing user-created color filters after its own rules.
-
 ## Settings
 
 Run `FolderHeatMapConfig.exe` or `configure.cmd` to open the settings window. The UI is intentionally English-only.
 
-The compact settings window provides automatic/manual cooling, a 1-365 day manual half-life, hot-path inheritance, a 0-100% path contribution slider, configurable repeat-visit cooldown (0-600 seconds), configurable session reset (1-24 hours), smooth color interpolation, 1-16 intermediate steps, a read-only Level 0 base-color preview, and editable Levels 1-7. Both the level button and its color square open the color picker. Detailed explanations are available through tooltips and the `Help` button.
+The compact settings window provides automatic/manual cooling, a 1-365 day manual half-life, hot-path inheritance, 0-100% path contribution, File Heat controls, configurable repeat-visit cooldown, session reset, smooth color interpolation, intermediate color steps, a read-only Level 0 base-color preview, editable Levels 1-7 and configurable folder icons.
 
-`Save` writes FolderHeatMap settings, safely closes Total Commander when necessary, regenerates and verifies the Total Commander color rules, and restarts Total Commander when appropriate. `Cancel` closes the configurator without saving current changes.
+`Save` writes FolderHeatMap settings, safely closes Total Commander when necessary, regenerates and verifies the Total Commander color/icon rules, and restarts Total Commander when appropriate. `Cancel` closes the configurator without saving current changes.
 
 The configurator refuses to run without a readable and writable Total Commander `wincmd.ini`. If automatic detection fails, it explains where Total Commander shows the active INI path and opens a file picker so the user can select it.
+
+### Logging
+
+The background engine supports file logging through `FolderHeatMap.ini`:
+
+```ini
+[Logging]
+Mode=off
+```
+
+Allowed values are `off`, `single` and `all`. `single` starts a fresh log for the current engine run; `all` appends subsequent runs to the same log. The default is `off`. The log file is `FolderHeatMap.log` beside `FolderHeatMap.ini`.
 
 ### Opening settings from Total Commander
 
@@ -86,16 +114,26 @@ Drive letters are not part of the permanent folder identity. A local folder is i
 
 ## Storage
 
-FolderHeatMap uses SQLite with WAL mode and `synchronous=NORMAL` for lightweight embedded persistence. The database keeps raw visits plus compact usage state used by the intelligent model. Existing databases are upgraded in place.
+FolderHeatMap uses SQLite with WAL mode and `synchronous=NORMAL`. SQLite stores activity history plus the latest complete runtime-cache generation. Existing databases are upgraded in place.
+
+## Upgrade
+
+Run only:
+
+```bat
+upgrade.cmd
+```
+
+The script updates `devel`, relaunches the freshly pulled upgrader, prepares dependencies, builds the WDX, background engine, configurator and reset utility, stops Total Commander for atomic deployment when necessary, deploys `FolderHeatMapEngine.exe` beside the registered WDX and restarts Total Commander if it had been running.
 
 ## Target
 
-- Total Commander 11.58 x64
+- Total Commander x64
 - Windows 10+
 - WDX content plugin
 - C++ / Win32 API
 - SQLite persistence
 
-## Current milestone
+## Legacy return point
 
-The implementation now proves that Total Commander can query and sort heat fields through WDX, directory usage can be recorded persistently, folder identity can survive drive-letter changes, smooth native Total Commander color rules can visualize Heat, and the standalone settings application can configure both appearance and the core timing behavior of the intelligent heat model.
+The pre-1.00 runtime is preserved on branch `legacy-0.34`. The 1.00 architecture intentionally does not reuse the old in-process async/cache runtime.
