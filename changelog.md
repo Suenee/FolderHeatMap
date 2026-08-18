@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.33 - 18.08.2026
+
+- Replaced per-item asynchronous snapshot refreshes with stable per-directory batch snapshots.
+- `ContentGetValueW()` is now a strict RAM-only hot path: no filesystem access, SQLite calls, Heat calculation, queueing or delayed retries happen while Total Commander asks for a displayed value.
+- Entering a directory promotes only the last fully completed snapshot from an earlier visit. A new snapshot is calculated independently in the background and stays hidden until a later visit.
+- Background calculation enumerates the directory once, calculates all immediate items, and atomically publishes the complete batch only after every item has been processed.
+- Removed progressive per-item recoloring and `ft_delayed` refresh behavior from normal browsing. Missing snapshot data is left empty for the current visit instead of causing incremental repainting.
+- Directory visit recording is now started from the background batch worker as well, keeping foreground navigation free from folder identity and filesystem work.
+- File metadata already returned by directory enumeration is reused for File Heat instead of re-reading each file timestamp separately.
+- This release deliberately favors visual stability and navigation latency over immediate Heat freshness: the displayed Heat may be one visit behind while background data catches up.
+
 ## 0.32 - 18.08.2026
 
 - Added an in-memory per-path WDX snapshot cache so repeated Heat, Visits, Writes, Heat Level and color queries are served from RAM instead of recalculating the same item multiple times.
