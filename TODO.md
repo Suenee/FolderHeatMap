@@ -14,4 +14,4 @@
 - Optional tracking of actual file reads/opens in Total Commander, separate from write-based File Heat.
 - Find a less visible way to force Total Commander to fully re-evaluate FolderHeatMap color rules after a heat reset without the current previous-tab/next-tab flicker. Keep the tab-switch workaround as the reliable fallback if no cleaner mechanism exists.
 - Decide how FolderHeatMap should handle tracked files and folders when they are deleted or moved to the Recycle Bin, including cleanup of stale database records and the resulting inherited heat of parent folders.
-- Refactor FolderHeatMap hot-path work to asynchronous background processing with an in-memory cache so Total Commander navigation never waits for SQLite or full heat recalculation.
+- Continue performance profiling after the 0.31 delayed/background WDX refactor and optimize further if plugin ON/OFF navigation is still measurably different.
