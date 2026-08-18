@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.00 - 18.08.2026
+
+- Architecture reset. Preserved the existing Folder Heat/File Heat mathematics, settings, configurator, reset tooling, colors and icon integration while replacing the runtime path completely.
+- Saved the complete pre-reset implementation on the `legacy-0.34` branch as a return point.
+- Reduced the WDX plugin to a dumb read-only shared-memory client. `ContentGetValueW()` no longer performs filesystem work, SQLite access, heat calculations, background queueing or cache mutation.
+- Added `FolderHeatMapEngine.exe` as a separate background process. All filesystem analysis, heat calculation, prediction and database persistence now live outside the Total Commander process.
+- Added double-buffered shared RAM with reader counters and atomic buffer switching. Total Commander always reads one complete cache generation; partially calculated data is never exposed.
+- Added FAST and SLOW worker roles. FAST handles real navigation and heat-based predictions; SLOW records visits/file writes, rebuilds durable data and prepares additional predictive work.
+- A calculated snapshot for the currently viewed directory stays hidden. It becomes public only after the user leaves, so background completion cannot progressively recolor the current panel.
+- Added initial predictive prefetch: the hottest immediate child directories are prepared while the FAST worker is idle. Real navigation always has priority over prediction.
+- Added graceful shutdown. The last WDX client requests engine shutdown; predictive work is discarded, FAST finishes its current operation and SLOW drains already queued persistence work before SQLite is closed.
+- `upgrade.cmd` now relaunches itself after `git pull`, builds and deploys the WDX together with `FolderHeatMapEngine.exe`, and ensures the engine is placed beside the registered plugin.
+
 ## 0.34 - 18.08.2026
 
 - Changed missing Heat/Heat Level/Heat Color Step values from `ft_fieldempty` to definitive numeric zero values, matching the previously verified zero-work diagnostic behavior that did not cause Total Commander repaint storms.
