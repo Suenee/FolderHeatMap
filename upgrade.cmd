@@ -2,7 +2,66 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "UPGRADE_REV=async-cache-v1"
+set "UPGRADE_REV=0.32-auto-pull"
+
+rem Always update the working copy first. Local tracked changes are preserved
+rem in an automatic stash so they cannot silently block an upgrade.
+where git.exe >nul 2>nul
+if errorlevel 1 (
+    echo ERROR: Git was not found in PATH.
+    pause
+    exit /b 1
+)
+
+echo [0/5] Updating repository from origin/devel...
+git rev-parse --is-inside-work-tree >nul 2>nul
+if errorlevel 1 (
+    echo ERROR: This folder is not a Git working tree.
+    pause
+    exit /b 1
+)
+
+git fetch origin
+if errorlevel 1 (
+    echo ERROR: git fetch origin failed.
+    pause
+    exit /b 1
+)
+
+for /f "delims=" %%I in ('git branch --show-current') do set "CURRENT_BRANCH=%%I"
+if /I not "!CURRENT_BRANCH!"=="devel" (
+    git switch devel
+    if errorlevel 1 (
+        echo ERROR: Could not switch to devel.
+        pause
+        exit /b 1
+    )
+)
+
+set "LOCAL_STASHED=0"
+git diff --quiet --ignore-submodules -- && git diff --cached --quiet --ignore-submodules --
+if errorlevel 1 (
+    echo [GIT] Local tracked changes detected - stashing them before upgrade...
+    git stash push -m "FolderHeatMap automatic pre-upgrade stash"
+    if errorlevel 1 (
+        echo ERROR: Local changes could not be stashed safely.
+        pause
+        exit /b 1
+    )
+    set "LOCAL_STASHED=1"
+)
+
+git pull --ff-only origin devel
+if errorlevel 1 (
+    echo ERROR: Could not fast-forward devel from origin/devel.
+    if "!LOCAL_STASHED!"=="1" echo NOTE: Your previous local changes are safely stored in git stash.
+    pause
+    exit /b 1
+)
+if "!LOCAL_STASHED!"=="1" echo [GIT] Previous local changes remain safely stored in git stash.
+echo [GIT] Repository is up to date.
+echo.
+
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
 set "VSBT_URL=https://aka.ms/vs/17/release/vs_BuildTools.exe"
