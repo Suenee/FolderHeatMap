@@ -27,6 +27,7 @@ add_executable(FolderHeatMapEngine
     src/EngineApp.cpp
     src/FolderIdentity.cpp
     src/Database.cpp
+    src/RuntimeCacheDatabase.cpp
     src/Settings.cpp
     vendor/sqlite/sqlite3.c
 )
