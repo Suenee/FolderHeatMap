@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "UPGRADE_REV=0.32-auto-pull"
+set "UPGRADE_REV=0.33-stable-batch"
 
 rem Always update the working copy first. Local tracked changes are preserved
 rem in an automatic stash so they cannot silently block an upgrade.
