@@ -15,3 +15,5 @@
 - Find a less visible way to force Total Commander to fully re-evaluate FolderHeatMap color rules after a heat reset without the current previous-tab/next-tab flicker. Keep the tab-switch workaround as the reliable fallback if no cleaner mechanism exists.
 - Decide how FolderHeatMap should handle tracked files and folders when they are deleted or moved to the Recycle Bin, including cleanup of stale database records and the resulting inherited heat of parent folders.
 - Continue performance profiling after the 0.31 delayed/background WDX refactor and optimize further if plugin ON/OFF navigation is still measurably different.
+- Predictive navigation prefetch: learn transitions between folders (for example A -> B) in addition to individual Heat. Use transition history, recent visits and Heat to estimate which folder the user is likely to open next and precompute/cache its complete stable snapshot in the background.
+- Predictive work must always have lower priority than real user navigation. It must never slow foreground browsing; queued predictions should yield immediately when the user opens another folder.
