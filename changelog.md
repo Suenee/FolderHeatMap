@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.34 - 18.08.2026
+
+- Changed missing Heat/Heat Level/Heat Color Step values from `ft_fieldempty` to definitive numeric zero values, matching the previously verified zero-work diagnostic behavior that did not cause Total Commander repaint storms.
+- Normalized snapshot and directory cache keys case-insensitively, converted `/` to `\\`, and removed trailing separators except for drive roots so equivalent Windows paths cannot miss an already prepared snapshot.
+- Kept `ContentGetValueW()` strictly RAM-only and preserved the stable batch rule: a background batch cannot become visible during the current directory visit.
+- File entries with File Heat disabled now also return stable numeric zero for Heat-related fields instead of an empty value.
+- The goal of this release is to eliminate repeated TC color/icon reevaluation and cursor flicker caused by unresolved/empty WDX values while retaining the eventually-consistent batch architecture.
+
 ## 0.33 - 18.08.2026
 
 - Replaced per-item asynchronous snapshot refreshes with stable per-directory batch snapshots.
