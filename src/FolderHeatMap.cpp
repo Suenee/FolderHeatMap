@@ -8,6 +8,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <cwctype>
 #include <deque>
 #include <filesystem>
 #include <mutex>
@@ -50,11 +51,6 @@ struct ValueSnapshot {
 
 using DirectorySnapshot = std::unordered_map<std::wstring, ValueSnapshot>;
 
-// Stable snapshot model:
-// - ready batches are produced completely in the background;
-// - a ready batch becomes visible only when the user enters that directory again;
-// - a batch that finishes while the user is looking at the directory is never
-//   exposed mid-view, so FolderHeatMap itself cannot cause progressive repainting.
 std::mutex g_snapshotMutex;
 std::unordered_map<std::wstring, DirectorySnapshot> g_readySnapshots;
 std::unordered_map<std::wstring, DirectorySnapshot> g_visibleSnapshots;
@@ -78,6 +74,15 @@ std::wstring AnsiToWide(const char* text) {
     if (!MultiByteToWideChar(CP_ACP, 0, text, -1, out.data(), n)) return {};
     out.resize(static_cast<size_t>(n - 1));
     return out;
+}
+
+std::wstring NormalizePathKey(std::wstring path) {
+    for (auto& ch : path) {
+        if (ch == L'/') ch = L'\\';
+        else ch = static_cast<wchar_t>(std::towlower(ch));
+    }
+    while (path.size() > 3 && !path.empty() && path.back() == L'\\') path.pop_back();
+    return path;
 }
 
 std::wstring GetDatabasePath(const ContentDefaultParamStruct* dps) {
@@ -209,10 +214,11 @@ std::wstring ParentRelativePath(const std::wstring& path) {
 }
 
 std::wstring ParentDirectoryPath(const std::wstring& path) {
-    const size_t pos = path.find_last_of(L"\\/");
+    const std::wstring normalized = NormalizePathKey(path);
+    const size_t pos = normalized.find_last_of(L'\\');
     if (pos == std::wstring::npos) return {};
-    if (pos == 2 && path.size() >= 3 && path[1] == L':') return path.substr(0, 3);
-    return path.substr(0, pos);
+    if (pos == 2 && normalized.size() >= 3 && normalized[1] == L':') return normalized.substr(0, 3);
+    return normalized.substr(0, pos);
 }
 
 double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::StoredActivity>& direct) {
@@ -297,43 +303,76 @@ std::optional<ValueSnapshot> BuildSnapshot(const std::wstring& path, bool isDire
 }
 
 int ValueFromSnapshot(const ValueSnapshot& snapshot, int fieldIndex, void* fieldValue) {
-    if (!snapshot.isDirectory && !snapshot.fileHeatAvailable) return ft_fieldempty;
     switch (fieldIndex) {
-        case kFieldHeat: *static_cast<double*>(fieldValue) = snapshot.heat; return ft_numeric_floating;
+        case kFieldHeat:
+            *static_cast<double*>(fieldValue) = (snapshot.isDirectory || snapshot.fileHeatAvailable) ? snapshot.heat : 0.0;
+            return ft_numeric_floating;
         case kFieldVisits:
             if (!snapshot.isDirectory) return ft_fieldempty;
-            *static_cast<__int64*>(fieldValue) = snapshot.visits; return ft_numeric_64;
+            *static_cast<__int64*>(fieldValue) = snapshot.visits;
+            return ft_numeric_64;
         case kFieldLastVisit:
             if (!snapshot.isDirectory || !snapshot.hasLastVisit) return ft_fieldempty;
-            *static_cast<FILETIME*>(fieldValue) = snapshot.lastVisit; return ft_datetime;
-        case kFieldHeatLevel: *static_cast<int*>(fieldValue) = snapshot.heatLevel; return ft_numeric_32;
-        case kFieldColorStep: *static_cast<int*>(fieldValue) = snapshot.colorStep; return ft_numeric_32;
+            *static_cast<FILETIME*>(fieldValue) = snapshot.lastVisit;
+            return ft_datetime;
+        case kFieldHeatLevel:
+            *static_cast<int*>(fieldValue) = (snapshot.isDirectory || snapshot.fileHeatAvailable) ? snapshot.heatLevel : 0;
+            return ft_numeric_32;
+        case kFieldColorStep:
+            *static_cast<int*>(fieldValue) = (snapshot.isDirectory || snapshot.fileHeatAvailable) ? snapshot.colorStep : 0;
+            return ft_numeric_32;
         case kFieldWrites:
-            if (snapshot.isDirectory) return ft_fieldempty;
-            *static_cast<__int64*>(fieldValue) = snapshot.writes; return ft_numeric_64;
+            if (snapshot.isDirectory || !snapshot.fileHeatAvailable) return ft_fieldempty;
+            *static_cast<__int64*>(fieldValue) = snapshot.writes;
+            return ft_numeric_64;
         case kFieldLastWrite:
-            if (snapshot.isDirectory || !snapshot.hasLastWrite) return ft_fieldempty;
-            *static_cast<FILETIME*>(fieldValue) = snapshot.lastWrite; return ft_datetime;
-        default: return ft_nosuchfield;
+            if (snapshot.isDirectory || !snapshot.fileHeatAvailable || !snapshot.hasLastWrite) return ft_fieldempty;
+            *static_cast<FILETIME*>(fieldValue) = snapshot.lastWrite;
+            return ft_datetime;
+        default:
+            return ft_nosuchfield;
+    }
+}
+
+int StableZeroValue(int fieldIndex, void* fieldValue) {
+    switch (fieldIndex) {
+        case kFieldHeat:
+            *static_cast<double*>(fieldValue) = 0.0;
+            return ft_numeric_floating;
+        case kFieldHeatLevel:
+        case kFieldColorStep:
+            *static_cast<int*>(fieldValue) = 0;
+            return ft_numeric_32;
+        case kFieldVisits:
+        case kFieldWrites:
+            *static_cast<__int64*>(fieldValue) = 0;
+            return ft_numeric_64;
+        case kFieldLastVisit:
+        case kFieldLastWrite:
+            return ft_fieldempty;
+        default:
+            return ft_nosuchfield;
     }
 }
 
 std::optional<ValueSnapshot> FindVisibleSnapshot(const std::wstring& path) {
-    const std::wstring parent = ParentDirectoryPath(path);
+    const std::wstring itemKey = NormalizePathKey(path);
+    const std::wstring parent = ParentDirectoryPath(itemKey);
     if (parent.empty()) return std::nullopt;
 
     std::scoped_lock lock(g_snapshotMutex);
     const auto dirIt = g_visibleSnapshots.find(parent);
     if (dirIt == g_visibleSnapshots.end()) return std::nullopt;
-    const auto itemIt = dirIt->second.find(path);
+    const auto itemIt = dirIt->second.find(itemKey);
     if (itemIt == dirIt->second.end()) return std::nullopt;
     return itemIt->second;
 }
 
 void ActivateReadySnapshot(const std::wstring& directory) {
+    const std::wstring key = NormalizePathKey(directory);
     std::scoped_lock lock(g_snapshotMutex);
-    const auto it = g_readySnapshots.find(directory);
-    if (it != g_readySnapshots.end()) g_visibleSnapshots[directory] = it->second;
+    const auto it = g_readySnapshots.find(key);
+    if (it != g_readySnapshots.end()) g_visibleSnapshots[key] = it->second;
 }
 
 void ClearSnapshots() {
@@ -343,10 +382,8 @@ void ClearSnapshots() {
 }
 
 void StoreReadyBatch(const std::wstring& directory, DirectorySnapshot batch) {
-    // One lock / one map replacement: no partially completed directory can ever
-    // become visible to ContentGetValueW.
     std::scoped_lock lock(g_snapshotMutex);
-    g_readySnapshots[directory] = std::move(batch);
+    g_readySnapshots[NormalizePathKey(directory)] = std::move(batch);
 }
 
 void RecordDirectoryVisitBackground(const std::wstring& path) {
@@ -377,7 +414,7 @@ DirectorySnapshot BuildDirectoryBatch(const std::wstring& directory) {
         const bool isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         const FILETIME* lastWrite = isDirectory ? nullptr : &data.ftLastWriteTime;
         if (auto snapshot = BuildSnapshot(fullPath, isDirectory, lastWrite))
-            result.emplace(std::move(fullPath), std::move(*snapshot));
+            result.emplace(NormalizePathKey(fullPath), std::move(*snapshot));
     } while (FindNextFileW(find, &data));
 
     FindClose(find);
@@ -386,9 +423,10 @@ DirectorySnapshot BuildDirectoryBatch(const std::wstring& directory) {
 
 void QueueDirectoryBatch(const std::wstring& directory) {
     if (directory.empty()) return;
+    const std::wstring normalized = NormalizePathKey(directory);
     std::scoped_lock lock(g_batchQueueMutex);
-    if (g_batchStopping || !g_batchPending.insert(directory).second) return;
-    g_batchQueue.push_back(directory);
+    if (g_batchStopping || !g_batchPending.insert(normalized).second) return;
+    g_batchQueue.push_back(normalized);
     g_batchCv.notify_one();
 }
 
@@ -404,8 +442,6 @@ void BatchWorkerLoop() {
         }
 
         {
-            // Settings are changed only by explicit TC refresh/configuration.
-            // Hold a stable settings view for the complete batch.
             std::scoped_lock settingsLock(g_settingsMutex);
             RecordDirectoryVisitBackground(directory);
             auto batch = BuildDirectoryBatch(directory);
@@ -414,7 +450,7 @@ void BatchWorkerLoop() {
 
         {
             std::scoped_lock lock(g_batchQueueMutex);
-            g_batchPending.erase(directory);
+            g_batchPending.erase(NormalizePathKey(directory));
         }
     }
 }
@@ -469,14 +505,13 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
 extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int) {
     if (!fileName || !fieldValue) return ft_fileerror;
 
-    // Critical hot-path rule for 0.33: RAM lookup only. No filesystem calls,
-    // SQLite, heat math, queueing or delayed retry from ContentGetValueW.
     if (auto snapshot = FindVisibleSnapshot(fileName))
         return ValueFromSnapshot(*snapshot, fieldIndex, fieldValue);
 
-    // No snapshot for this visit yet. Return no value and keep the view stable;
-    // the complete batch is prepared independently for the next visit.
-    return ft_fieldempty;
+    // Stable definitive fallback: unlike ft_fieldempty for the numeric heat
+    // fields, this gives Total Commander a final value and avoids repeated
+    // attempts to resolve color/icon conditions during the current visit.
+    return StableZeroValue(fieldIndex, fieldValue);
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, int fieldIndex, int unitIndex, void* fieldValue, int maxlen, int flags) {
@@ -498,10 +533,7 @@ extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int
     }
 
     if (state == contst_readnewdir && path && *path) {
-        const std::wstring directory(path);
-
-        // Promote only a batch that was already complete before this visit.
-        // The new calculation started below stays hidden until a later visit.
+        const std::wstring directory = NormalizePathKey(path);
         ActivateReadySnapshot(directory);
         QueueDirectoryBatch(directory);
     }
