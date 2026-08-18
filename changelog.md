@@ -3,15 +3,19 @@
 ## 1.00 - 18.08.2026
 
 - Architecture reset. Preserved the existing Folder Heat/File Heat mathematics, settings, configurator, reset tooling, colors and icon integration while replacing the runtime path completely.
-- Saved the complete pre-reset implementation on the `legacy-0.34` branch as a return point.
+- Saved the complete pre-reset implementation on the `legacy-0.34` branch as a return point and removed the old in-process async cache headers from `devel`.
 - Reduced the WDX plugin to a dumb read-only shared-memory client. `ContentGetValueW()` no longer performs filesystem work, SQLite access, heat calculations, background queueing or cache mutation.
 - Added `FolderHeatMapEngine.exe` as a separate background process. All filesystem analysis, heat calculation, prediction and database persistence now live outside the Total Commander process.
 - Added double-buffered shared RAM with reader counters and atomic buffer switching. Total Commander always reads one complete cache generation; partially calculated data is never exposed.
-- Added FAST and SLOW worker roles. FAST handles real navigation and heat-based predictions; SLOW records visits/file writes, rebuilds durable data and prepares additional predictive work.
+- SQLite is now explicitly persistence/backup for runtime state. Added a `runtime_cache` table which stores the latest complete RAM cache and restores it when the engine starts.
+- Split database access into separate read and write connections so FAST calculation is not serialized by the application-level mutex used for SLOW persistence writes.
+- Added FAST and SLOW worker roles. FAST handles real navigation and heat-based predictions; SLOW records visits/file writes, durable persistence and lower-priority maintenance.
 - A calculated snapshot for the currently viewed directory stays hidden. It becomes public only after the user leaves, so background completion cannot progressively recolor the current panel.
 - Added initial predictive prefetch: the hottest immediate child directories are prepared while the FAST worker is idle. Real navigation always has priority over prediction.
-- Added graceful shutdown. The last WDX client requests engine shutdown; predictive work is discarded, FAST finishes its current operation and SLOW drains already queued persistence work before SQLite is closed.
-- `upgrade.cmd` now relaunches itself after `git pull`, builds and deploys the WDX together with `FolderHeatMapEngine.exe`, and ensures the engine is placed beside the registered plugin.
+- Added graceful shutdown. The final WDX client requests engine shutdown; predictive work is discarded, FAST finishes interactive work and can assist with the remaining SLOW persistence queue, completed RAM state is saved to SQLite, and only then does the engine exit.
+- Added engine file logging with `off`, `single` and `all` modes. Logging is disabled by default and can be enabled through the `[Logging]` section of `FolderHeatMap.ini`.
+- Rebuilt `upgrade.cmd` for the new architecture. It relaunches itself after `git pull`, gracefully closes Total Commander and waits for the engine to drain before rebuilding, builds and deploys both the WDX and engine, and only force-stops an engine after a 30-second shutdown timeout.
+- Updated CI packaging to include `FolderHeatMapEngine.exe` and the reset utility.
 
 ## 0.34 - 18.08.2026
 
