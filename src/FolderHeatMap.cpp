@@ -5,7 +5,6 @@
 
 #include <windows.h>
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -17,6 +16,8 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace {
 constexpr int kFieldHeat = 0;
@@ -27,11 +28,11 @@ constexpr int kFieldColorStep = 4;
 constexpr int kFieldWrites = 5;
 constexpr int kFieldLastWrite = 6;
 constexpr double kTicksPerDay = 10000000.0 * 60.0 * 60.0 * 24.0;
-constexpr auto kSnapshotLifetime = std::chrono::seconds(5);
 
 fhm::Database g_database;
 fhm::Settings g_settings = fhm::DefaultSettings();
 std::wstring g_settingsPath;
+std::mutex g_settingsMutex;
 
 struct ValueSnapshot {
     bool isDirectory = false;
@@ -45,17 +46,25 @@ struct ValueSnapshot {
     bool hasLastWrite = false;
     int heatLevel = 0;
     int colorStep = 0;
-    std::chrono::steady_clock::time_point updated{};
 };
 
+using DirectorySnapshot = std::unordered_map<std::wstring, ValueSnapshot>;
+
+// Stable snapshot model:
+// - ready batches are produced completely in the background;
+// - a ready batch becomes visible only when the user enters that directory again;
+// - a batch that finishes while the user is looking at the directory is never
+//   exposed mid-view, so FolderHeatMap itself cannot cause progressive repainting.
 std::mutex g_snapshotMutex;
-std::unordered_map<std::wstring, ValueSnapshot> g_snapshots;
-std::mutex g_snapshotQueueMutex;
-std::condition_variable g_snapshotCv;
-std::deque<std::wstring> g_snapshotQueue;
-std::unordered_set<std::wstring> g_snapshotPending;
-std::thread g_snapshotWorker;
-bool g_snapshotStopping = false;
+std::unordered_map<std::wstring, DirectorySnapshot> g_readySnapshots;
+std::unordered_map<std::wstring, DirectorySnapshot> g_visibleSnapshots;
+
+std::mutex g_batchQueueMutex;
+std::condition_variable g_batchCv;
+std::deque<std::wstring> g_batchQueue;
+std::unordered_set<std::wstring> g_batchPending;
+std::thread g_batchWorker;
+bool g_batchStopping = false;
 
 void CopyAnsi(char* destination, int maxlen, const char* source) {
     if (destination && maxlen > 0) strncpy_s(destination, static_cast<size_t>(maxlen), source, _TRUNCATE);
@@ -86,15 +95,8 @@ std::wstring GetDatabasePath(const ContentDefaultParamStruct* dps) {
 }
 
 void ReloadSettings() {
+    std::scoped_lock lock(g_settingsMutex);
     if (!g_settingsPath.empty()) fhm::LoadSettings(g_settingsPath, g_settings);
-}
-
-void RecordDirectoryVisit(const std::wstring& path) {
-    if (!fhm::IsDirectory(path)) return;
-    const auto id = fhm::ResolveFolderIdentity(path);
-    if (!id) return;
-    FILETIME now{}; GetSystemTimeAsFileTime(&now);
-    g_database.RecordVisit(*id, now, g_settings.repeatVisitCooldownSeconds, g_settings.sessionResetHours);
 }
 
 ULONGLONG FileTimeTicks(const FILETIME& time) {
@@ -206,18 +208,18 @@ std::wstring ParentRelativePath(const std::wstring& path) {
     return pos == std::wstring::npos ? L"" : path.substr(0, pos);
 }
 
-bool GetLastWriteTime(const std::wstring& path, FILETIME& lastWrite) {
-    WIN32_FILE_ATTRIBUTE_DATA data{};
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return false;
-    if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return false;
-    lastWrite = data.ftLastWriteTime;
-    return FileTimeTicks(lastWrite) != 0;
+std::wstring ParentDirectoryPath(const std::wstring& path) {
+    const size_t pos = path.find_last_of(L"\\/");
+    if (pos == std::wstring::npos) return {};
+    if (pos == 2 && path.size() >= 3 && path[1] == L':') return path.substr(0, 3);
+    return path.substr(0, pos);
 }
 
 double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::StoredActivity>& direct) {
     const double halfLife = EffectiveHalfLifeDays();
     double result = direct ? DirectHeat(*direct, halfLife) : 0.0;
     const int baseDepth = ComponentDepth(id.relativePath);
+
     if (g_settings.includePathHeat && g_settings.pathDecay > 0.0) {
         const auto activities = g_database.GetVolumeActivities(id.volumeId);
         for (const auto& [relative, activity] : activities) {
@@ -226,13 +228,15 @@ double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::S
             result = CombineHeat(result, DirectHeat(activity, halfLife) * std::pow(g_settings.pathDecay, distance));
         }
     }
+
     if (g_settings.fileHeatEnabled && g_settings.fileContribution > 0.0) {
         const auto files = g_database.GetVolumeFileActivities(id.volumeId);
         for (const auto& [relative, activity] : files) {
             const std::wstring parent = ParentRelativePath(relative);
             int distance = -1;
             if (_wcsicmp(parent.c_str(), id.relativePath.c_str()) == 0) distance = 0;
-            else if (g_settings.includePathHeat && IsDescendantOf(parent, id.relativePath)) distance = std::max(1, ComponentDepth(parent) - baseDepth);
+            else if (g_settings.includePathHeat && IsDescendantOf(parent, id.relativePath))
+                distance = std::max(1, ComponentDepth(parent) - baseDepth);
             if (distance < 0) continue;
             const double pathFactor = distance == 0 ? 1.0 : std::pow(g_settings.pathDecay, distance);
             result = CombineHeat(result, FileHeat(activity, halfLife) * g_settings.fileContribution * pathFactor);
@@ -241,18 +245,21 @@ double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::S
     return std::clamp(result, 0.0, 7.0);
 }
 
-int HeatToLevel(double heat) { return heat <= 0.0 ? 0 : std::clamp(static_cast<int>(std::ceil(heat)), 1, 7); }
+int HeatToLevel(double heat) {
+    return heat <= 0.0 ? 0 : std::clamp(static_cast<int>(std::ceil(heat)), 1, 7);
+}
+
 int HeatToColorStep(double heat) {
     if (heat <= 0.0) return 0;
     const int steps = std::clamp(g_settings.stepsPerLevel, 1, 16);
     return std::clamp(static_cast<int>(std::ceil(heat * steps)), 1, 7 * steps);
 }
 
-std::optional<ValueSnapshot> BuildSnapshot(const std::wstring& path) {
+std::optional<ValueSnapshot> BuildSnapshot(const std::wstring& path, bool isDirectory, const FILETIME* knownLastWrite) {
     ValueSnapshot snapshot{};
-    snapshot.isDirectory = fhm::IsDirectory(path);
+    snapshot.isDirectory = isDirectory;
 
-    if (snapshot.isDirectory) {
+    if (isDirectory) {
         const auto id = fhm::ResolveFolderIdentity(path);
         if (!id) return std::nullopt;
         const auto activity = g_database.GetActivity(*id);
@@ -263,22 +270,20 @@ std::optional<ValueSnapshot> BuildSnapshot(const std::wstring& path) {
             snapshot.hasLastVisit = true;
         }
     } else {
-        if (!g_settings.fileHeatEnabled) {
-            snapshot.updated = std::chrono::steady_clock::now();
-            return snapshot;
-        }
-        FILETIME lastWrite{};
-        if (!GetLastWriteTime(path, lastWrite)) return std::nullopt;
+        if (!g_settings.fileHeatEnabled) return snapshot;
+        if (!knownLastWrite || !FileTimeTicks(*knownLastWrite)) return std::nullopt;
         const auto id = fhm::ResolveFolderIdentity(path);
         if (!id) return std::nullopt;
-        g_database.ObserveFileWrite(*id, lastWrite);
+
+        g_database.ObserveFileWrite(*id, *knownLastWrite);
         auto activity = g_database.GetFileActivity(*id);
         if (!activity) {
             fhm::StoredFileActivity fallback{};
-            fallback.lastWrite = lastWrite;
+            fallback.lastWrite = *knownLastWrite;
             fallback.writeEvents = 0;
             activity = fallback;
         }
+
         snapshot.fileHeatAvailable = true;
         snapshot.heat = FileHeat(*activity, EffectiveHalfLifeDays());
         snapshot.writes = static_cast<__int64>(activity->writeEvents);
@@ -288,7 +293,6 @@ std::optional<ValueSnapshot> BuildSnapshot(const std::wstring& path) {
 
     snapshot.heatLevel = HeatToLevel(snapshot.heat);
     snapshot.colorStep = HeatToColorStep(snapshot.heat);
-    snapshot.updated = std::chrono::steady_clock::now();
     return snapshot;
 }
 
@@ -314,71 +318,128 @@ int ValueFromSnapshot(const ValueSnapshot& snapshot, int fieldIndex, void* field
     }
 }
 
-void StoreSnapshot(const std::wstring& path, ValueSnapshot snapshot) {
+std::optional<ValueSnapshot> FindVisibleSnapshot(const std::wstring& path) {
+    const std::wstring parent = ParentDirectoryPath(path);
+    if (parent.empty()) return std::nullopt;
+
     std::scoped_lock lock(g_snapshotMutex);
-    g_snapshots[path] = std::move(snapshot);
+    const auto dirIt = g_visibleSnapshots.find(parent);
+    if (dirIt == g_visibleSnapshots.end()) return std::nullopt;
+    const auto itemIt = dirIt->second.find(path);
+    if (itemIt == dirIt->second.end()) return std::nullopt;
+    return itemIt->second;
 }
 
-std::optional<ValueSnapshot> FindSnapshot(const std::wstring& path) {
+void ActivateReadySnapshot(const std::wstring& directory) {
     std::scoped_lock lock(g_snapshotMutex);
-    const auto it = g_snapshots.find(path);
-    if (it == g_snapshots.end()) return std::nullopt;
-    return it->second;
-}
-
-void QueueSnapshotRefresh(const std::wstring& path) {
-    std::scoped_lock lock(g_snapshotQueueMutex);
-    if (g_snapshotStopping || !g_snapshotPending.insert(path).second) return;
-    g_snapshotQueue.push_back(path);
-    g_snapshotCv.notify_one();
-}
-
-void SnapshotWorkerLoop() {
-    for (;;) {
-        std::wstring path;
-        {
-            std::unique_lock lock(g_snapshotQueueMutex);
-            g_snapshotCv.wait(lock, [] { return g_snapshotStopping || !g_snapshotQueue.empty(); });
-            if (g_snapshotStopping && g_snapshotQueue.empty()) break;
-            path = std::move(g_snapshotQueue.front());
-            g_snapshotQueue.pop_front();
-        }
-        if (auto snapshot = BuildSnapshot(path)) StoreSnapshot(path, std::move(*snapshot));
-        {
-            std::scoped_lock lock(g_snapshotQueueMutex);
-            g_snapshotPending.erase(path);
-        }
-    }
-}
-
-void StartSnapshotWorker() {
-    std::scoped_lock lock(g_snapshotQueueMutex);
-    if (g_snapshotWorker.joinable()) return;
-    g_snapshotStopping = false;
-    g_snapshotWorker = std::thread(SnapshotWorkerLoop);
-}
-
-void StopSnapshotWorker() {
-    {
-        std::scoped_lock lock(g_snapshotQueueMutex);
-        g_snapshotStopping = true;
-    }
-    g_snapshotCv.notify_all();
-    if (g_snapshotWorker.joinable()) g_snapshotWorker.join();
-    {
-        std::scoped_lock lock(g_snapshotQueueMutex);
-        g_snapshotQueue.clear();
-        g_snapshotPending.clear();
-    }
-    {
-        std::scoped_lock lock(g_snapshotMutex);
-        g_snapshots.clear();
-    }
+    const auto it = g_readySnapshots.find(directory);
+    if (it != g_readySnapshots.end()) g_visibleSnapshots[directory] = it->second;
 }
 
 void ClearSnapshots() {
     std::scoped_lock lock(g_snapshotMutex);
-    g_snapshots.clear();
+    g_readySnapshots.clear();
+    g_visibleSnapshots.clear();
+}
+
+void StoreReadyBatch(const std::wstring& directory, DirectorySnapshot batch) {
+    // One lock / one map replacement: no partially completed directory can ever
+    // become visible to ContentGetValueW.
+    std::scoped_lock lock(g_snapshotMutex);
+    g_readySnapshots[directory] = std::move(batch);
+}
+
+void RecordDirectoryVisitBackground(const std::wstring& path) {
+    const auto id = fhm::ResolveFolderIdentity(path);
+    if (!id) return;
+    FILETIME now{};
+    GetSystemTimeAsFileTime(&now);
+    g_database.RecordVisit(*id, now, g_settings.repeatVisitCooldownSeconds, g_settings.sessionResetHours);
+}
+
+DirectorySnapshot BuildDirectoryBatch(const std::wstring& directory) {
+    DirectorySnapshot result;
+    std::wstring pattern = directory;
+    if (!pattern.empty() && pattern.back() != L'\\' && pattern.back() != L'/') pattern += L'\\';
+    pattern += L'*';
+
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileW(pattern.c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) return result;
+
+    do {
+        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+
+        std::wstring fullPath = directory;
+        if (!fullPath.empty() && fullPath.back() != L'\\' && fullPath.back() != L'/') fullPath += L'\\';
+        fullPath += data.cFileName;
+
+        const bool isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        const FILETIME* lastWrite = isDirectory ? nullptr : &data.ftLastWriteTime;
+        if (auto snapshot = BuildSnapshot(fullPath, isDirectory, lastWrite))
+            result.emplace(std::move(fullPath), std::move(*snapshot));
+    } while (FindNextFileW(find, &data));
+
+    FindClose(find);
+    return result;
+}
+
+void QueueDirectoryBatch(const std::wstring& directory) {
+    if (directory.empty()) return;
+    std::scoped_lock lock(g_batchQueueMutex);
+    if (g_batchStopping || !g_batchPending.insert(directory).second) return;
+    g_batchQueue.push_back(directory);
+    g_batchCv.notify_one();
+}
+
+void BatchWorkerLoop() {
+    for (;;) {
+        std::wstring directory;
+        {
+            std::unique_lock lock(g_batchQueueMutex);
+            g_batchCv.wait(lock, [] { return g_batchStopping || !g_batchQueue.empty(); });
+            if (g_batchStopping && g_batchQueue.empty()) break;
+            directory = std::move(g_batchQueue.front());
+            g_batchQueue.pop_front();
+        }
+
+        {
+            // Settings are changed only by explicit TC refresh/configuration.
+            // Hold a stable settings view for the complete batch.
+            std::scoped_lock settingsLock(g_settingsMutex);
+            RecordDirectoryVisitBackground(directory);
+            auto batch = BuildDirectoryBatch(directory);
+            StoreReadyBatch(directory, std::move(batch));
+        }
+
+        {
+            std::scoped_lock lock(g_batchQueueMutex);
+            g_batchPending.erase(directory);
+        }
+    }
+}
+
+void StartBatchWorker() {
+    std::scoped_lock lock(g_batchQueueMutex);
+    if (g_batchWorker.joinable()) return;
+    g_batchStopping = false;
+    g_batchWorker = std::thread(BatchWorkerLoop);
+}
+
+void StopBatchWorker() {
+    {
+        std::scoped_lock lock(g_batchQueueMutex);
+        g_batchStopping = true;
+    }
+    g_batchCv.notify_all();
+    if (g_batchWorker.joinable()) g_batchWorker.join();
+
+    {
+        std::scoped_lock lock(g_batchQueueMutex);
+        g_batchQueue.clear();
+        g_batchPending.clear();
+    }
+    ClearSnapshots();
 }
 } // namespace
 
@@ -388,7 +449,7 @@ extern "C" __declspec(dllexport) void __stdcall ContentSetDefaultParams(ContentD
     g_settingsPath = fhm::SettingsPathFromDefaultIni(defaultIni);
     ReloadSettings();
     g_database.Open(GetDatabasePath(dps));
-    StartSnapshotWorker();
+    StartBatchWorker();
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fieldIndex, char* fieldName, char* units, int maxlen) {
@@ -405,25 +466,16 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
     }
 }
 
-extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int flags) {
+extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int) {
     if (!fileName || !fieldValue) return ft_fileerror;
-    const std::wstring path(fileName);
 
-    if (auto cached = FindSnapshot(path)) {
-        if (std::chrono::steady_clock::now() - cached->updated > kSnapshotLifetime) QueueSnapshotRefresh(path);
-        return ValueFromSnapshot(*cached, fieldIndex, fieldValue);
-    }
+    // Critical hot-path rule for 0.33: RAM lookup only. No filesystem calls,
+    // SQLite, heat math, queueing or delayed retry from ContentGetValueW.
+    if (auto snapshot = FindVisibleSnapshot(fileName))
+        return ValueFromSnapshot(*snapshot, fieldIndex, fieldValue);
 
-    if ((flags & CONTENT_DELAYIFSLOW) != 0) {
-        QueueSnapshotRefresh(path);
-        return ft_delayed;
-    }
-
-    if (auto snapshot = BuildSnapshot(path)) {
-        const int result = ValueFromSnapshot(*snapshot, fieldIndex, fieldValue);
-        StoreSnapshot(path, std::move(*snapshot));
-        return result;
-    }
+    // No snapshot for this visit yet. Return no value and keep the view stable;
+    // the complete batch is prepared independently for the next visit.
     return ft_fieldempty;
 }
 
@@ -433,16 +485,25 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, i
     return ContentGetValueW(const_cast<WCHAR*>(wide.c_str()), fieldIndex, unitIndex, fieldValue, maxlen, flags);
 }
 
-extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fieldIndex) { return (fieldIndex >= kFieldHeat && fieldIndex <= kFieldLastWrite) ? -1 : 1; }
+extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fieldIndex) {
+    return (fieldIndex >= kFieldHeat && fieldIndex <= kFieldLastWrite) ? -1 : 1;
+}
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
     if (state == contst_refreshpressed) {
         ReloadSettings();
         ClearSnapshots();
+        if (path && *path) QueueDirectoryBatch(path);
+        return;
     }
+
     if (state == contst_readnewdir && path && *path) {
-        RecordDirectoryVisit(path);
-        QueueSnapshotRefresh(path);
+        const std::wstring directory(path);
+
+        // Promote only a batch that was already complete before this visit.
+        // The new calculation started below stays hidden until a later visit.
+        ActivateReadySnapshot(directory);
+        QueueDirectoryBatch(directory);
     }
 }
 
@@ -452,6 +513,6 @@ extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformation(int 
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentPluginUnloading() {
-    StopSnapshotWorker();
+    StopBatchWorker();
     g_database.Close();
 }
