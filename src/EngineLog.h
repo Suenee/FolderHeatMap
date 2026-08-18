@@ -1,6 +1,8 @@
 #pragma once
 
 #include <windows.h>
+#include <cstdio>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -14,13 +16,15 @@ public:
 
     void Initialize(const std::wstring& settingsPath) {
         std::scoped_lock lock(mutex_);
+        if (stream_.is_open()) stream_.close();
+        stream_.clear();
         mode_ = Mode::Off;
         if (settingsPath.empty()) return;
 
         wchar_t modeText[32]{};
         GetPrivateProfileStringW(L"Logging", L"Mode", L"off", modeText, 32, settingsPath.c_str());
         std::wstring mode(modeText);
-        for (auto& ch : mode) ch = static_cast<wchar_t>(towlower(ch));
+        for (auto& ch : mode) ch = static_cast<wchar_t>(std::towlower(ch));
         if (mode == L"single") mode_ = Mode::Single;
         else if (mode == L"all") mode_ = Mode::All;
         else return;
@@ -49,11 +53,13 @@ public:
     }
 
     void WritePath(const char* category, const char* action, const std::wstring& path) {
-        if (mode_ == Mode::Off) return;
         Write(category, std::string(action) + " " + Utf8(path));
     }
 
-    Mode GetMode() const { return mode_; }
+    Mode GetMode() const {
+        std::scoped_lock lock(mutex_);
+        return mode_;
+    }
 
 private:
     static std::string Utf8(const std::wstring& text) {
