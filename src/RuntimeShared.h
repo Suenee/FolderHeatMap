@@ -2,6 +2,8 @@
 
 #include <windows.h>
 #include <cstdint>
+#include <cstring>
+#include <cwchar>
 #include <cwctype>
 #include <string>
 
@@ -68,7 +70,7 @@ inline std::uint64_t HashNormalizedPath(const wchar_t* text, std::uint32_t& norm
     normalizedLength = 0;
     if (!text) return 0;
 
-    std::size_t rawLength = wcslen(text);
+    std::size_t rawLength = std::wcslen(text);
     while (rawLength > 3 && (text[rawLength - 1] == L'\\' || text[rawLength - 1] == L'/')) --rawLength;
 
     for (std::size_t i = 0; i < rawLength; ++i) {
