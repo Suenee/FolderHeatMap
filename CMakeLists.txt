@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 0.33 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 0.34 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -70,9 +70,6 @@ target_compile_definitions(FolderHeatMapReset PRIVATE
 target_link_libraries(FolderHeatMapReset PRIVATE shell32 advapi32)
 
 if(MSVC)
-    # Force-include the async facade only into FolderHeatMap.cpp. The header
-    # aliases fhm::Database after Database.h has been parsed, so the existing
-    # plugin code uses AsyncDatabase while Database.cpp/reset stay unchanged.
     set_source_files_properties(src/FolderHeatMap.cpp PROPERTIES
         COMPILE_DEFINITIONS "FHM_USE_ASYNC_DATABASE"
         COMPILE_OPTIONS "/FIAsyncCache.h"
