@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 0.34 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.00 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -13,17 +13,26 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/vendor/sqlite/sqlite3.c")
     message(FATAL_ERROR "SQLite amalgamation is missing. Run upgrade.cmd first.")
 endif()
 
+# WDX 1.00 is intentionally tiny: it only reads immutable values from shared RAM
+# and forwards directory-navigation events to the background engine.
 add_library(FolderHeatMap SHARED
     src/FolderHeatMap.cpp
+)
+target_include_directories(FolderHeatMap PRIVATE src)
+target_compile_features(FolderHeatMap PRIVATE cxx_std_20)
+target_compile_definitions(FolderHeatMap PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# All heat math, filesystem work, SQLite access, prediction and persistence live here.
+add_executable(FolderHeatMapEngine
+    src/EngineApp.cpp
     src/FolderIdentity.cpp
     src/Database.cpp
     src/Settings.cpp
     vendor/sqlite/sqlite3.c
 )
-
-target_include_directories(FolderHeatMap PRIVATE src vendor/sqlite)
-target_compile_features(FolderHeatMap PRIVATE cxx_std_20)
-target_compile_definitions(FolderHeatMap PRIVATE
+target_include_directories(FolderHeatMapEngine PRIVATE src vendor/sqlite)
+target_compile_features(FolderHeatMapEngine PRIVATE cxx_std_20)
+target_compile_definitions(FolderHeatMapEngine PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION
 )
@@ -70,16 +79,14 @@ target_compile_definitions(FolderHeatMapReset PRIVATE
 target_link_libraries(FolderHeatMapReset PRIVATE shell32 advapi32)
 
 if(MSVC)
-    set_source_files_properties(src/FolderHeatMap.cpp PROPERTIES
-        COMPILE_DEFINITIONS "FHM_USE_ASYNC_DATABASE"
-        COMPILE_OPTIONS "/FIAsyncCache.h"
-    )
     target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc /utf-8)
+    target_compile_options(FolderHeatMapEngine PRIVATE /W4 /permissive- /EHsc /utf-8)
     target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /utf-8 /FIwindows.h /FIshellapi.h)
     target_compile_options(FolderHeatMapReset PRIVATE /W4 /permissive- /EHsc /utf-8)
     set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
 endif()
 
 set_target_properties(FolderHeatMap PROPERTIES PREFIX "" SUFFIX ".wdx64" OUTPUT_NAME "FolderHeatMap")
+set_target_properties(FolderHeatMapEngine PROPERTIES OUTPUT_NAME "FolderHeatMapEngine")
 set_target_properties(FolderHeatMapConfig PROPERTIES OUTPUT_NAME "FolderHeatMapConfig")
 set_target_properties(FolderHeatMapReset PROPERTIES OUTPUT_NAME "FolderHeatMapReset")
