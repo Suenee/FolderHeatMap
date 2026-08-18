@@ -1,24 +1,10 @@
-#include "Database.h"
-#include "FolderIdentity.h"
-#include "Settings.h"
+#include "RuntimeShared.h"
 #include "WdxApi.h"
 
 #include <windows.h>
-#include <algorithm>
-#include <cmath>
-#include <condition_variable>
 #include <cstring>
-#include <cwctype>
-#include <deque>
 #include <filesystem>
-#include <mutex>
-#include <optional>
 #include <string>
-#include <thread>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
 
 namespace {
 constexpr int kFieldHeat = 0;
@@ -28,39 +14,11 @@ constexpr int kFieldHeatLevel = 3;
 constexpr int kFieldColorStep = 4;
 constexpr int kFieldWrites = 5;
 constexpr int kFieldLastWrite = 6;
-constexpr double kTicksPerDay = 10000000.0 * 60.0 * 60.0 * 24.0;
 
-fhm::Database g_database;
-fhm::Settings g_settings = fhm::DefaultSettings();
-std::wstring g_settingsPath;
-std::mutex g_settingsMutex;
-
-struct ValueSnapshot {
-    bool isDirectory = false;
-    bool fileHeatAvailable = false;
-    double heat = 0.0;
-    __int64 visits = 0;
-    __int64 writes = 0;
-    FILETIME lastVisit{};
-    FILETIME lastWrite{};
-    bool hasLastVisit = false;
-    bool hasLastWrite = false;
-    int heatLevel = 0;
-    int colorStep = 0;
-};
-
-using DirectorySnapshot = std::unordered_map<std::wstring, ValueSnapshot>;
-
-std::mutex g_snapshotMutex;
-std::unordered_map<std::wstring, DirectorySnapshot> g_readySnapshots;
-std::unordered_map<std::wstring, DirectorySnapshot> g_visibleSnapshots;
-
-std::mutex g_batchQueueMutex;
-std::condition_variable g_batchCv;
-std::deque<std::wstring> g_batchQueue;
-std::unordered_set<std::wstring> g_batchPending;
-std::thread g_batchWorker;
-bool g_batchStopping = false;
+HMODULE g_module = nullptr;
+HANDLE g_mapping = nullptr;
+fhm::runtime::SharedState* g_shared = nullptr;
+bool g_clientRegistered = false;
 
 void CopyAnsi(char* destination, int maxlen, const char* source) {
     if (destination && maxlen > 0) strncpy_s(destination, static_cast<size_t>(maxlen), source, _TRUNCATE);
@@ -76,261 +34,74 @@ std::wstring AnsiToWide(const char* text) {
     return out;
 }
 
-std::wstring NormalizePathKey(std::wstring path) {
-    for (auto& ch : path) {
-        if (ch == L'/') ch = L'\\';
-        else ch = static_cast<wchar_t>(std::towlower(ch));
-    }
-    while (path.size() > 3 && !path.empty() && path.back() == L'\\') path.pop_back();
-    return path;
+std::wstring DefaultIniPath(const ContentDefaultParamStruct* dps) {
+    if (!dps || dps->DefaultIniName[0] == '\0') return {};
+    return AnsiToWide(dps->DefaultIniName);
 }
 
-std::wstring GetDatabasePath(const ContentDefaultParamStruct* dps) {
-    if (dps && dps->DefaultIniName[0] != '\0') {
-        const auto ini = AnsiToWide(dps->DefaultIniName);
-        if (!ini.empty()) {
-            const std::filesystem::path p(ini);
-            if (p.has_parent_path()) return (p.parent_path() / L"FolderHeatMap.db").wstring();
-        }
-    }
-    wchar_t localAppData[MAX_PATH]{};
-    const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-    if (n > 0 && n < MAX_PATH) return (std::filesystem::path(localAppData) / L"FolderHeatMap" / L"FolderHeatMap.db").wstring();
+std::wstring DatabasePath(const std::wstring& defaultIni) {
+    const std::filesystem::path ini(defaultIni);
+    if (ini.has_parent_path()) return (ini.parent_path() / L"FolderHeatMap.db").wstring();
     return L"FolderHeatMap.db";
 }
 
-void ReloadSettings() {
-    std::scoped_lock lock(g_settingsMutex);
-    if (!g_settingsPath.empty()) fhm::LoadSettings(g_settingsPath, g_settings);
+std::wstring SettingsPath(const std::wstring& defaultIni) {
+    const std::filesystem::path ini(defaultIni);
+    if (ini.has_parent_path()) return (ini.parent_path() / L"FolderHeatMap.ini").wstring();
+    return L"FolderHeatMap.ini";
 }
 
-ULONGLONG FileTimeTicks(const FILETIME& time) {
-    ULARGE_INTEGER v{};
-    v.LowPart = time.dwLowDateTime;
-    v.HighPart = time.dwHighDateTime;
-    return v.QuadPart;
+std::wstring EnginePath() {
+    wchar_t modulePath[32768]{};
+    if (!g_module || !GetModuleFileNameW(g_module, modulePath, static_cast<DWORD>(std::size(modulePath)))) return {};
+    return (std::filesystem::path(modulePath).parent_path() / L"FolderHeatMapEngine.exe").wstring();
 }
 
-double DaysAgo(const FILETIME& time) {
-    const ULONGLONG then = FileTimeTicks(time);
-    FILETIME nft{}; GetSystemTimeAsFileTime(&nft);
-    const ULONGLONG now = FileTimeTicks(nft);
-    if (!then || now <= then) return 0.0;
-    return static_cast<double>(now - then) / kTicksPerDay;
-}
+void OpenSharedMemory() {
+    if (g_shared) return;
+    g_mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                   static_cast<DWORD>(sizeof(fhm::runtime::SharedState)),
+                                   fhm::runtime::kMappingName);
+    if (!g_mapping) return;
 
-std::int64_t CurrentDayKey() {
-    FILETIME now{}; GetSystemTimeAsFileTime(&now);
-    return static_cast<std::int64_t>(FileTimeTicks(now) / static_cast<ULONGLONG>(kTicksPerDay));
-}
-
-double EffectiveHalfLifeDays() {
-    if (!g_settings.coolingAuto) return std::clamp(g_settings.coolingHalfLifeDays, 1.0, 365.0);
-    FILETIME now{}; GetSystemTimeAsFileTime(&now);
-    constexpr int window = 60;
-    const int activeDays = g_database.GetRecentActiveDays(now, window);
-    if (activeDays < 7) return 30.0;
-    const double activeFraction = static_cast<double>(activeDays) / window;
-    return std::clamp(12.0 / std::max(activeFraction, 1.0 / window), 7.0, 180.0);
-}
-
-double RecentHeat(const fhm::StoredActivity& a, double halfLifeDays) {
-    if (!a.recentVisits || !FileTimeTicks(a.lastEffectiveVisit)) return 0.0;
-    constexpr double targetVisits = 24.0;
-    const double activity = std::log1p(static_cast<double>(a.recentVisits)) / std::log1p(targetVisits);
-    const double base = 5.8 * std::clamp(activity, 0.0, 1.0);
-    const double recentHalfLife = std::clamp(halfLifeDays * 0.18, 0.5, 14.0);
-    const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastEffectiveVisit) / recentHalfLife);
-    return std::clamp(base * recency, 0.0, 5.8);
-}
-
-double HabitHeat(const fhm::StoredActivity& a, double halfLifeDays) {
-    if (!a.activeDays || !FileTimeTicks(a.lastEffectiveVisit)) return 0.0;
-    const std::int64_t today = CurrentDayKey();
-    const std::int64_t first = a.firstActiveDay > 0 ? a.firstActiveDay : today;
-    const double spanDays = static_cast<double>(std::max<std::int64_t>(1, today - first + 1));
-    const double frequency = std::clamp(static_cast<double>(a.activeDays) / spanDays, 0.0, 1.0);
-    const double maturity = 1.0 - std::exp(-static_cast<double>(a.activeDays) / 6.0);
-    const double regularity = 0.45 + 0.55 * std::sqrt(frequency);
-    const double base = 5.2 * maturity * regularity;
-    const double habitHalfLife = std::clamp(halfLifeDays * 3.0, 14.0, 540.0);
-    const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastEffectiveVisit) / habitHalfLife);
-    return std::clamp(base * recency, 0.0, 5.2);
-}
-
-double DirectHeat(const fhm::StoredActivity& a, double halfLifeDays) {
-    if (!a.visits) return 0.0;
-    const double recent = RecentHeat(a, halfLifeDays);
-    const double habit = HabitHeat(a, halfLifeDays);
-    const double high = std::max(recent, habit);
-    const double low = std::min(recent, habit);
-    return std::clamp(high + 0.30 * low, 0.0, 7.0);
-}
-
-double FileHeat(const fhm::StoredFileActivity& a, double halfLifeDays) {
-    if (!a.writeEvents || !FileTimeTicks(a.lastWrite)) return 0.0;
-    constexpr double targetWrites = 12.0;
-    const double activity = std::log1p(static_cast<double>(a.writeEvents)) / std::log1p(targetWrites);
-    const double recentBase = 6.2 * std::clamp(activity, 0.0, 1.0);
-    const double writeHalfLife = std::clamp(halfLifeDays * 0.14, 0.5, 21.0);
-    const double recency = std::exp(-std::log(2.0) * DaysAgo(a.lastWrite) / writeHalfLife);
-    const double recent = recentBase * recency;
-    const std::int64_t today = CurrentDayKey();
-    const std::int64_t first = a.firstActiveDay > 0 ? a.firstActiveDay : today;
-    const double spanDays = static_cast<double>(std::max<std::int64_t>(1, today - first + 1));
-    const double frequency = std::clamp(static_cast<double>(a.activeDays) / spanDays, 0.0, 1.0);
-    const double maturity = 1.0 - std::exp(-static_cast<double>(a.writeEvents) / 8.0);
-    const double habitBase = 4.4 * maturity * (0.45 + 0.55 * std::sqrt(frequency));
-    const double habitHalfLife = std::clamp(halfLifeDays * 2.0, 10.0, 365.0);
-    const double habit = habitBase * std::exp(-std::log(2.0) * DaysAgo(a.lastWrite) / habitHalfLife);
-    const double high = std::max(recent, habit);
-    const double low = std::min(recent, habit);
-    return std::clamp(high + 0.22 * low, 0.0, 7.0);
-}
-
-double CombineHeat(double current, double contribution) {
-    const double a = std::clamp(current, 0.0, 7.0) / 7.0;
-    const double b = std::clamp(contribution, 0.0, 7.0) / 7.0;
-    return 7.0 * (1.0 - (1.0 - a) * (1.0 - b));
-}
-
-int ComponentDepth(const std::wstring& relative) {
-    if (relative.empty()) return 0;
-    int depth = 1;
-    for (wchar_t c : relative) if (c == L'\\') ++depth;
-    return depth;
-}
-
-bool IsDescendantOf(const std::wstring& child, const std::wstring& parent) {
-    if (parent.empty()) return !child.empty();
-    if (child.size() <= parent.size()) return false;
-    if (_wcsnicmp(child.c_str(), parent.c_str(), parent.size()) != 0) return false;
-    return child[parent.size()] == L'\\';
-}
-
-std::wstring ParentRelativePath(const std::wstring& path) {
-    const size_t pos = path.find_last_of(L'\\');
-    return pos == std::wstring::npos ? L"" : path.substr(0, pos);
-}
-
-std::wstring ParentDirectoryPath(const std::wstring& path) {
-    const std::wstring normalized = NormalizePathKey(path);
-    const size_t pos = normalized.find_last_of(L'\\');
-    if (pos == std::wstring::npos) return {};
-    if (pos == 2 && normalized.size() >= 3 && normalized[1] == L':') return normalized.substr(0, 3);
-    return normalized.substr(0, pos);
-}
-
-double HeatForIdentity(const fhm::FolderIdentity& id, const std::optional<fhm::StoredActivity>& direct) {
-    const double halfLife = EffectiveHalfLifeDays();
-    double result = direct ? DirectHeat(*direct, halfLife) : 0.0;
-    const int baseDepth = ComponentDepth(id.relativePath);
-
-    if (g_settings.includePathHeat && g_settings.pathDecay > 0.0) {
-        const auto activities = g_database.GetVolumeActivities(id.volumeId);
-        for (const auto& [relative, activity] : activities) {
-            if (!IsDescendantOf(relative, id.relativePath)) continue;
-            const int distance = std::max(1, ComponentDepth(relative) - baseDepth);
-            result = CombineHeat(result, DirectHeat(activity, halfLife) * std::pow(g_settings.pathDecay, distance));
-        }
+    const bool created = GetLastError() != ERROR_ALREADY_EXISTS;
+    g_shared = static_cast<fhm::runtime::SharedState*>(
+        MapViewOfFile(g_mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(fhm::runtime::SharedState)));
+    if (!g_shared) {
+        CloseHandle(g_mapping);
+        g_mapping = nullptr;
+        return;
     }
 
-    if (g_settings.fileHeatEnabled && g_settings.fileContribution > 0.0) {
-        const auto files = g_database.GetVolumeFileActivities(id.volumeId);
-        for (const auto& [relative, activity] : files) {
-            const std::wstring parent = ParentRelativePath(relative);
-            int distance = -1;
-            if (_wcsicmp(parent.c_str(), id.relativePath.c_str()) == 0) distance = 0;
-            else if (g_settings.includePathHeat && IsDescendantOf(parent, id.relativePath))
-                distance = std::max(1, ComponentDepth(parent) - baseDepth);
-            if (distance < 0) continue;
-            const double pathFactor = distance == 0 ? 1.0 : std::pow(g_settings.pathDecay, distance);
-            result = CombineHeat(result, FileHeat(activity, halfLife) * g_settings.fileContribution * pathFactor);
-        }
+    if (created || g_shared->magic != fhm::runtime::kMagic || g_shared->version != fhm::runtime::kVersion) {
+        std::memset(g_shared, 0, sizeof(*g_shared));
+        g_shared->magic = fhm::runtime::kMagic;
+        g_shared->version = fhm::runtime::kVersion;
     }
-    return std::clamp(result, 0.0, 7.0);
 }
 
-int HeatToLevel(double heat) {
-    return heat <= 0.0 ? 0 : std::clamp(static_cast<int>(std::ceil(heat)), 1, 7);
-}
+void LaunchEngine(const ContentDefaultParamStruct* dps) {
+    const std::wstring engine = EnginePath();
+    if (engine.empty() || !std::filesystem::exists(engine)) return;
 
-int HeatToColorStep(double heat) {
-    if (heat <= 0.0) return 0;
-    const int steps = std::clamp(g_settings.stepsPerLevel, 1, 16);
-    return std::clamp(static_cast<int>(std::ceil(heat * steps)), 1, 7 * steps);
-}
-
-std::optional<ValueSnapshot> BuildSnapshot(const std::wstring& path, bool isDirectory, const FILETIME* knownLastWrite) {
-    ValueSnapshot snapshot{};
-    snapshot.isDirectory = isDirectory;
-
-    if (isDirectory) {
-        const auto id = fhm::ResolveFolderIdentity(path);
-        if (!id) return std::nullopt;
-        const auto activity = g_database.GetActivity(*id);
-        snapshot.heat = HeatForIdentity(*id, activity);
-        snapshot.visits = activity ? static_cast<__int64>(activity->visits) : 0;
-        if (activity) {
-            snapshot.lastVisit = activity->lastVisit;
-            snapshot.hasLastVisit = true;
-        }
-    } else {
-        if (!g_settings.fileHeatEnabled) return snapshot;
-        if (!knownLastWrite || !FileTimeTicks(*knownLastWrite)) return std::nullopt;
-        const auto id = fhm::ResolveFolderIdentity(path);
-        if (!id) return std::nullopt;
-
-        g_database.ObserveFileWrite(*id, *knownLastWrite);
-        auto activity = g_database.GetFileActivity(*id);
-        if (!activity) {
-            fhm::StoredFileActivity fallback{};
-            fallback.lastWrite = *knownLastWrite;
-            fallback.writeEvents = 0;
-            activity = fallback;
-        }
-
-        snapshot.fileHeatAvailable = true;
-        snapshot.heat = FileHeat(*activity, EffectiveHalfLifeDays());
-        snapshot.writes = static_cast<__int64>(activity->writeEvents);
-        snapshot.lastWrite = activity->lastWrite;
-        snapshot.hasLastWrite = true;
+    HANDLE existing = OpenMutexW(SYNCHRONIZE, FALSE, fhm::runtime::kEngineMutexName);
+    if (existing) {
+        CloseHandle(existing);
+        return;
     }
 
-    snapshot.heatLevel = HeatToLevel(snapshot.heat);
-    snapshot.colorStep = HeatToColorStep(snapshot.heat);
-    return snapshot;
-}
+    const std::wstring defaultIni = DefaultIniPath(dps);
+    const std::wstring db = DatabasePath(defaultIni);
+    const std::wstring settings = SettingsPath(defaultIni);
 
-int ValueFromSnapshot(const ValueSnapshot& snapshot, int fieldIndex, void* fieldValue) {
-    switch (fieldIndex) {
-        case kFieldHeat:
-            *static_cast<double*>(fieldValue) = (snapshot.isDirectory || snapshot.fileHeatAvailable) ? snapshot.heat : 0.0;
-            return ft_numeric_floating;
-        case kFieldVisits:
-            if (!snapshot.isDirectory) return ft_fieldempty;
-            *static_cast<__int64*>(fieldValue) = snapshot.visits;
-            return ft_numeric_64;
-        case kFieldLastVisit:
-            if (!snapshot.isDirectory || !snapshot.hasLastVisit) return ft_fieldempty;
-            *static_cast<FILETIME*>(fieldValue) = snapshot.lastVisit;
-            return ft_datetime;
-        case kFieldHeatLevel:
-            *static_cast<int*>(fieldValue) = (snapshot.isDirectory || snapshot.fileHeatAvailable) ? snapshot.heatLevel : 0;
-            return ft_numeric_32;
-        case kFieldColorStep:
-            *static_cast<int*>(fieldValue) = (snapshot.isDirectory || snapshot.fileHeatAvailable) ? snapshot.colorStep : 0;
-            return ft_numeric_32;
-        case kFieldWrites:
-            if (snapshot.isDirectory || !snapshot.fileHeatAvailable) return ft_fieldempty;
-            *static_cast<__int64*>(fieldValue) = snapshot.writes;
-            return ft_numeric_64;
-        case kFieldLastWrite:
-            if (snapshot.isDirectory || !snapshot.fileHeatAvailable || !snapshot.hasLastWrite) return ft_fieldempty;
-            *static_cast<FILETIME*>(fieldValue) = snapshot.lastWrite;
-            return ft_datetime;
-        default:
-            return ft_nosuchfield;
+    std::wstring command = L"\"" + engine + L"\" --db \"" + db + L"\" --settings \"" + settings + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (CreateProcessW(engine.c_str(), command.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
     }
 }
 
@@ -339,14 +110,14 @@ int StableZeroValue(int fieldIndex, void* fieldValue) {
         case kFieldHeat:
             *static_cast<double*>(fieldValue) = 0.0;
             return ft_numeric_floating;
-        case kFieldHeatLevel:
-        case kFieldColorStep:
-            *static_cast<int*>(fieldValue) = 0;
-            return ft_numeric_32;
         case kFieldVisits:
         case kFieldWrites:
             *static_cast<__int64*>(fieldValue) = 0;
             return ft_numeric_64;
+        case kFieldHeatLevel:
+        case kFieldColorStep:
+            *static_cast<int*>(fieldValue) = 0;
+            return ft_numeric_32;
         case kFieldLastVisit:
         case kFieldLastWrite:
             return ft_fieldempty;
@@ -355,137 +126,113 @@ int StableZeroValue(int fieldIndex, void* fieldValue) {
     }
 }
 
-std::optional<ValueSnapshot> FindVisibleSnapshot(const std::wstring& path) {
-    const std::wstring itemKey = NormalizePathKey(path);
-    const std::wstring parent = ParentDirectoryPath(itemKey);
-    if (parent.empty()) return std::nullopt;
-
-    std::scoped_lock lock(g_snapshotMutex);
-    const auto dirIt = g_visibleSnapshots.find(parent);
-    if (dirIt == g_visibleSnapshots.end()) return std::nullopt;
-    const auto itemIt = dirIt->second.find(itemKey);
-    if (itemIt == dirIt->second.end()) return std::nullopt;
-    return itemIt->second;
-}
-
-void ActivateReadySnapshot(const std::wstring& directory) {
-    const std::wstring key = NormalizePathKey(directory);
-    std::scoped_lock lock(g_snapshotMutex);
-    const auto it = g_readySnapshots.find(key);
-    if (it != g_readySnapshots.end()) g_visibleSnapshots[key] = it->second;
-}
-
-void ClearSnapshots() {
-    std::scoped_lock lock(g_snapshotMutex);
-    g_readySnapshots.clear();
-    g_visibleSnapshots.clear();
-}
-
-void StoreReadyBatch(const std::wstring& directory, DirectorySnapshot batch) {
-    std::scoped_lock lock(g_snapshotMutex);
-    g_readySnapshots[NormalizePathKey(directory)] = std::move(batch);
-}
-
-void RecordDirectoryVisitBackground(const std::wstring& path) {
-    const auto id = fhm::ResolveFolderIdentity(path);
-    if (!id) return;
-    FILETIME now{};
-    GetSystemTimeAsFileTime(&now);
-    g_database.RecordVisit(*id, now, g_settings.repeatVisitCooldownSeconds, g_settings.sessionResetHours);
-}
-
-DirectorySnapshot BuildDirectoryBatch(const std::wstring& directory) {
-    DirectorySnapshot result;
-    std::wstring pattern = directory;
-    if (!pattern.empty() && pattern.back() != L'\\' && pattern.back() != L'/') pattern += L'\\';
-    pattern += L'*';
-
-    WIN32_FIND_DATAW data{};
-    HANDLE find = FindFirstFileW(pattern.c_str(), &data);
-    if (find == INVALID_HANDLE_VALUE) return result;
-
-    do {
-        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
-
-        std::wstring fullPath = directory;
-        if (!fullPath.empty() && fullPath.back() != L'\\' && fullPath.back() != L'/') fullPath += L'\\';
-        fullPath += data.cFileName;
-
-        const bool isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        const FILETIME* lastWrite = isDirectory ? nullptr : &data.ftLastWriteTime;
-        if (auto snapshot = BuildSnapshot(fullPath, isDirectory, lastWrite))
-            result.emplace(NormalizePathKey(fullPath), std::move(*snapshot));
-    } while (FindNextFileW(find, &data));
-
-    FindClose(find);
-    return result;
-}
-
-void QueueDirectoryBatch(const std::wstring& directory) {
-    if (directory.empty()) return;
-    const std::wstring normalized = NormalizePathKey(directory);
-    std::scoped_lock lock(g_batchQueueMutex);
-    if (g_batchStopping || !g_batchPending.insert(normalized).second) return;
-    g_batchQueue.push_back(normalized);
-    g_batchCv.notify_one();
-}
-
-void BatchWorkerLoop() {
-    for (;;) {
-        std::wstring directory;
-        {
-            std::unique_lock lock(g_batchQueueMutex);
-            g_batchCv.wait(lock, [] { return g_batchStopping || !g_batchQueue.empty(); });
-            if (g_batchStopping && g_batchQueue.empty()) break;
-            directory = std::move(g_batchQueue.front());
-            g_batchQueue.pop_front();
-        }
-
-        {
-            std::scoped_lock settingsLock(g_settingsMutex);
-            RecordDirectoryVisitBackground(directory);
-            auto batch = BuildDirectoryBatch(directory);
-            StoreReadyBatch(directory, std::move(batch));
-        }
-
-        {
-            std::scoped_lock lock(g_batchQueueMutex);
-            g_batchPending.erase(NormalizePathKey(directory));
-        }
+int ValueFromEntry(const fhm::runtime::CacheEntry& entry, int fieldIndex, void* fieldValue) {
+    switch (fieldIndex) {
+        case kFieldHeat:
+            *static_cast<double*>(fieldValue) = entry.heat;
+            return ft_numeric_floating;
+        case kFieldVisits:
+            *static_cast<__int64*>(fieldValue) = entry.visits;
+            return ft_numeric_64;
+        case kFieldLastVisit:
+            if ((entry.flags & fhm::runtime::kFlagLastVisit) == 0) return ft_fieldempty;
+            *static_cast<FILETIME*>(fieldValue) = entry.lastVisit;
+            return ft_datetime;
+        case kFieldHeatLevel:
+            *static_cast<int*>(fieldValue) = entry.heatLevel;
+            return ft_numeric_32;
+        case kFieldColorStep:
+            *static_cast<int*>(fieldValue) = entry.colorStep;
+            return ft_numeric_32;
+        case kFieldWrites:
+            *static_cast<__int64*>(fieldValue) = entry.writes;
+            return ft_numeric_64;
+        case kFieldLastWrite:
+            if ((entry.flags & fhm::runtime::kFlagLastWrite) == 0) return ft_fieldempty;
+            *static_cast<FILETIME*>(fieldValue) = entry.lastWrite;
+            return ft_datetime;
+        default:
+            return ft_nosuchfield;
     }
 }
 
-void StartBatchWorker() {
-    std::scoped_lock lock(g_batchQueueMutex);
-    if (g_batchWorker.joinable()) return;
-    g_batchStopping = false;
-    g_batchWorker = std::thread(BatchWorkerLoop);
+int ReadSharedValue(const wchar_t* fileName, int fieldIndex, void* fieldValue) {
+    if (!g_shared || g_shared->magic != fhm::runtime::kMagic || g_shared->version != fhm::runtime::kVersion)
+        return StableZeroValue(fieldIndex, fieldValue);
+
+    std::uint32_t pathLength = 0;
+    const std::uint64_t pathHash = fhm::runtime::HashNormalizedPath(fileName, pathLength);
+    if (!pathHash) return StableZeroValue(fieldIndex, fieldValue);
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const LONG active = InterlockedCompareExchange(&g_shared->activeBuffer, 0, 0) & 1;
+        auto& buffer = g_shared->buffers[active];
+        InterlockedIncrement(&buffer.readers);
+        MemoryBarrier();
+        if ((InterlockedCompareExchange(&g_shared->activeBuffer, 0, 0) & 1) != active) {
+            InterlockedDecrement(&buffer.readers);
+            continue;
+        }
+
+        const auto* entry = fhm::runtime::FindEntry(buffer, pathHash, pathLength);
+        const int result = entry ? ValueFromEntry(*entry, fieldIndex, fieldValue)
+                                 : StableZeroValue(fieldIndex, fieldValue);
+        InterlockedDecrement(&buffer.readers);
+        return result;
+    }
+
+    return StableZeroValue(fieldIndex, fieldValue);
 }
 
-void StopBatchWorker() {
-    {
-        std::scoped_lock lock(g_batchQueueMutex);
-        g_batchStopping = true;
-    }
-    g_batchCv.notify_all();
-    if (g_batchWorker.joinable()) g_batchWorker.join();
+void PublishNavigation(const wchar_t* path) {
+    if (!g_shared || !path || !*path) return;
+    const std::wstring normalized = fhm::runtime::NormalizePath(path);
+    wcsncpy_s(g_shared->currentDirectory, normalized.c_str(), _TRUNCATE);
+    MemoryBarrier();
+    InterlockedIncrement(&g_shared->navigationSeq);
+}
 
-    {
-        std::scoped_lock lock(g_batchQueueMutex);
-        g_batchQueue.clear();
-        g_batchPending.clear();
+void CloseRuntime() {
+    if (g_shared && g_clientRegistered) {
+        const LONG clients = InterlockedDecrement(&g_shared->clientCount);
+        g_clientRegistered = false;
+        if (clients <= 0) {
+            InterlockedExchange(&g_shared->shutdownRequested, 1);
+            HANDLE stopped = OpenEventW(SYNCHRONIZE, FALSE, fhm::runtime::kEngineStoppedEventName);
+            if (stopped) {
+                WaitForSingleObject(stopped, 5000);
+                CloseHandle(stopped);
+            }
+        }
     }
-    ClearSnapshots();
+
+    if (g_shared) {
+        UnmapViewOfFile(g_shared);
+        g_shared = nullptr;
+    }
+    if (g_mapping) {
+        CloseHandle(g_mapping);
+        g_mapping = nullptr;
+    }
 }
 } // namespace
 
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        g_module = instance;
+        DisableThreadLibraryCalls(instance);
+    }
+    return TRUE;
+}
+
 extern "C" __declspec(dllexport) void __stdcall ContentSetDefaultParams(ContentDefaultParamStruct* dps) {
-    std::wstring defaultIni;
-    if (dps && dps->DefaultIniName[0] != '\0') defaultIni = AnsiToWide(dps->DefaultIniName);
-    g_settingsPath = fhm::SettingsPathFromDefaultIni(defaultIni);
-    ReloadSettings();
-    g_database.Open(GetDatabasePath(dps));
-    StartBatchWorker();
+    OpenSharedMemory();
+    if (g_shared && !g_clientRegistered) {
+        InterlockedIncrement(&g_shared->clientCount);
+        InterlockedExchange(&g_shared->shutdownRequested, 0);
+        g_clientRegistered = true;
+    }
+    LaunchEngine(dps);
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fieldIndex, char* fieldName, char* units, int maxlen) {
@@ -504,14 +251,7 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int) {
     if (!fileName || !fieldValue) return ft_fileerror;
-
-    if (auto snapshot = FindVisibleSnapshot(fileName))
-        return ValueFromSnapshot(*snapshot, fieldIndex, fieldValue);
-
-    // Stable definitive fallback: unlike ft_fieldempty for the numeric heat
-    // fields, this gives Total Commander a final value and avoids repeated
-    // attempts to resolve color/icon conditions during the current visit.
-    return StableZeroValue(fieldIndex, fieldValue);
+    return ReadSharedValue(fileName, fieldIndex, fieldValue);
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, int fieldIndex, int unitIndex, void* fieldValue, int maxlen, int flags) {
@@ -525,26 +265,20 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fi
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
+    if (!g_shared) return;
     if (state == contst_refreshpressed) {
-        ReloadSettings();
-        ClearSnapshots();
-        if (path && *path) QueueDirectoryBatch(path);
-        return;
-    }
-
-    if (state == contst_readnewdir && path && *path) {
-        const std::wstring directory = NormalizePathKey(path);
-        ActivateReadySnapshot(directory);
-        QueueDirectoryBatch(directory);
+        InterlockedIncrement(&g_shared->settingsSeq);
+        PublishNavigation(path);
+    } else if (state == contst_readnewdir) {
+        PublishNavigation(path);
     }
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformation(int state, char* path) {
     const auto wide = AnsiToWide(path);
-    if (!wide.empty()) ContentSendStateInformationW(state, const_cast<WCHAR*>(wide.c_str()));
+    ContentSendStateInformationW(state, wide.empty() ? nullptr : const_cast<WCHAR*>(wide.c_str()));
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentPluginUnloading() {
-    StopBatchWorker();
-    g_database.Close();
+    CloseRuntime();
 }
