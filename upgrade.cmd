@@ -102,7 +102,7 @@ if not defined CMAKE if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%V
 if not defined CMAKE goto cmake_not_found
 
 :dependencies
-if exist "vendor\sqlite\sqlite3.c" if exist "vendor\sqlite\sqlite3.h" goto build
+if exist "vendor\sqlite\sqlite3.c" if exist "vendor\sqlite\sqlite3.h" goto stop_runtime
 echo [SETUP] Downloading SQLite 3.53.4...
 if exist "%SQLITE_ZIP%" del /q "%SQLITE_ZIP%" >nul 2>nul
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing '%SQLITE_URL%' -OutFile '%SQLITE_ZIP%'"
@@ -112,29 +112,36 @@ mkdir "vendor\sqlite" >nul 2>nul
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$tmp=Join-Path $env:TEMP 'fhm-sqlite'; Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; Expand-Archive -LiteralPath '%SQLITE_ZIP%' -DestinationPath $tmp -Force; $src=Get-ChildItem $tmp -Directory | Select-Object -First 1; Copy-Item (Join-Path $src.FullName 'sqlite3.c') 'vendor\sqlite\sqlite3.c'; Copy-Item (Join-Path $src.FullName 'sqlite3.h') 'vendor\sqlite\sqlite3.h'; Remove-Item $tmp -Recurse -Force"
 if errorlevel 1 goto sqlite_error
 
+:stop_runtime
+echo [1/6] Stopping Total Commander and draining FolderHeatMap engine...
+taskkill /IM FolderHeatMapConfig.exe >nul 2>nul
+taskkill /IM FolderHeatMapReset.exe >nul 2>nul
+call :is_tc_running
+if "!TC_RUNNING!"=="1" call :stop_tc
+if errorlevel 1 goto tc_stop_error
+call :wait_engine
+if errorlevel 1 (
+    echo WARNING: FolderHeatMapEngine did not finish graceful shutdown within 30 seconds.
+    echo WARNING: Forcing it to stop so the upgrade can continue.
+    taskkill /F /IM FolderHeatMapEngine.exe >nul 2>nul
+    timeout /t 1 /nobreak >nul
+)
+
 :build
-echo [1/6] Preparing build...
+echo [2/6] Preparing build...
 if exist build rmdir /s /q build
 
-echo [2/6] Configuring x64 Release build...
+echo [3/6] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
 
-echo [3/6] Building WDX, FAST/SLOW engine, configurator and reset utility...
+echo [4/6] Building WDX, FAST/SLOW engine, configurator and reset utility...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
 for %%F in (FolderHeatMap.wdx64 FolderHeatMapEngine.exe FolderHeatMapConfig.exe FolderHeatMapReset.exe) do (
     if not exist "build\Release\%%F" goto missing_artifact
 )
-
-echo [4/6] Stopping FolderHeatMap/Total Commander for atomic deployment...
-taskkill /IM FolderHeatMapConfig.exe >nul 2>nul
-taskkill /IM FolderHeatMapReset.exe >nul 2>nul
-taskkill /IM FolderHeatMapEngine.exe >nul 2>nul
-call :is_tc_running
-if "!TC_RUNNING!"=="1" call :stop_tc
-if errorlevel 1 goto tc_stop_error
 
 echo [5/6] Preparing dist package...
 if not exist dist mkdir dist
@@ -192,11 +199,19 @@ for /l %%N in (1,1,20) do (
     if "!TC_RUNNING!"=="0" exit /b 0
     timeout /t 1 /nobreak >nul
 )
+echo [TC] Normal close timed out - forcing Total Commander to stop...
 taskkill /F /IM TOTALCMD64.EXE >nul 2>nul
 taskkill /F /IM TOTALCMD.EXE >nul 2>nul
 call :is_tc_running
 if "!TC_RUNNING!"=="1" exit /b 1
 exit /b 0
+
+:wait_engine
+for /l %%N in (1,1,30) do (
+    tasklist /FI "IMAGENAME eq FolderHeatMapEngine.exe" 2>nul | find /I "FolderHeatMapEngine.exe" >nul || exit /b 0
+    timeout /t 1 /nobreak >nul
+)
+exit /b 1
 
 :git_missing
 echo ERROR: Git was not found in PATH.
