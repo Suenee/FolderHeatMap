@@ -5,10 +5,18 @@
 
 #include <windows.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <filesystem>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace {
 constexpr int kFieldHeat = 0;
@@ -19,10 +27,35 @@ constexpr int kFieldColorStep = 4;
 constexpr int kFieldWrites = 5;
 constexpr int kFieldLastWrite = 6;
 constexpr double kTicksPerDay = 10000000.0 * 60.0 * 60.0 * 24.0;
+constexpr auto kSnapshotLifetime = std::chrono::seconds(5);
 
 fhm::Database g_database;
 fhm::Settings g_settings = fhm::DefaultSettings();
 std::wstring g_settingsPath;
+
+struct ValueSnapshot {
+    bool isDirectory = false;
+    bool fileHeatAvailable = false;
+    double heat = 0.0;
+    __int64 visits = 0;
+    __int64 writes = 0;
+    FILETIME lastVisit{};
+    FILETIME lastWrite{};
+    bool hasLastVisit = false;
+    bool hasLastWrite = false;
+    int heatLevel = 0;
+    int colorStep = 0;
+    std::chrono::steady_clock::time_point updated{};
+};
+
+std::mutex g_snapshotMutex;
+std::unordered_map<std::wstring, ValueSnapshot> g_snapshots;
+std::mutex g_snapshotQueueMutex;
+std::condition_variable g_snapshotCv;
+std::deque<std::wstring> g_snapshotQueue;
+std::unordered_set<std::wstring> g_snapshotPending;
+std::thread g_snapshotWorker;
+bool g_snapshotStopping = false;
 
 void CopyAnsi(char* destination, int maxlen, const char* source) {
     if (destination && maxlen > 0) strncpy_s(destination, static_cast<size_t>(maxlen), source, _TRUNCATE);
@@ -215,48 +248,137 @@ int HeatToColorStep(double heat) {
     return std::clamp(static_cast<int>(std::ceil(heat * steps)), 1, 7 * steps);
 }
 
-int GetValueForDirectory(const std::wstring& path, int fieldIndex, void* fieldValue) {
-    const auto id = fhm::ResolveFolderIdentity(path);
-    if (!id) return ft_fieldempty;
-    const auto activity = g_database.GetActivity(*id);
-    const double heat = HeatForIdentity(*id, activity);
+std::optional<ValueSnapshot> BuildSnapshot(const std::wstring& path) {
+    ValueSnapshot snapshot{};
+    snapshot.isDirectory = fhm::IsDirectory(path);
+
+    if (snapshot.isDirectory) {
+        const auto id = fhm::ResolveFolderIdentity(path);
+        if (!id) return std::nullopt;
+        const auto activity = g_database.GetActivity(*id);
+        snapshot.heat = HeatForIdentity(*id, activity);
+        snapshot.visits = activity ? static_cast<__int64>(activity->visits) : 0;
+        if (activity) {
+            snapshot.lastVisit = activity->lastVisit;
+            snapshot.hasLastVisit = true;
+        }
+    } else {
+        if (!g_settings.fileHeatEnabled) {
+            snapshot.updated = std::chrono::steady_clock::now();
+            return snapshot;
+        }
+        FILETIME lastWrite{};
+        if (!GetLastWriteTime(path, lastWrite)) return std::nullopt;
+        const auto id = fhm::ResolveFolderIdentity(path);
+        if (!id) return std::nullopt;
+        g_database.ObserveFileWrite(*id, lastWrite);
+        auto activity = g_database.GetFileActivity(*id);
+        if (!activity) {
+            fhm::StoredFileActivity fallback{};
+            fallback.lastWrite = lastWrite;
+            fallback.writeEvents = 0;
+            activity = fallback;
+        }
+        snapshot.fileHeatAvailable = true;
+        snapshot.heat = FileHeat(*activity, EffectiveHalfLifeDays());
+        snapshot.writes = static_cast<__int64>(activity->writeEvents);
+        snapshot.lastWrite = activity->lastWrite;
+        snapshot.hasLastWrite = true;
+    }
+
+    snapshot.heatLevel = HeatToLevel(snapshot.heat);
+    snapshot.colorStep = HeatToColorStep(snapshot.heat);
+    snapshot.updated = std::chrono::steady_clock::now();
+    return snapshot;
+}
+
+int ValueFromSnapshot(const ValueSnapshot& snapshot, int fieldIndex, void* fieldValue) {
+    if (!snapshot.isDirectory && !snapshot.fileHeatAvailable) return ft_fieldempty;
     switch (fieldIndex) {
-        case kFieldHeat: *static_cast<double*>(fieldValue) = heat; return ft_numeric_floating;
-        case kFieldVisits: *static_cast<__int64*>(fieldValue) = activity ? static_cast<__int64>(activity->visits) : 0; return ft_numeric_64;
-        case kFieldLastVisit: if (!activity) return ft_fieldempty; *static_cast<FILETIME*>(fieldValue) = activity->lastVisit; return ft_datetime;
-        case kFieldHeatLevel: *static_cast<int*>(fieldValue) = HeatToLevel(heat); return ft_numeric_32;
-        case kFieldColorStep: *static_cast<int*>(fieldValue) = HeatToColorStep(heat); return ft_numeric_32;
+        case kFieldHeat: *static_cast<double*>(fieldValue) = snapshot.heat; return ft_numeric_floating;
+        case kFieldVisits:
+            if (!snapshot.isDirectory) return ft_fieldempty;
+            *static_cast<__int64*>(fieldValue) = snapshot.visits; return ft_numeric_64;
+        case kFieldLastVisit:
+            if (!snapshot.isDirectory || !snapshot.hasLastVisit) return ft_fieldempty;
+            *static_cast<FILETIME*>(fieldValue) = snapshot.lastVisit; return ft_datetime;
+        case kFieldHeatLevel: *static_cast<int*>(fieldValue) = snapshot.heatLevel; return ft_numeric_32;
+        case kFieldColorStep: *static_cast<int*>(fieldValue) = snapshot.colorStep; return ft_numeric_32;
         case kFieldWrites:
-        case kFieldLastWrite: return ft_fieldempty;
+            if (snapshot.isDirectory) return ft_fieldempty;
+            *static_cast<__int64*>(fieldValue) = snapshot.writes; return ft_numeric_64;
+        case kFieldLastWrite:
+            if (snapshot.isDirectory || !snapshot.hasLastWrite) return ft_fieldempty;
+            *static_cast<FILETIME*>(fieldValue) = snapshot.lastWrite; return ft_datetime;
         default: return ft_nosuchfield;
     }
 }
 
-int GetValueForFile(const std::wstring& path, int fieldIndex, void* fieldValue) {
-    if (!g_settings.fileHeatEnabled) return ft_fieldempty;
-    FILETIME lastWrite{};
-    if (!GetLastWriteTime(path, lastWrite)) return ft_fieldempty;
-    const auto id = fhm::ResolveFolderIdentity(path);
-    if (!id) return ft_fieldempty;
-    g_database.ObserveFileWrite(*id, lastWrite);
-    auto activity = g_database.GetFileActivity(*id);
-    if (!activity) {
-        fhm::StoredFileActivity fallback{};
-        fallback.lastWrite = lastWrite;
-        fallback.writeEvents = 0;
-        activity = fallback;
+void StoreSnapshot(const std::wstring& path, ValueSnapshot snapshot) {
+    std::scoped_lock lock(g_snapshotMutex);
+    g_snapshots[path] = std::move(snapshot);
+}
+
+std::optional<ValueSnapshot> FindSnapshot(const std::wstring& path) {
+    std::scoped_lock lock(g_snapshotMutex);
+    const auto it = g_snapshots.find(path);
+    if (it == g_snapshots.end()) return std::nullopt;
+    return it->second;
+}
+
+void QueueSnapshotRefresh(const std::wstring& path) {
+    std::scoped_lock lock(g_snapshotQueueMutex);
+    if (g_snapshotStopping || !g_snapshotPending.insert(path).second) return;
+    g_snapshotQueue.push_back(path);
+    g_snapshotCv.notify_one();
+}
+
+void SnapshotWorkerLoop() {
+    for (;;) {
+        std::wstring path;
+        {
+            std::unique_lock lock(g_snapshotQueueMutex);
+            g_snapshotCv.wait(lock, [] { return g_snapshotStopping || !g_snapshotQueue.empty(); });
+            if (g_snapshotStopping && g_snapshotQueue.empty()) break;
+            path = std::move(g_snapshotQueue.front());
+            g_snapshotQueue.pop_front();
+        }
+        if (auto snapshot = BuildSnapshot(path)) StoreSnapshot(path, std::move(*snapshot));
+        {
+            std::scoped_lock lock(g_snapshotQueueMutex);
+            g_snapshotPending.erase(path);
+        }
     }
-    const double heat = FileHeat(*activity, EffectiveHalfLifeDays());
-    switch (fieldIndex) {
-        case kFieldHeat: *static_cast<double*>(fieldValue) = heat; return ft_numeric_floating;
-        case kFieldHeatLevel: *static_cast<int*>(fieldValue) = HeatToLevel(heat); return ft_numeric_32;
-        case kFieldColorStep: *static_cast<int*>(fieldValue) = HeatToColorStep(heat); return ft_numeric_32;
-        case kFieldWrites: *static_cast<__int64*>(fieldValue) = static_cast<__int64>(activity->writeEvents); return ft_numeric_64;
-        case kFieldLastWrite: *static_cast<FILETIME*>(fieldValue) = activity->lastWrite; return ft_datetime;
-        case kFieldVisits:
-        case kFieldLastVisit: return ft_fieldempty;
-        default: return ft_nosuchfield;
+}
+
+void StartSnapshotWorker() {
+    std::scoped_lock lock(g_snapshotQueueMutex);
+    if (g_snapshotWorker.joinable()) return;
+    g_snapshotStopping = false;
+    g_snapshotWorker = std::thread(SnapshotWorkerLoop);
+}
+
+void StopSnapshotWorker() {
+    {
+        std::scoped_lock lock(g_snapshotQueueMutex);
+        g_snapshotStopping = true;
     }
+    g_snapshotCv.notify_all();
+    if (g_snapshotWorker.joinable()) g_snapshotWorker.join();
+    {
+        std::scoped_lock lock(g_snapshotQueueMutex);
+        g_snapshotQueue.clear();
+        g_snapshotPending.clear();
+    }
+    {
+        std::scoped_lock lock(g_snapshotMutex);
+        g_snapshots.clear();
+    }
+}
+
+void ClearSnapshots() {
+    std::scoped_lock lock(g_snapshotMutex);
+    g_snapshots.clear();
 }
 } // namespace
 
@@ -266,6 +388,7 @@ extern "C" __declspec(dllexport) void __stdcall ContentSetDefaultParams(ContentD
     g_settingsPath = fhm::SettingsPathFromDefaultIni(defaultIni);
     ReloadSettings();
     g_database.Open(GetDatabasePath(dps));
+    StartSnapshotWorker();
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fieldIndex, char* fieldName, char* units, int maxlen) {
@@ -284,8 +407,24 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int flags) {
     if (!fileName || !fieldValue) return ft_fileerror;
-    if ((flags & CONTENT_DELAYIFSLOW) != 0) return ft_delayed;
-    return fhm::IsDirectory(fileName) ? GetValueForDirectory(fileName, fieldIndex, fieldValue) : GetValueForFile(fileName, fieldIndex, fieldValue);
+    const std::wstring path(fileName);
+
+    if (auto cached = FindSnapshot(path)) {
+        if (std::chrono::steady_clock::now() - cached->updated > kSnapshotLifetime) QueueSnapshotRefresh(path);
+        return ValueFromSnapshot(*cached, fieldIndex, fieldValue);
+    }
+
+    if ((flags & CONTENT_DELAYIFSLOW) != 0) {
+        QueueSnapshotRefresh(path);
+        return ft_delayed;
+    }
+
+    if (auto snapshot = BuildSnapshot(path)) {
+        const int result = ValueFromSnapshot(*snapshot, fieldIndex, fieldValue);
+        StoreSnapshot(path, std::move(*snapshot));
+        return result;
+    }
+    return ft_fieldempty;
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, int fieldIndex, int unitIndex, void* fieldValue, int maxlen, int flags) {
@@ -297,8 +436,14 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, i
 extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fieldIndex) { return (fieldIndex >= kFieldHeat && fieldIndex <= kFieldLastWrite) ? -1 : 1; }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
-    if (state == contst_refreshpressed) ReloadSettings();
-    if (state == contst_readnewdir && path && *path) RecordDirectoryVisit(path);
+    if (state == contst_refreshpressed) {
+        ReloadSettings();
+        ClearSnapshots();
+    }
+    if (state == contst_readnewdir && path && *path) {
+        RecordDirectoryVisit(path);
+        QueueSnapshotRefresh(path);
+    }
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformation(int state, char* path) {
@@ -306,4 +451,7 @@ extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformation(int 
     if (!wide.empty()) ContentSendStateInformationW(state, const_cast<WCHAR*>(wide.c_str()));
 }
 
-extern "C" __declspec(dllexport) void __stdcall ContentPluginUnloading() { g_database.Close(); }
+extern "C" __declspec(dllexport) void __stdcall ContentPluginUnloading() {
+    StopSnapshotWorker();
+    g_database.Close();
+}
