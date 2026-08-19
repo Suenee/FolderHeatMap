@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.07 - 19.08.2026
+
+- Added `Writes` back to the staged WDX as a read-only shared-RAM diagnostic next to `Heat` and `Visits`. The WDX hot path remains RAM-only and does not perform filesystem work, SQLite access, Heat math, queueing, prediction or repaint requests.
+- Fixed File Heat first-observation semantics. The first time a file is discovered, FolderHeatMap now stores only its current `LastWrite` timestamp as a cold baseline with `Writes = 0`; only a later timestamp change counts as the first real write event.
+- Kept Total Commander color and heat-icon integration disabled so this release still tests data correctness and cursor stability before visual coloring is restored.
+- Added a Logging selector to the configurator with `off`, `single` and `all` modes without rewriting the existing configurator UI implementation.
+- `single` truncates `FolderHeatMap.log` when the engine starts, so the file covers one Total Commander/engine session. `all` appends across sessions. `off` performs no file logging.
+- The existing background diagnostic log records engine lifecycle, FAST navigation/prediction work, SLOW persistence work, RAM generation publication and runtime-cache persistence, making worker activity inspectable without adding foreground work to Total Commander.
+- Preserved the two-speed FAST/SLOW architecture and the one-step-behind display model.
+
 ## 1.06 - 19.08.2026
 
 - Fixed a staged-runtime consistency bug where entering a directory updated the database but did not refresh that directory's own RAM cache entry.
