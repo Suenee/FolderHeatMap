@@ -9,6 +9,7 @@
 namespace {
 constexpr int kFieldHeat = 0;
 constexpr int kFieldVisits = 1;
+constexpr int kFieldWrites = 2;
 
 HMODULE g_module = nullptr;
 HANDLE g_mapping = nullptr;
@@ -101,7 +102,7 @@ void LaunchEngine(const ContentDefaultParamStruct* dps) {
 
 int ReadRamValue(const wchar_t* fileName, int fieldIndex, void* fieldValue) {
     if (fieldIndex == kFieldHeat) *static_cast<double*>(fieldValue) = 0.0;
-    else if (fieldIndex == kFieldVisits) *static_cast<__int64*>(fieldValue) = 0;
+    else if (fieldIndex == kFieldVisits || fieldIndex == kFieldWrites) *static_cast<__int64*>(fieldValue) = 0;
     else return ft_nosuchfield;
 
     const int type = fieldIndex == kFieldHeat ? ft_numeric_floating : ft_numeric_64;
@@ -119,7 +120,8 @@ int ReadRamValue(const wchar_t* fileName, int fieldIndex, void* fieldValue) {
     const auto* entry = fhm::runtime::FindEntry(buffer, pathHash, pathLength);
     if (entry) {
         if (fieldIndex == kFieldHeat) *static_cast<double*>(fieldValue) = entry->heat;
-        else *static_cast<__int64*>(fieldValue) = entry->visits;
+        else if (fieldIndex == kFieldVisits) *static_cast<__int64*>(fieldValue) = entry->visits;
+        else *static_cast<__int64*>(fieldValue) = entry->writes;
     }
     InterlockedDecrement(&buffer.readers);
     return type;
@@ -178,6 +180,10 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
         CopyAnsi(fieldName, maxlen, "Visits");
         return ft_numeric_64;
     }
+    if (fieldIndex == kFieldWrites) {
+        CopyAnsi(fieldName, maxlen, "Writes");
+        return ft_numeric_64;
+    }
     return ft_nomorefields;
 }
 
@@ -193,12 +199,10 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, i
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fieldIndex) {
-    return (fieldIndex == kFieldHeat || fieldIndex == kFieldVisits) ? -1 : 1;
+    return (fieldIndex == kFieldHeat || fieldIndex == kFieldVisits || fieldIndex == kFieldWrites) ? -1 : 1;
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
-    // 1.05 staged test: Heat and Visits are read-only RAM values only.
-    // FAST/SLOW calculations stay external and never request a repaint.
     if (state == contst_readnewdir) PublishNavigation(path);
 }
 
