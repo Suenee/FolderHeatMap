@@ -7,13 +7,7 @@
 #include <string>
 
 namespace {
-constexpr int kFieldHeat = 0;
-constexpr int kFieldVisits = 1;
-constexpr int kFieldLastVisit = 2;
-constexpr int kFieldHeatLevel = 3;
-constexpr int kFieldColorStep = 4;
-constexpr int kFieldWrites = 5;
-constexpr int kFieldLastWrite = 6;
+constexpr int kFieldVisits = 0;
 
 HMODULE g_module = nullptr;
 HANDLE g_mapping = nullptr;
@@ -96,48 +90,25 @@ void LaunchEngine(const ContentDefaultParamStruct* dps) {
     }
 }
 
-int StableValue(int fieldIndex, void* fieldValue, const fhm::runtime::CacheEntry* entry = nullptr) {
-    switch (fieldIndex) {
-        case kFieldHeat:
-            *static_cast<double*>(fieldValue) = 0.0;
-            return ft_numeric_floating;
-        case kFieldVisits:
-            *static_cast<__int64*>(fieldValue) = entry ? entry->visits : 0;
-            return ft_numeric_64;
-        case kFieldHeatLevel:
-        case kFieldColorStep:
-            *static_cast<int*>(fieldValue) = 0;
-            return ft_numeric_32;
-        case kFieldWrites:
-            *static_cast<__int64*>(fieldValue) = 0;
-            return ft_numeric_64;
-        case kFieldLastVisit:
-        case kFieldLastWrite:
-            return ft_fieldempty;
-        default:
-            return ft_nosuchfield;
-    }
-}
-
-int ReadVisitsOnly(const wchar_t* fileName, int fieldIndex, void* fieldValue) {
-    if (fieldIndex != kFieldVisits)
-        return StableValue(fieldIndex, fieldValue);
+int ReadVisits(const wchar_t* fileName, void* fieldValue) {
+    auto* value = static_cast<__int64*>(fieldValue);
+    *value = 0;
 
     if (!g_shared || g_shared->magic != fhm::runtime::kMagic || g_shared->version != fhm::runtime::kVersion)
-        return StableValue(fieldIndex, fieldValue);
+        return ft_numeric_64;
 
     std::uint32_t pathLength = 0;
     const std::uint64_t pathHash = fhm::runtime::HashNormalizedPath(fileName, pathLength);
-    if (!pathHash) return StableValue(fieldIndex, fieldValue);
+    if (!pathHash) return ft_numeric_64;
 
     const LONG active = InterlockedCompareExchange(&g_shared->activeBuffer, 0, 0) & 1;
     auto& buffer = g_shared->buffers[active];
     InterlockedIncrement(&buffer.readers);
     MemoryBarrier();
     const auto* entry = fhm::runtime::FindEntry(buffer, pathHash, pathLength);
-    const int result = StableValue(fieldIndex, fieldValue, entry);
+    if (entry) *value = entry->visits;
     InterlockedDecrement(&buffer.readers);
-    return result;
+    return ft_numeric_64;
 }
 
 void PublishNavigation(const wchar_t* path) {
@@ -185,21 +156,17 @@ extern "C" __declspec(dllexport) void __stdcall ContentSetDefaultParams(ContentD
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fieldIndex, char* fieldName, char* units, int maxlen) {
     if (units && maxlen > 0) units[0] = '\0';
-    switch (fieldIndex) {
-        case kFieldHeat: CopyAnsi(fieldName, maxlen, "Heat"); return ft_numeric_floating;
-        case kFieldVisits: CopyAnsi(fieldName, maxlen, "Visits"); return ft_numeric_64;
-        case kFieldLastVisit: CopyAnsi(fieldName, maxlen, "Last Visit"); return ft_datetime;
-        case kFieldHeatLevel: CopyAnsi(fieldName, maxlen, "Heat Level"); return ft_numeric_32;
-        case kFieldColorStep: CopyAnsi(fieldName, maxlen, "Heat Color Step"); return ft_numeric_32;
-        case kFieldWrites: CopyAnsi(fieldName, maxlen, "Writes"); return ft_numeric_64;
-        case kFieldLastWrite: CopyAnsi(fieldName, maxlen, "Last Write"); return ft_datetime;
-        default: return ft_nomorefields;
+    if (fieldIndex == kFieldVisits) {
+        CopyAnsi(fieldName, maxlen, "Visits");
+        return ft_numeric_64;
     }
+    return ft_nomorefields;
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int) {
     if (!fileName || !fieldValue) return ft_fileerror;
-    return ReadVisitsOnly(fileName, fieldIndex, fieldValue);
+    if (fieldIndex != kFieldVisits) return ft_nosuchfield;
+    return ReadVisits(fileName, fieldValue);
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, int fieldIndex, int unitIndex, void* fieldValue, int maxlen, int flags) {
@@ -209,11 +176,13 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, i
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fieldIndex) {
-    return (fieldIndex >= kFieldHeat && fieldIndex <= kFieldLastWrite) ? -1 : 1;
+    return fieldIndex == kFieldVisits ? -1 : 1;
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
-    if (state == contst_readnewdir || state == contst_refreshpressed) PublishNavigation(path);
+    // Diagnostic baseline: only an actual directory entry is recorded.
+    // Refreshes do not create visits and no repaint/refresh request is ever sent.
+    if (state == contst_readnewdir) PublishNavigation(path);
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformation(int state, char* path) {
