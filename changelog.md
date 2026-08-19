@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.02 - 19.08.2026
+
+- Deliberately reduced the runtime to a counter-only diagnostic baseline after persistent Total Commander cursor repaint/flicker problems in the full Heat runtime.
+- Saved the complete 1.01 implementation on `legacy-1.01` before simplifying `devel`.
+- Disabled all Heat mathematics, inherited Heat, File Heat scanning, prediction, FAST/SLOW scheduling, frozen-view logic and background repaint behavior.
+- The WDX now returns stable zero for `Heat`, `Heat Level`, `Heat Color Step` and `Writes`; date fields remain empty. Existing Total Commander Heat color rules therefore have no active Heat value to color.
+- Only the `Visits` field reads dynamic data. It is served from a tiny shared-memory counter map and does not perform SQLite or filesystem work inside `ContentGetValueW()`.
+- The background engine now does exactly one job: receive `contst_readnewdir`, increment the raw visit counter in SQLite, and publish the updated visit count for that folder into RAM.
+- No directory enumeration, descendant traversal or file timestamp inspection occurs in the engine.
+- This build is intended as a clean performance/visual-stability baseline. New features will be reintroduced one layer at a time only after the cursor remains completely stable.
+
 ## 1.01 - 19.08.2026
 
 - Added a frozen per-directory WDX view. On `contst_readnewdir`, the plugin captures exactly one complete shared-RAM generation before notifying the background engine about the new navigation step.
