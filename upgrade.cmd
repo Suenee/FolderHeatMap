@@ -11,7 +11,7 @@ rem updates the working tree and performs the real upgrade. This prevents an old
 rem local upgrade.cmd from building/deploying old sources ever again.
 rem ---------------------------------------------------------------------------
 
-set "UPGRADE_REV=1.04-self-bootstrap"
+set "UPGRADE_REV=1.04-background-workers"
 set "BOOTSTRAP_STAGE=%~1"
 set "ORIGINAL_REPO=%~dp0"
 
@@ -166,14 +166,14 @@ if "!TC_RUNNING!"=="1" call :stop_tc
 if errorlevel 1 goto tc_stop_error
 call :wait_engine
 if errorlevel 1 (
-    echo WARNING: FolderHeatMapEngine did not finish shutdown within 10 seconds.
+    echo WARNING: FolderHeatMapEngine did not finish graceful shutdown within 30 seconds.
     echo WARNING: Forcing it to stop so the upgrade can continue.
     taskkill /F /IM FolderHeatMapEngine.exe >nul 2>nul
     timeout /t 1 /nobreak >nul
 )
 
 :cleanup_tc
-echo [2/7] Removing FolderHeatMap color/icon rules from Total Commander...
+echo [2/7] Keeping FolderHeatMap color/icon integration disabled for staged testing...
 if exist "cleanup_tc_integration.ps1" (
     if defined TC_INI (
         powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1" -WincmdIni "!TC_INI!"
@@ -194,7 +194,7 @@ echo [4/7] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
 
-echo [5/7] Building Visits-only WDX/engine, configurator and reset utility...
+echo [5/7] Building Visits-only WDX plus hidden FAST/SLOW engine...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
@@ -222,7 +222,7 @@ for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
 if /I not "!DIST_PLUGIN!"=="!TC_PLUGIN_FULL!" (
     copy /y "dist\FolderHeatMap.wdx64" "!TC_PLUGIN!" >nul || goto deploy_error
     copy /y "dist\FolderHeatMapEngine.exe" "!TC_PLUGIN_DIR!FolderHeatMapEngine.exe" >nul || goto deploy_error
-    echo [TC] Updated Visits-only WDX and engine in: !TC_PLUGIN_DIR!
+    echo [TC] Updated Visits-only WDX and hidden background engine in: !TC_PLUGIN_DIR!
 ) else (
     echo [TC] Registered plugin already points to dist; engine is beside the WDX.
 )
@@ -236,7 +236,7 @@ echo WDX:       %CD%\dist\FolderHeatMap.wdx64
 echo Engine:    %CD%\dist\FolderHeatMapEngine.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.03 diagnostic baseline: only Visits exists. Heat fields, TC heat colors/icons, math and prediction are disabled.
+echo FolderHeatMap 1.04 staged test: TC exposes only Visits; FAST/SLOW Heat work runs hidden in the background with no repaint requests.
 pause
 exit /b 0
 
@@ -263,7 +263,7 @@ if "!TC_RUNNING!"=="1" exit /b 1
 exit /b 0
 
 :wait_engine
-for /l %%N in (1,1,10) do (
+for /l %%N in (1,1,30) do (
     tasklist /FI "IMAGENAME eq FolderHeatMapEngine.exe" 2>nul | find /I "FolderHeatMapEngine.exe" >nul || exit /b 0
     timeout /t 1 /nobreak >nul
 )
@@ -313,7 +313,7 @@ goto fail
 echo Build Tools were installed successfully, but Windows requires a restart.
 goto fail
 :cleanup_error
-echo ERROR: Could not remove FolderHeatMap-managed TC color/icon rules safely.
+echo ERROR: Could not keep FolderHeatMap TC color/icon rules disabled safely.
 goto fail
 :build_error
 echo ERROR: Build failed. See the errors above.
