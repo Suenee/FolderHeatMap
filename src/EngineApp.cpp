@@ -501,6 +501,21 @@ bool TakeSlowTask(std::wstring& directory) {
 void ProcessSlowTask(const std::wstring& directory) {
     g_log.WritePath("SLOW", "persist", directory);
     PersistDirectory(directory);
+
+    // A real navigation event changes the visited directory itself, not only
+    // the items contained by that directory. Keep that object's RAM entry
+    // current immediately after persistence. This does not request a Total
+    // Commander repaint; the updated value is simply ready for the next normal
+    // read of the item (for example when its parent directory is visited again).
+    const auto settings = SettingsSnapshot();
+    const double halfLife = EffectiveHalfLifeDays(settings);
+    if (auto ownSnapshot = BuildSnapshot(directory, true, settings, halfLife)) {
+        const auto key = fhm::runtime::NormalizePath(directory);
+        std::scoped_lock lock(g_stateMutex);
+        g_ram[key] = std::move(*ownSnapshot);
+        PublishRamLocked();
+    }
+
     Batch refreshed = BuildBatch(directory);
     StoreReady(directory, refreshed);
     QueueHotPredictions(refreshed);
@@ -616,7 +631,7 @@ int wmain(int argc, wchar_t** argv) {
     g_settingsPath = ArgValue(argc, argv, L"--settings");
     ReloadSettings();
     g_log.Initialize(g_settingsPath);
-    g_log.Write("ENGINE", "FolderHeatMap 1.00 engine starting");
+    g_log.Write("ENGINE", "FolderHeatMap 1.06 engine starting");
 
     if (!databasePath.empty()) {
         g_readDatabase.Open(databasePath);
