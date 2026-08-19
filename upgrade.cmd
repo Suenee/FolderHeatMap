@@ -3,34 +3,23 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 rem ---------------------------------------------------------------------------
 rem SELF-BOOTSTRAP GUARANTEE
+rem Never trust the local copy of this script. Every normal launch fetches
+rem origin/devel and executes the repository copy from TEMP first.
 rem ---------------------------------------------------------------------------
-rem The local upgrade.cmd must never be trusted to be current. On every normal
-rem launch it fetches origin/devel, extracts the repository copy of upgrade.cmd
-rem into TEMP and transfers control to that fresh copy. The fresh copy then
-rem updates the working tree and performs the real upgrade. This prevents an old
-rem local upgrade.cmd from building/deploying old sources ever again.
-rem ---------------------------------------------------------------------------
-
-set "UPGRADE_REV=1.06-own-cache-refresh"
+set "UPGRADE_REV=1.07-diagnostics-logging"
 set "BOOTSTRAP_STAGE=%~1"
 set "ORIGINAL_REPO=%~dp0"
 
 if /I "%BOOTSTRAP_STAGE%"=="--fresh-bootstrap" goto fresh_bootstrap
 
 cd /d "%ORIGINAL_REPO%"
-where git.exe >nul 2>nul
-if errorlevel 1 goto git_missing
+where git.exe >nul 2>nul || goto git_missing
+git rev-parse --is-inside-work-tree >nul 2>nul || goto git_tree_error
 
-git rev-parse --is-inside-work-tree >nul 2>nul
-if errorlevel 1 goto git_tree_error
-
-echo [BOOTSTRAP] Fetching latest upgrader from origin/devel...
-git fetch origin
-if errorlevel 1 goto git_fetch_error
-
+echo [BOOTSTRAP] Fetching latest upgrade.cmd from origin/devel...
+git fetch origin || goto git_fetch_error
 set "FRESH_UPGRADER=%TEMP%\FolderHeatMap-upgrade-%RANDOM%-%RANDOM%.cmd"
-git show origin/devel:upgrade.cmd > "!FRESH_UPGRADER!"
-if errorlevel 1 goto bootstrap_extract_error
+git show origin/devel:upgrade.cmd > "!FRESH_UPGRADER!" || goto bootstrap_extract_error
 if not exist "!FRESH_UPGRADER!" goto bootstrap_extract_error
 for %%I in ("!FRESH_UPGRADER!") do if %%~zI LSS 1000 goto bootstrap_extract_error
 
@@ -57,36 +46,27 @@ set "TC_PLUGIN="
 set "TC_EXE="
 set "TC_WAS_RUNNING=0"
 
-where git.exe >nul 2>nul
-if errorlevel 1 goto git_missing
+where git.exe >nul 2>nul || goto git_missing
 
-echo [0/7] Updating repository from origin/devel with fresh upgrader...
-git rev-parse --is-inside-work-tree >nul 2>nul
-if errorlevel 1 goto git_tree_error
-
-git fetch origin
-if errorlevel 1 goto git_fetch_error
-
+echo [0/7] Updating repository from origin/devel...
+git fetch origin || goto git_fetch_error
 for /f "delims=" %%I in ('git branch --show-current') do set "CURRENT_BRANCH=%%I"
 if /I not "!CURRENT_BRANCH!"=="devel" (
-    git switch devel
-    if errorlevel 1 goto git_switch_error
+    git switch devel || goto git_switch_error
 )
 
 set "LOCAL_STASHED=0"
 git diff --quiet --ignore-submodules -- && git diff --cached --quiet --ignore-submodules --
 if errorlevel 1 (
-    echo [GIT] Local tracked changes detected - stashing them before upgrade...
-    git stash push -m "FolderHeatMap automatic pre-upgrade stash"
-    if errorlevel 1 goto git_stash_error
+    echo [GIT] Local tracked changes detected - stashing them safely...
+    git stash push -m "FolderHeatMap automatic pre-upgrade stash" || goto git_stash_error
     set "LOCAL_STASHED=1"
 )
 
-git pull --ff-only origin devel
-if errorlevel 1 goto git_pull_error
+git pull --ff-only origin devel || goto git_pull_error
 if "!LOCAL_STASHED!"=="1" echo [GIT] Previous local changes remain safely stored in git stash.
 
-rem Verify that the working-tree upgrader is exactly the repository version.
+rem Hard guard: the working-tree upgrader must equal origin/devel before build.
 set "REMOTE_UPGRADE_HASH="
 set "LOCAL_UPGRADE_HASH="
 for /f "delims=" %%H in ('git rev-parse origin/devel:upgrade.cmd 2^>nul') do set "REMOTE_UPGRADE_HASH=%%H"
@@ -96,14 +76,11 @@ if not defined LOCAL_UPGRADE_HASH goto bootstrap_verify_error
 if /I not "!REMOTE_UPGRADE_HASH!"=="!LOCAL_UPGRADE_HASH!" goto bootstrap_verify_error
 
 echo [BOOTSTRAP] upgrade.cmd verified current: !LOCAL_UPGRADE_HASH!
-echo.
 
-if defined TC_PATH goto tc_path_done
-for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
+rem Locate Total Commander and its INI.
+if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Wow6432Node\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
-:tc_path_done
-
 if not defined TC_INI for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Ghisler\Total Commander" /v IniFileName 2^>nul ^| find /i "IniFileName"') do set "TC_INI=%%B"
 if not defined TC_INI for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Ghisler\Total Commander" /v IniFileName 2^>nul ^| find /i "IniFileName"') do set "TC_INI=%%B"
 
@@ -111,7 +88,6 @@ if defined TC_PATH (
     if exist "!TC_PATH!\TOTALCMD64.EXE" set "TC_EXE=!TC_PATH!\TOTALCMD64.EXE"
     if not defined TC_EXE if exist "!TC_PATH!\TOTALCMD.EXE" set "TC_EXE=!TC_PATH!\TOTALCMD.EXE"
 )
-
 if defined TC_INI if exist "!TC_INI!" (
     for /f "usebackq tokens=1,* delims==" %%A in (`findstr /I /C:"FolderHeatMap.wdx64" "!TC_INI!" 2^>nul`) do if not defined TC_PLUGIN set "TC_PLUGIN=%%B"
     if defined TC_PLUGIN set "TC_PLUGIN=!TC_PLUGIN:"=!"
@@ -129,6 +105,7 @@ echo.
 call :is_tc_running
 if "!TC_RUNNING!"=="1" set "TC_WAS_RUNNING=1"
 
+rem Find CMake or install the required Visual Studio Build Tools.
 for /f "delims=" %%I in ('where cmake.exe 2^>nul') do if not defined CMAKE set "CMAKE=%%I"
 if not defined CMAKE if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.CMake.Project -find Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`) do if not defined CMAKE set "CMAKE=%%I"
 if defined CMAKE goto dependencies
@@ -136,8 +113,7 @@ if defined CMAKE goto dependencies
 echo C++ build environment is not installed yet.
 choice /C YN /N /M "Download and install the required Build Tools now? [Y/N] "
 if errorlevel 2 exit /b 1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing '%VSBT_URL%' -OutFile '%VSBT%'"
-if errorlevel 1 goto download_error
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing '%VSBT_URL%' -OutFile '%VSBT%'" || goto download_error
 start /wait "" "%VSBT%" --passive --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.VC.CMake.Project --add Microsoft.VisualStudio.Component.Windows11SDK.26100
 set "INSTALL_RC=%ERRORLEVEL%"
 if "%INSTALL_RC%"=="3010" goto restart_required
@@ -150,12 +126,10 @@ if not defined CMAKE goto cmake_not_found
 if exist "vendor\sqlite\sqlite3.c" if exist "vendor\sqlite\sqlite3.h" goto stop_runtime
 echo [SETUP] Downloading SQLite 3.53.4...
 if exist "%SQLITE_ZIP%" del /q "%SQLITE_ZIP%" >nul 2>nul
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing '%SQLITE_URL%' -OutFile '%SQLITE_ZIP%'"
-if errorlevel 1 goto sqlite_error
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing '%SQLITE_URL%' -OutFile '%SQLITE_ZIP%'" || goto sqlite_error
 if exist "vendor\sqlite" rmdir /s /q "vendor\sqlite"
 mkdir "vendor\sqlite" >nul 2>nul
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$tmp=Join-Path $env:TEMP 'fhm-sqlite'; Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; Expand-Archive -LiteralPath '%SQLITE_ZIP%' -DestinationPath $tmp -Force; $src=Get-ChildItem $tmp -Directory | Select-Object -First 1; Copy-Item (Join-Path $src.FullName 'sqlite3.c') 'vendor\sqlite\sqlite3.c'; Copy-Item (Join-Path $src.FullName 'sqlite3.h') 'vendor\sqlite\sqlite3.h'; Remove-Item $tmp -Recurse -Force"
-if errorlevel 1 goto sqlite_error
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$tmp=Join-Path $env:TEMP 'fhm-sqlite'; Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue; Expand-Archive -LiteralPath '%SQLITE_ZIP%' -DestinationPath $tmp -Force; $src=Get-ChildItem $tmp -Directory | Select-Object -First 1; Copy-Item (Join-Path $src.FullName 'sqlite3.c') 'vendor\sqlite\sqlite3.c'; Copy-Item (Join-Path $src.FullName 'sqlite3.h') 'vendor\sqlite\sqlite3.h'; Remove-Item $tmp -Recurse -Force" || goto sqlite_error
 
 :stop_runtime
 echo [1/7] Stopping Total Commander and FolderHeatMap engine...
@@ -174,33 +148,26 @@ if errorlevel 1 (
 
 :cleanup_tc
 echo [2/7] Keeping FolderHeatMap color/icon integration disabled for staged testing...
-if exist "cleanup_tc_integration.ps1" (
-    if defined TC_INI (
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1" -WincmdIni "!TC_INI!"
-    ) else (
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1"
-    )
-    if errorlevel 1 goto cleanup_error
+if not exist "cleanup_tc_integration.ps1" goto cleanup_error
+if defined TC_INI (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1" -WincmdIni "!TC_INI!"
 ) else (
-    echo ERROR: cleanup_tc_integration.ps1 is missing.
-    goto cleanup_error
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1"
 )
+if errorlevel 1 goto cleanup_error
 
 :build
 echo [3/7] Preparing build...
 if exist build rmdir /s /q build
 
 echo [4/7] Configuring x64 Release build...
-"%CMAKE%" -S . -B build -A x64
-if errorlevel 1 goto build_error
+"%CMAKE%" -S . -B build -A x64 || goto build_error
 
-echo [5/7] Building Heat+Visits WDX plus hidden FAST/SLOW engine...
+echo [5/7] Building Heat+Visits+Writes diagnostics, FAST/SLOW engine and tools...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
-for %%F in (FolderHeatMap.wdx64 FolderHeatMapEngine.exe FolderHeatMapConfig.exe FolderHeatMapReset.exe) do (
-    if not exist "build\Release\%%F" goto missing_artifact
-)
+for %%F in (FolderHeatMap.wdx64 FolderHeatMapEngine.exe FolderHeatMapConfig.exe FolderHeatMapReset.exe) do if not exist "build\Release\%%F" goto missing_artifact
 
 echo [6/7] Preparing dist package...
 if not exist dist mkdir dist
@@ -218,11 +185,10 @@ if not defined TC_PLUGIN goto success
 for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_DIR=%%~dpI"
 for %%I in ("%CD%\dist\FolderHeatMap.wdx64") do set "DIST_PLUGIN=%%~fI"
 for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
-
 if /I not "!DIST_PLUGIN!"=="!TC_PLUGIN_FULL!" (
     copy /y "dist\FolderHeatMap.wdx64" "!TC_PLUGIN!" >nul || goto deploy_error
     copy /y "dist\FolderHeatMapEngine.exe" "!TC_PLUGIN_DIR!FolderHeatMapEngine.exe" >nul || goto deploy_error
-    echo [TC] Updated Heat+Visits WDX and background engine in: !TC_PLUGIN_DIR!
+    echo [TC] Updated WDX and background engine in: !TC_PLUGIN_DIR!
 ) else (
     echo [TC] Registered plugin already points to dist; engine is beside the WDX.
 )
@@ -234,9 +200,12 @@ echo.
 echo SUCCESS.
 echo WDX:       %CD%\dist\FolderHeatMap.wdx64
 echo Engine:    %CD%\dist\FolderHeatMapEngine.exe
+echo Config:    %CD%\dist\FolderHeatMapConfig.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.06 staged test: Heat and Visits are RAM-only; visited objects refresh in background; TC colors/icons remain disabled.
+echo FolderHeatMap 1.07: Heat, Visits and Writes are RAM-only diagnostics.
+echo File first observation is a zero-write baseline. Logging modes: off / single / all.
+echo TC heat colors/icons remain disabled for this staged test.
 pause
 exit /b 0
 
