@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.03 - 19.08.2026
+
+- Tightened the diagnostic baseline after confirming that Total Commander still evaluated old FolderHeatMap color/icon integration even though Heat math had been disabled.
+- The WDX now exposes exactly one field: `Visits`. `Heat`, `Heat Level`, `Heat Color Step`, `Writes`, and date fields no longer exist in the diagnostic plugin.
+- Added `cleanup_tc_integration.ps1`, invoked automatically by `upgrade.cmd` while Total Commander is stopped. It removes only FolderHeatMap-managed color filters, saved searches, and heat-icon associations from `wincmd.ini` while preserving unrelated user color rules and associations.
+- The cleanup creates a timestamped backup of `wincmd.ini` before changing anything.
+- Explicit Total Commander refresh no longer counts as a visit; only `contst_readnewdir` is forwarded to the counter engine.
+- No coloring, icon heat mapping, Heat mathematics, prediction, directory scanning, or repaint request remains active in this baseline.
+- Goal: establish whether raw visit counting alone can run with completely stable cursor/navigation behavior before any other layer is reintroduced.
+
 ## 1.02 - 19.08.2026
 
 - Deliberately reduced the runtime to a counter-only diagnostic baseline after persistent Total Commander cursor repaint/flicker problems in the full Heat runtime.
