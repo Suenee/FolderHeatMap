@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.06 - 19.08.2026
+
+- Fixed a staged-runtime consistency bug where entering a directory updated the database but did not refresh that directory's own RAM cache entry.
+- The SLOW worker now recalculates the visited directory itself immediately after persisting the visit and atomically stores that snapshot in shared RAM.
+- The child batch for the currently viewed directory remains hidden exactly as before, so this change does not reintroduce progressive panel updates or repaint requests.
+- The practical result is one-step-behind behavior instead of potentially many-step-old parent views: after visiting `X`, its parent can read the new `Visits`/`Heat` for `X` the next time that item is normally requested.
+- WDX remains read-only and RAM-only. Total Commander color/icon integration remains disabled for this staged test.
+
 ## 1.05 - 19.08.2026
 
 - Exposed `Heat` to Total Commander again as a read-only numeric field alongside `Visits`.
