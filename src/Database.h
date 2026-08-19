@@ -68,11 +68,7 @@ public:
     // Baseline-safe observation used by the background engine. The first time a
     // file is discovered we only remember its current LastWrite timestamp with
     // zero write events. A later timestamp change is the first real write event.
-    bool ObserveFileWriteBaselineSafe(const FolderIdentity& identity, const FILETIME& lastWrite) {
-        const auto current = GetFileActivity(identity);
-        if (!current) return ResetDirectActivity(identity, false, &lastWrite);
-        return ObserveFileWrite(identity, lastWrite);
-    }
+    bool ObserveFileWriteBaselineSafe(const FolderIdentity& identity, const FILETIME& lastWrite);
 
     std::optional<StoredFileActivity> GetFileActivity(const FolderIdentity& identity);
     std::vector<std::pair<std::wstring, StoredFileActivity>> GetVolumeFileActivities(const std::wstring& volumeId);
