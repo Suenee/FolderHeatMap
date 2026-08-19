@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.05 - 19.08.2026
+
+- Exposed `Heat` to Total Commander again as a read-only numeric field alongside `Visits`.
+- Both fields are served exclusively from the latest complete shared-RAM generation. `ContentGetValueW()` still performs no filesystem access, SQLite access, Heat math, queueing, prediction or repaint request.
+- FAST/SLOW workers remain external in `FolderHeatMapEngine.exe` and continue calculating/persisting Heat in the background.
+- Total Commander color filters and heat-icon associations remain deliberately disabled. This release tests only whether reading already-computed Heat values from RAM remains visually stable.
+- Missing RAM entries return a definitive numeric zero rather than delayed/empty state.
+- Acceptance criterion: Heat values become visible after background preparation/later navigation while cursor movement and directory browsing remain as stable as 1.04.
+
 ## 1.04 - 19.08.2026
 
 - Reintroduced the full background calculation engine behind the stable 1.03 counter-only WDX baseline.
