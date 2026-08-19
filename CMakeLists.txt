@@ -32,6 +32,7 @@ add_executable(FolderHeatMapEngine
     src/EngineApp.cpp
     src/FolderIdentity.cpp
     src/Database.cpp
+    src/DatabaseBaseline.cpp
     src/RuntimeCacheDatabase.cpp
     src/Settings.cpp
     vendor/sqlite/sqlite3.c
@@ -42,10 +43,6 @@ target_compile_definitions(FolderHeatMapEngine PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION
 )
-# Only EngineApp.cpp gets the baseline-safe alias. Database.cpp itself must keep
-# the original ObserveFileWrite symbol so the wrapper can call it after baseline.
-set_source_files_properties(src/EngineApp.cpp PROPERTIES
-    COMPILE_DEFINITIONS "ObserveFileWrite=ObserveFileWriteBaselineSafe")
 
 add_dependencies(FolderHeatMap FolderHeatMapEngine)
 add_custom_command(TARGET FolderHeatMap POST_BUILD
