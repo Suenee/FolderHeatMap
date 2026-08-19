@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <filesystem>
+#include <iterator>
 #include <string>
 
 namespace {
@@ -113,7 +114,7 @@ void AddLoggingControls(HWND hwnd) {
         GetModuleHandleW(nullptr), nullptr);
     if (label) SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 
-    g_loggingCombo = CreateWindowExW(0, WC_COMBOBOXW, nullptr,
+    g_loggingCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
         370, 464, 150, 200, hwnd,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdLoggingCombo)),
