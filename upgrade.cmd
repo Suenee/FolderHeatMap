@@ -11,7 +11,7 @@ rem updates the working tree and performs the real upgrade. This prevents an old
 rem local upgrade.cmd from building/deploying old sources ever again.
 rem ---------------------------------------------------------------------------
 
-set "UPGRADE_REV=1.04-background-workers"
+set "UPGRADE_REV=1.06-own-cache-refresh"
 set "BOOTSTRAP_STAGE=%~1"
 set "ORIGINAL_REPO=%~dp0"
 
@@ -194,7 +194,7 @@ echo [4/7] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
 
-echo [5/7] Building Visits-only WDX plus hidden FAST/SLOW engine...
+echo [5/7] Building Heat+Visits WDX plus hidden FAST/SLOW engine...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
@@ -222,7 +222,7 @@ for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
 if /I not "!DIST_PLUGIN!"=="!TC_PLUGIN_FULL!" (
     copy /y "dist\FolderHeatMap.wdx64" "!TC_PLUGIN!" >nul || goto deploy_error
     copy /y "dist\FolderHeatMapEngine.exe" "!TC_PLUGIN_DIR!FolderHeatMapEngine.exe" >nul || goto deploy_error
-    echo [TC] Updated Visits-only WDX and hidden background engine in: !TC_PLUGIN_DIR!
+    echo [TC] Updated Heat+Visits WDX and background engine in: !TC_PLUGIN_DIR!
 ) else (
     echo [TC] Registered plugin already points to dist; engine is beside the WDX.
 )
@@ -236,7 +236,7 @@ echo WDX:       %CD%\dist\FolderHeatMap.wdx64
 echo Engine:    %CD%\dist\FolderHeatMapEngine.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.04 staged test: TC exposes only Visits; FAST/SLOW Heat work runs hidden in the background with no repaint requests.
+echo FolderHeatMap 1.06 staged test: Heat and Visits are RAM-only; visited objects refresh in background; TC colors/icons remain disabled.
 pause
 exit /b 0
 
