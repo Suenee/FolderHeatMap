@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.01 - 19.08.2026
+
+- Added a frozen per-directory WDX view. On `contst_readnewdir`, the plugin captures exactly one complete shared-RAM generation before notifying the background engine about the new navigation step.
+- `ContentGetValueW()` now reads only from that frozen view for the entire directory visit. Worker activity, predictive prefetch and persistence can continue changing background RAM without changing what Total Commander sees mid-visit.
+- This formalizes the one-step-behind model: the user sees the last complete state that existed when the directory was entered; newer calculations become eligible on a later directory entry.
+- No background task requests repainting. The only in-place refresh path is an explicit user refresh, which still swaps one complete snapshot rather than publishing per-item updates.
+- The goal is zero progressive recoloring and zero cursor repaint storms while keeping already-predicted directories effectively instantaneous.
+
 ## 1.00 - 18.08.2026
 
 - Architecture reset. Preserved the existing Folder Heat/File Heat mathematics, settings, configurator, reset tooling, colors and icon integration while replacing the runtime path completely.
