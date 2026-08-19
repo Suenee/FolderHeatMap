@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.00 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.01 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -13,10 +13,10 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/vendor/sqlite/sqlite3.c")
     message(FATAL_ERROR "SQLite amalgamation is missing. Run upgrade.cmd first.")
 endif()
 
-# WDX 1.00 is intentionally tiny: it only reads immutable values from shared RAM
+# WDX 1.01 is intentionally tiny: it only reads a frozen immutable RAM snapshot
 # and forwards directory-navigation events to the background engine.
 add_library(FolderHeatMap SHARED
-    src/FolderHeatMap.cpp
+    src/FolderHeatMapV101.cpp
 )
 target_include_directories(FolderHeatMap PRIVATE src)
 target_compile_features(FolderHeatMap PRIVATE cxx_std_20)
@@ -38,9 +38,6 @@ target_compile_definitions(FolderHeatMapEngine PRIVATE
     SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION
 )
 
-# Building the WDX must also produce the engine. The post-build copy keeps the
-# first transition from an older upgrade.cmd safe: even the legacy target list
-# leaves the new engine beside the dist package for the new WDX to launch.
 add_dependencies(FolderHeatMap FolderHeatMapEngine)
 add_custom_command(TARGET FolderHeatMap POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/dist"
@@ -49,7 +46,6 @@ add_custom_command(TARGET FolderHeatMap POST_BUILD
         "${CMAKE_SOURCE_DIR}/dist/FolderHeatMapEngine.exe"
 )
 
-# Configurator native icon.
 set(FHM_CONFIG_ICON_B64 "${CMAKE_SOURCE_DIR}/assets/FolderHeatMapConfig.ico.b64")
 set(FHM_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 set(FHM_CONFIG_ICON "${FHM_GENERATED_DIR}/FolderHeatMapConfig.ico")
