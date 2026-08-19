@@ -1,8 +1,49 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-cd /d "%~dp0"
 
-set "UPGRADE_REV=1.03-counter-only-clean"
+rem ---------------------------------------------------------------------------
+rem SELF-BOOTSTRAP GUARANTEE
+rem ---------------------------------------------------------------------------
+rem The local upgrade.cmd must never be trusted to be current. On every normal
+rem launch it fetches origin/devel, extracts the repository copy of upgrade.cmd
+rem into TEMP and transfers control to that fresh copy. The fresh copy then
+rem updates the working tree and performs the real upgrade. This prevents an old
+rem local upgrade.cmd from building/deploying old sources ever again.
+rem ---------------------------------------------------------------------------
+
+set "UPGRADE_REV=1.04-self-bootstrap"
+set "BOOTSTRAP_STAGE=%~1"
+set "ORIGINAL_REPO=%~dp0"
+
+if /I "%BOOTSTRAP_STAGE%"=="--fresh-bootstrap" goto fresh_bootstrap
+
+cd /d "%ORIGINAL_REPO%"
+where git.exe >nul 2>nul
+if errorlevel 1 goto git_missing
+
+git rev-parse --is-inside-work-tree >nul 2>nul
+if errorlevel 1 goto git_tree_error
+
+echo [BOOTSTRAP] Fetching latest upgrader from origin/devel...
+git fetch origin
+if errorlevel 1 goto git_fetch_error
+
+set "FRESH_UPGRADER=%TEMP%\FolderHeatMap-upgrade-%RANDOM%-%RANDOM%.cmd"
+git show origin/devel:upgrade.cmd > "!FRESH_UPGRADER!"
+if errorlevel 1 goto bootstrap_extract_error
+if not exist "!FRESH_UPGRADER!" goto bootstrap_extract_error
+for %%I in ("!FRESH_UPGRADER!") do if %%~zI LSS 1000 goto bootstrap_extract_error
+
+call "!FRESH_UPGRADER!" --fresh-bootstrap "%ORIGINAL_REPO%"
+set "BOOTSTRAP_RC=!ERRORLEVEL!"
+del /q "!FRESH_UPGRADER!" >nul 2>nul
+exit /b !BOOTSTRAP_RC!
+
+:fresh_bootstrap
+set "REPO_DIR=%~2"
+if not defined REPO_DIR goto bootstrap_repo_error
+cd /d "%REPO_DIR%"
+
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
 set "VSBT_URL=https://aka.ms/vs/17/release/vs_BuildTools.exe"
@@ -16,12 +57,10 @@ set "TC_PLUGIN="
 set "TC_EXE="
 set "TC_WAS_RUNNING=0"
 
-if "%~1"=="--after-pull" goto after_pull
-
 where git.exe >nul 2>nul
 if errorlevel 1 goto git_missing
 
-echo [0/7] Updating repository from origin/devel...
+echo [0/7] Updating repository from origin/devel with fresh upgrader...
 git rev-parse --is-inside-work-tree >nul 2>nul
 if errorlevel 1 goto git_tree_error
 
@@ -47,10 +86,18 @@ git pull --ff-only origin devel
 if errorlevel 1 goto git_pull_error
 if "!LOCAL_STASHED!"=="1" echo [GIT] Previous local changes remain safely stored in git stash.
 
-call "%~f0" --after-pull
-exit /b %ERRORLEVEL%
+rem Verify that the working-tree upgrader is exactly the repository version.
+set "REMOTE_UPGRADE_HASH="
+set "LOCAL_UPGRADE_HASH="
+for /f "delims=" %%H in ('git rev-parse origin/devel:upgrade.cmd 2^>nul') do set "REMOTE_UPGRADE_HASH=%%H"
+for /f "delims=" %%H in ('git hash-object upgrade.cmd 2^>nul') do set "LOCAL_UPGRADE_HASH=%%H"
+if not defined REMOTE_UPGRADE_HASH goto bootstrap_verify_error
+if not defined LOCAL_UPGRADE_HASH goto bootstrap_verify_error
+if /I not "!REMOTE_UPGRADE_HASH!"=="!LOCAL_UPGRADE_HASH!" goto bootstrap_verify_error
 
-:after_pull
+echo [BOOTSTRAP] upgrade.cmd verified current: !LOCAL_UPGRADE_HASH!
+echo.
+
 if defined TC_PATH goto tc_path_done
 for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
@@ -240,6 +287,16 @@ goto fail
 :git_pull_error
 echo ERROR: Could not fast-forward devel from origin/devel.
 goto fail
+:bootstrap_extract_error
+echo ERROR: Could not extract the latest upgrade.cmd from origin/devel.
+goto fail
+:bootstrap_repo_error
+echo ERROR: Fresh upgrader did not receive the repository path.
+goto fail
+:bootstrap_verify_error
+echo ERROR: Local upgrade.cmd is not identical to origin/devel after update.
+echo ERROR: Upgrade aborted before build/deployment to prevent stale code deployment.
+goto fail
 :download_error
 echo ERROR: Microsoft Build Tools bootstrapper could not be downloaded.
 goto fail
@@ -262,7 +319,7 @@ goto fail
 echo ERROR: Build failed. See the errors above.
 goto fail
 :missing_artifact
-echo ERROR: One or more required 1.03 artifacts are missing.
+echo ERROR: One or more required artifacts are missing.
 goto fail
 :tc_stop_error
 echo ERROR: Total Commander could not be stopped for deployment.
