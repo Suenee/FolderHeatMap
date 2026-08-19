@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "UPGRADE_REV=1.00-runtime-reset"
+set "UPGRADE_REV=1.02-counter-only"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
 set "VSBT_URL=https://aka.ms/vs/17/release/vs_BuildTools.exe"
@@ -113,7 +113,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$tmp=Join-Path $env:
 if errorlevel 1 goto sqlite_error
 
 :stop_runtime
-echo [1/6] Stopping Total Commander and draining FolderHeatMap engine...
+echo [1/6] Stopping Total Commander and FolderHeatMap engine...
 taskkill /IM FolderHeatMapConfig.exe >nul 2>nul
 taskkill /IM FolderHeatMapReset.exe >nul 2>nul
 call :is_tc_running
@@ -121,7 +121,7 @@ if "!TC_RUNNING!"=="1" call :stop_tc
 if errorlevel 1 goto tc_stop_error
 call :wait_engine
 if errorlevel 1 (
-    echo WARNING: FolderHeatMapEngine did not finish graceful shutdown within 30 seconds.
+    echo WARNING: FolderHeatMapEngine did not finish shutdown within 10 seconds.
     echo WARNING: Forcing it to stop so the upgrade can continue.
     taskkill /F /IM FolderHeatMapEngine.exe >nul 2>nul
     timeout /t 1 /nobreak >nul
@@ -135,7 +135,7 @@ echo [3/6] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
 
-echo [4/6] Building WDX, FAST/SLOW engine, configurator and reset utility...
+echo [4/6] Building counter-only WDX/engine, configurator and reset utility...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
@@ -180,7 +180,7 @@ echo Settings:  %CD%\dist\FolderHeatMapConfig.exe
 echo Reset:     %CD%\dist\FolderHeatMapReset.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.00 uses RAM-only WDX reads; all calculations run in FolderHeatMapEngine.exe.
+echo FolderHeatMap 1.02 COUNTER-ONLY baseline: Heat math/colors/prediction are disabled; only raw directory visits are recorded.
 pause
 exit /b 0
 
@@ -207,7 +207,7 @@ if "!TC_RUNNING!"=="1" exit /b 1
 exit /b 0
 
 :wait_engine
-for /l %%N in (1,1,30) do (
+for /l %%N in (1,1,10) do (
     tasklist /FI "IMAGENAME eq FolderHeatMapEngine.exe" 2>nul | find /I "FolderHeatMapEngine.exe" >nul || exit /b 0
     timeout /t 1 /nobreak >nul
 )
@@ -250,7 +250,7 @@ goto fail
 echo ERROR: Build failed. See the errors above.
 goto fail
 :missing_artifact
-echo ERROR: One or more required 1.00 artifacts are missing.
+echo ERROR: One or more required 1.02 artifacts are missing.
 goto fail
 :tc_stop_error
 echo ERROR: Total Commander could not be stopped for deployment.
