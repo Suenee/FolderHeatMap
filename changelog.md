@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.04 - 19.08.2026
+
+- Reintroduced the full background calculation engine behind the stable 1.03 counter-only WDX baseline.
+- Total Commander still sees exactly one FolderHeatMap field: `Visits`. Heat, color, write and date fields remain hidden from TC, and FolderHeatMap color/icon rules remain removed.
+- Restored the two-speed worker architecture in the external `FolderHeatMapEngine.exe` process.
+- **FAST worker** handles real navigation first and can prepare high-probability follow-up directories in RAM.
+- **SLOW worker** handles persistence, file-write observation, durable runtime-cache saves and lower-priority preparation.
+- Restored the existing Heat mathematics, inherited path Heat, optional File Heat calculations, runtime cache persistence and heat-based prediction internally, but none of these results are exposed to Total Commander yet.
+- Real navigation always outranks predictive work. Prediction remains background-only and cannot request a TC repaint.
+- The WDX foreground path remains unchanged in principle: it reads only `Visits` from shared RAM and performs no Heat calculation, SQLite query, filesystem scan, prediction or repaint operation.
+- Added the settings path when launching the background engine so the restored workers use the configured cooling, path contribution, File Heat and logging settings.
+- This version is deliberately a hidden-engine test. The acceptance criterion is that cursor/navigation behavior remains as stable and fast as 1.03 while the two workers calculate in the background.
+
 ## 1.03 - 19.08.2026
 
 - Tightened the diagnostic baseline after confirming that Total Commander still evaluated old FolderHeatMap color/icon integration even though Heat math had been disabled.
