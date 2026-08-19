@@ -7,7 +7,8 @@
 #include <string>
 
 namespace {
-constexpr int kFieldVisits = 0;
+constexpr int kFieldHeat = 0;
+constexpr int kFieldVisits = 1;
 
 HMODULE g_module = nullptr;
 HANDLE g_mapping = nullptr;
@@ -98,25 +99,30 @@ void LaunchEngine(const ContentDefaultParamStruct* dps) {
     }
 }
 
-int ReadVisits(const wchar_t* fileName, void* fieldValue) {
-    auto* value = static_cast<__int64*>(fieldValue);
-    *value = 0;
+int ReadRamValue(const wchar_t* fileName, int fieldIndex, void* fieldValue) {
+    if (fieldIndex == kFieldHeat) *static_cast<double*>(fieldValue) = 0.0;
+    else if (fieldIndex == kFieldVisits) *static_cast<__int64*>(fieldValue) = 0;
+    else return ft_nosuchfield;
 
+    const int type = fieldIndex == kFieldHeat ? ft_numeric_floating : ft_numeric_64;
     if (!g_shared || g_shared->magic != fhm::runtime::kMagic || g_shared->version != fhm::runtime::kVersion)
-        return ft_numeric_64;
+        return type;
 
     std::uint32_t pathLength = 0;
     const std::uint64_t pathHash = fhm::runtime::HashNormalizedPath(fileName, pathLength);
-    if (!pathHash) return ft_numeric_64;
+    if (!pathHash) return type;
 
     const LONG active = InterlockedCompareExchange(&g_shared->activeBuffer, 0, 0) & 1;
     auto& buffer = g_shared->buffers[active];
     InterlockedIncrement(&buffer.readers);
     MemoryBarrier();
     const auto* entry = fhm::runtime::FindEntry(buffer, pathHash, pathLength);
-    if (entry) *value = entry->visits;
+    if (entry) {
+        if (fieldIndex == kFieldHeat) *static_cast<double*>(fieldValue) = entry->heat;
+        else *static_cast<__int64*>(fieldValue) = entry->visits;
+    }
     InterlockedDecrement(&buffer.readers);
-    return ft_numeric_64;
+    return type;
 }
 
 void PublishNavigation(const wchar_t* path) {
@@ -164,6 +170,10 @@ extern "C" __declspec(dllexport) void __stdcall ContentSetDefaultParams(ContentD
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fieldIndex, char* fieldName, char* units, int maxlen) {
     if (units && maxlen > 0) units[0] = '\0';
+    if (fieldIndex == kFieldHeat) {
+        CopyAnsi(fieldName, maxlen, "Heat");
+        return ft_numeric_floating;
+    }
     if (fieldIndex == kFieldVisits) {
         CopyAnsi(fieldName, maxlen, "Visits");
         return ft_numeric_64;
@@ -173,8 +183,7 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fiel
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int) {
     if (!fileName || !fieldValue) return ft_fileerror;
-    if (fieldIndex != kFieldVisits) return ft_nosuchfield;
-    return ReadVisits(fileName, fieldValue);
+    return ReadRamValue(fileName, fieldIndex, fieldValue);
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, int fieldIndex, int unitIndex, void* fieldValue, int maxlen, int flags) {
@@ -184,12 +193,12 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, i
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fieldIndex) {
-    return fieldIndex == kFieldVisits ? -1 : 1;
+    return (fieldIndex == kFieldHeat || fieldIndex == kFieldVisits) ? -1 : 1;
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
-    // Staged 1.04 rebuild: Total Commander still only emits real navigation.
-    // FAST/SLOW calculations happen in the external engine and never request repaint.
+    // 1.05 staged test: Heat and Visits are read-only RAM values only.
+    // FAST/SLOW calculations stay external and never request a repaint.
     if (state == contst_readnewdir) PublishNavigation(path);
 }
 
