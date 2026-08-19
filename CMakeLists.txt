@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.03 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.04 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -13,11 +13,12 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/vendor/sqlite/sqlite3.c")
     message(FATAL_ERROR "SQLite amalgamation is missing. Run upgrade.cmd first.")
 endif()
 
-# 1.03 diagnostic baseline:
-# - WDX exposes one field only: Visits
-# - no Heat/ColorStep/Writes fields exist
-# - Total Commander FolderHeatMap color/icon rules are removed by upgrade.cmd
-# - no heat math, file scanning, prediction, inheritance or repaint logic
+# 1.04 staged rebuild:
+# - WDX still exposes Visits only; TC Heat/color integration remains disabled
+# - full Heat math runs invisibly in the separate background engine
+# - FAST handles real navigation / high-priority preparation
+# - SLOW handles persistence, write observation and lower-priority work
+# - no engine task requests a TC repaint
 add_library(FolderHeatMap SHARED
     src/FolderHeatMapCounterOnly.cpp
 )
@@ -26,9 +27,11 @@ target_compile_features(FolderHeatMap PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMap PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 add_executable(FolderHeatMapEngine
-    src/EngineCounterOnly.cpp
+    src/EngineApp.cpp
     src/FolderIdentity.cpp
     src/Database.cpp
+    src/RuntimeCacheDatabase.cpp
+    src/Settings.cpp
     vendor/sqlite/sqlite3.c
 )
 target_include_directories(FolderHeatMapEngine PRIVATE src vendor/sqlite)
