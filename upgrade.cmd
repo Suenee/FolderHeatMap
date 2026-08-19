@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "UPGRADE_REV=1.02-counter-only"
+set "UPGRADE_REV=1.03-counter-only-clean"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
 set "VSBT_URL=https://aka.ms/vs/17/release/vs_BuildTools.exe"
@@ -21,7 +21,7 @@ if "%~1"=="--after-pull" goto after_pull
 where git.exe >nul 2>nul
 if errorlevel 1 goto git_missing
 
-echo [0/6] Updating repository from origin/devel...
+echo [0/7] Updating repository from origin/devel...
 git rev-parse --is-inside-work-tree >nul 2>nul
 if errorlevel 1 goto git_tree_error
 
@@ -47,8 +47,6 @@ git pull --ff-only origin devel
 if errorlevel 1 goto git_pull_error
 if "!LOCAL_STASHED!"=="1" echo [GIT] Previous local changes remain safely stored in git stash.
 
-rem Relaunch the freshly pulled script so an upgrade.cmd update takes effect
-rem during this same one-click upgrade.
 call "%~f0" --after-pull
 exit /b %ERRORLEVEL%
 
@@ -113,7 +111,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$tmp=Join-Path $env:
 if errorlevel 1 goto sqlite_error
 
 :stop_runtime
-echo [1/6] Stopping Total Commander and FolderHeatMap engine...
+echo [1/7] Stopping Total Commander and FolderHeatMap engine...
 taskkill /IM FolderHeatMapConfig.exe >nul 2>nul
 taskkill /IM FolderHeatMapReset.exe >nul 2>nul
 call :is_tc_running
@@ -127,15 +125,29 @@ if errorlevel 1 (
     timeout /t 1 /nobreak >nul
 )
 
+:cleanup_tc
+echo [2/7] Removing FolderHeatMap color/icon rules from Total Commander...
+if exist "cleanup_tc_integration.ps1" (
+    if defined TC_INI (
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1" -WincmdIni "!TC_INI!"
+    ) else (
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1"
+    )
+    if errorlevel 1 goto cleanup_error
+) else (
+    echo ERROR: cleanup_tc_integration.ps1 is missing.
+    goto cleanup_error
+)
+
 :build
-echo [2/6] Preparing build...
+echo [3/7] Preparing build...
 if exist build rmdir /s /q build
 
-echo [3/6] Configuring x64 Release build...
+echo [4/7] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64
 if errorlevel 1 goto build_error
 
-echo [4/6] Building counter-only WDX/engine, configurator and reset utility...
+echo [5/7] Building Visits-only WDX/engine, configurator and reset utility...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
@@ -143,19 +155,18 @@ for %%F in (FolderHeatMap.wdx64 FolderHeatMapEngine.exe FolderHeatMapConfig.exe 
     if not exist "build\Release\%%F" goto missing_artifact
 )
 
-echo [5/6] Preparing dist package...
+echo [6/7] Preparing dist package...
 if not exist dist mkdir dist
 copy /y "build\Release\FolderHeatMap.wdx64" "dist\FolderHeatMap.wdx64" >nul || goto dist_error
 copy /y "build\Release\FolderHeatMapEngine.exe" "dist\FolderHeatMapEngine.exe" >nul || goto dist_error
 copy /y "build\Release\FolderHeatMapConfig.exe" "dist\FolderHeatMapConfig.exe" >nul || goto dist_error
 copy /y "build\Release\FolderHeatMapReset.exe" "dist\FolderHeatMapReset.exe" >nul || goto dist_error
+copy /y "cleanup_tc_integration.ps1" "dist\cleanup_tc_integration.ps1" >nul
 copy /y "configure.cmd" "dist\configure.cmd" >nul
-copy /y "setup_icons.cmd" "dist\setup_icons.cmd" >nul
-copy /y "setup_icons.ps1" "dist\setup_icons.ps1" >nul
 copy /y "README.md" "dist\README.md" >nul
 copy /y "TESTING.md" "dist\TESTING.md" >nul
 
-echo [6/6] Deploying to Total Commander...
+echo [7/7] Deploying to Total Commander...
 if not defined TC_PLUGIN goto success
 for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_DIR=%%~dpI"
 for %%I in ("%CD%\dist\FolderHeatMap.wdx64") do set "DIST_PLUGIN=%%~fI"
@@ -164,7 +175,7 @@ for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
 if /I not "!DIST_PLUGIN!"=="!TC_PLUGIN_FULL!" (
     copy /y "dist\FolderHeatMap.wdx64" "!TC_PLUGIN!" >nul || goto deploy_error
     copy /y "dist\FolderHeatMapEngine.exe" "!TC_PLUGIN_DIR!FolderHeatMapEngine.exe" >nul || goto deploy_error
-    echo [TC] Updated WDX and engine in: !TC_PLUGIN_DIR!
+    echo [TC] Updated Visits-only WDX and engine in: !TC_PLUGIN_DIR!
 ) else (
     echo [TC] Registered plugin already points to dist; engine is beside the WDX.
 )
@@ -176,11 +187,9 @@ echo.
 echo SUCCESS.
 echo WDX:       %CD%\dist\FolderHeatMap.wdx64
 echo Engine:    %CD%\dist\FolderHeatMapEngine.exe
-echo Settings:  %CD%\dist\FolderHeatMapConfig.exe
-echo Reset:     %CD%\dist\FolderHeatMapReset.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.02 COUNTER-ONLY baseline: Heat math/colors/prediction are disabled; only raw directory visits are recorded.
+echo FolderHeatMap 1.03 diagnostic baseline: only Visits exists. Heat fields, TC heat colors/icons, math and prediction are disabled.
 pause
 exit /b 0
 
@@ -246,11 +255,14 @@ goto fail
 :restart_required
 echo Build Tools were installed successfully, but Windows requires a restart.
 goto fail
+:cleanup_error
+echo ERROR: Could not remove FolderHeatMap-managed TC color/icon rules safely.
+goto fail
 :build_error
 echo ERROR: Build failed. See the errors above.
 goto fail
 :missing_artifact
-echo ERROR: One or more required 1.02 artifacts are missing.
+echo ERROR: One or more required 1.03 artifacts are missing.
 goto fail
 :tc_stop_error
 echo ERROR: Total Commander could not be stopped for deployment.
