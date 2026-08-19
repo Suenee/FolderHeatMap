@@ -18,8 +18,9 @@ endif()
 # - no TC Heat color/icon integration is installed
 # - full Heat math remains external in FAST/SLOW workers
 # - a real visit refreshes the visited directory's own RAM snapshot
+# - File Heat uses a zero-write baseline on first discovery
 # - WDX performs no filesystem, SQLite, math, queueing or repaint work
-# - engine logging supports off/single/all modes
+# - engine logging supports off/single/all modes and is selectable in the configurator
 add_library(FolderHeatMap SHARED
     src/FolderHeatMapCounterOnly.cpp
 )
@@ -41,6 +42,10 @@ target_compile_definitions(FolderHeatMapEngine PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION
 )
+# Only EngineApp.cpp gets the baseline-safe alias. Database.cpp itself must keep
+# the original ObserveFileWrite symbol so the wrapper can call it after baseline.
+set_source_files_properties(src/EngineApp.cpp PROPERTIES
+    COMPILE_DEFINITIONS "ObserveFileWrite=ObserveFileWriteBaselineSafe")
 
 add_dependencies(FolderHeatMap FolderHeatMapEngine)
 add_custom_command(TARGET FolderHeatMap POST_BUILD
@@ -67,6 +72,7 @@ file(WRITE "${FHM_CONFIG_RC}" "IDI_FHM_CONFIG ICON \"${FHM_CONFIG_ICON}\"\n")
 
 add_executable(FolderHeatMapConfig WIN32
     src/ConfigAppCompile.cpp
+    src/LoggingConfigExtension.cpp
     src/Settings.cpp
     "${FHM_CONFIG_RC}"
 )
