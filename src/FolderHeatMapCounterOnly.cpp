@@ -39,6 +39,12 @@ std::wstring DatabasePath(const std::wstring& defaultIni) {
     return L"FolderHeatMap.db";
 }
 
+std::wstring SettingsPath(const std::wstring& defaultIni) {
+    const std::filesystem::path ini(defaultIni);
+    if (ini.has_parent_path()) return (ini.parent_path() / L"FolderHeatMap.ini").wstring();
+    return L"FolderHeatMap.ini";
+}
+
 std::wstring EnginePath() {
     wchar_t modulePath[32768]{};
     if (!g_module || !GetModuleFileNameW(g_module, modulePath, static_cast<DWORD>(std::size(modulePath)))) return {};
@@ -78,8 +84,10 @@ void LaunchEngine(const ContentDefaultParamStruct* dps) {
         return;
     }
 
-    const std::wstring db = DatabasePath(DefaultIniPath(dps));
-    std::wstring command = L"\"" + engine + L"\" --db \"" + db + L"\"";
+    const std::wstring defaultIni = DefaultIniPath(dps);
+    const std::wstring db = DatabasePath(defaultIni);
+    const std::wstring settings = SettingsPath(defaultIni);
+    std::wstring command = L"\"" + engine + L"\" --db \"" + db + L"\" --settings \"" + settings + L"\"";
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
@@ -180,8 +188,8 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fi
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
-    // Diagnostic baseline: only an actual directory entry is recorded.
-    // Refreshes do not create visits and no repaint/refresh request is ever sent.
+    // Staged 1.04 rebuild: Total Commander still only emits real navigation.
+    // FAST/SLOW calculations happen in the external engine and never request repaint.
     if (state == contst_readnewdir) PublishNavigation(path);
 }
 
