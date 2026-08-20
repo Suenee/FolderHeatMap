@@ -1,12 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-rem ---------------------------------------------------------------------------
-rem SELF-BOOTSTRAP GUARANTEE
-rem Never trust the local copy of this script. Every normal launch fetches
-rem origin/devel and executes the repository copy from TEMP first.
-rem ---------------------------------------------------------------------------
-set "UPGRADE_REV=1.10-backend-coalescing"
+set "UPGRADE_REV=1.11-slow-lifecycle-batching"
 set "BOOTSTRAP_STAGE=%~1"
 set "ORIGINAL_REPO=%~dp0"
 
@@ -24,9 +19,9 @@ if not exist "!FRESH_UPGRADER!" goto bootstrap_extract_error
 for %%I in ("!FRESH_UPGRADER!") do if %%~zI LSS 1000 goto bootstrap_extract_error
 
 call "!FRESH_UPGRADER!" --fresh-bootstrap "%ORIGINAL_REPO%"
-set "BOOTSTRAP_RC=!ERRORLEVEL!"
+set "BOOTSTRAP_RC=%ERRORLEVEL%"
 del /q "!FRESH_UPGRADER!" >nul 2>nul
-exit /b !BOOTSTRAP_RC!
+exit /b %BOOTSTRAP_RC%
 
 :fresh_bootstrap
 set "REPO_DIR=%~2"
@@ -52,9 +47,7 @@ where git.exe >nul 2>nul || goto git_missing
 echo [0/7] Updating repository from origin/devel...
 git fetch origin || goto git_fetch_error
 for /f "delims=" %%I in ('git branch --show-current') do set "CURRENT_BRANCH=%%I"
-if /I not "!CURRENT_BRANCH!"=="devel" (
-    git switch devel || goto git_switch_error
-)
+if /I not "!CURRENT_BRANCH!"=="devel" git switch devel || goto git_switch_error
 
 set "LOCAL_STASHED=0"
 git diff --quiet --ignore-submodules -- && git diff --cached --quiet --ignore-submodules --
@@ -141,8 +134,8 @@ if "!TC_RUNNING!"=="1" call :stop_tc
 if errorlevel 1 goto tc_stop_error
 call :wait_engine
 if errorlevel 1 (
-    echo WARNING: FolderHeatMapEngine did not finish graceful shutdown within 30 seconds.
-    echo WARNING: Forcing it to stop so the upgrade can continue.
+    call :yellow "WARNING: FolderHeatMapEngine did not finish graceful shutdown within 30 seconds."
+    call :yellow "WARNING: Forcing it to stop so the upgrade can continue."
     taskkill /F /IM FolderHeatMapEngine.exe >nul 2>nul
     timeout /t 1 /nobreak >nul
 )
@@ -161,7 +154,7 @@ if exist build rmdir /s /q build
 echo [4/7] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64 || goto build_error
 
-echo [5/7] Building optimized Heat+Visits+Writes engine, FAST/SLOW workers and tools...
+echo [5/7] Building FolderHeatMap 1.11 FAST/SLOW engine and tools...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
@@ -185,7 +178,7 @@ for %%I in ("!TC_PLUGIN!") do set "TC_PLUGIN_FULL=%%~fI"
 if /I not "!DIST_PLUGIN!"=="!TC_PLUGIN_FULL!" (
     copy /y "dist\FolderHeatMap.wdx64" "!TC_PLUGIN!" >nul || goto deploy_error
     copy /y "dist\FolderHeatMapEngine.exe" "!TC_PLUGIN_DIR!FolderHeatMapEngine.exe" >nul || goto deploy_error
-    echo [TC] Updated WDX and background engine in: !TC_PLUGIN_DIR!
+    echo [TC] Updated WDX and engine in: !TC_PLUGIN_DIR!
 ) else (
     echo [TC] Registered plugin already points to dist; engine is beside the WDX.
 )
@@ -194,15 +187,15 @@ goto success
 
 :success
 echo.
-echo SUCCESS.
+call :green "SUCCESS - FolderHeatMap 1.11 installed."
 echo WDX:       %CD%\dist\FolderHeatMap.wdx64
 echo Engine:    %CD%\dist\FolderHeatMapEngine.exe
 echo Config:    %CD%\dist\FolderHeatMapConfig.exe
 echo Log:       %CD%\FolderHeatMap.log
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.10: backend publication/prediction/persistence coalescing enabled.
-echo Heat math, TC colors/icons, repository logging and WDX foreground behavior are unchanged.
+echo 1.11 keeps two workers only: FAST + SLOW.
+echo SLOW now batches persistence and reconciles move/delete lifecycle in the background.
 pause
 exit /b 0
 
@@ -213,7 +206,7 @@ tasklist /FI "IMAGENAME eq TOTALCMD.EXE" 2>nul | find /I "TOTALCMD.EXE" >nul && 
 exit /b 0
 
 :stop_tc
-echo [TC] Closing Total Commander...
+call :yellow "[TC] Closing Total Commander..."
 taskkill /IM TOTALCMD64.EXE >nul 2>nul
 taskkill /IM TOTALCMD.EXE >nul 2>nul
 for /l %%N in (1,1,20) do (
@@ -221,7 +214,6 @@ for /l %%N in (1,1,20) do (
     if "!TC_RUNNING!"=="0" exit /b 0
     timeout /t 1 /nobreak >nul
 )
-echo [TC] Normal close timed out - forcing Total Commander to stop...
 taskkill /F /IM TOTALCMD64.EXE >nul 2>nul
 taskkill /F /IM TOTALCMD.EXE >nul 2>nul
 call :is_tc_running
@@ -235,68 +227,78 @@ for /l %%N in (1,1,30) do (
 )
 exit /b 1
 
+:red
+powershell.exe -NoProfile -Command "Write-Host '%~1' -ForegroundColor Red"
+exit /b 0
+:yellow
+powershell.exe -NoProfile -Command "Write-Host '%~1' -ForegroundColor Yellow"
+exit /b 0
+:green
+powershell.exe -NoProfile -Command "Write-Host '%~1' -ForegroundColor Green"
+exit /b 0
+
 :git_missing
-echo ERROR: Git was not found in PATH.
+call :red "ERROR: Git was not found in PATH."
 goto fail
 :git_tree_error
-echo ERROR: This folder is not a Git working tree.
+call :red "ERROR: This folder is not a Git working tree."
 goto fail
 :git_fetch_error
-echo ERROR: git fetch origin failed.
+call :red "ERROR: git fetch origin failed."
 goto fail
 :git_switch_error
-echo ERROR: Could not switch to devel.
+call :red "ERROR: Could not switch to devel."
 goto fail
 :git_stash_error
-echo ERROR: Local changes could not be stashed safely.
+call :red "ERROR: Local changes could not be stashed safely."
 goto fail
 :git_pull_error
-echo ERROR: Could not fast-forward devel from origin/devel.
+call :red "ERROR: Could not fast-forward devel from origin/devel."
 goto fail
 :bootstrap_extract_error
-echo ERROR: Could not extract the latest upgrade.cmd from origin/devel.
+call :red "ERROR: Could not extract the latest upgrade.cmd from origin/devel."
 goto fail
 :bootstrap_repo_error
-echo ERROR: Fresh upgrader did not receive the repository path.
+call :red "ERROR: Fresh upgrader did not receive the repository path."
 goto fail
 :bootstrap_verify_error
-echo ERROR: Local upgrade.cmd is not identical to origin/devel after update.
-echo ERROR: Upgrade aborted before build/deployment to prevent stale code deployment.
+call :red "ERROR: Local upgrade.cmd is not identical to origin/devel after update."
 goto fail
 :download_error
-echo ERROR: Microsoft Build Tools bootstrapper could not be downloaded.
+call :red "ERROR: Microsoft Build Tools bootstrapper could not be downloaded."
 goto fail
 :sqlite_error
-echo ERROR: SQLite source dependency could not be prepared.
+call :red "ERROR: SQLite source dependency could not be prepared."
 goto fail
 :cmake_not_found
-echo ERROR: CMake could not be located after Build Tools installation.
+call :red "ERROR: CMake could not be located after Build Tools installation."
 goto fail
 :install_error
-echo ERROR: Microsoft Build Tools installation failed or was cancelled. Code: %INSTALL_RC%
+call :red "ERROR: Microsoft Build Tools installation failed or was cancelled."
 goto fail
 :restart_required
-echo Build Tools were installed successfully, but Windows requires a restart.
+call :yellow "Build Tools installed successfully, but Windows requires a restart."
 goto fail
 :logging_path_error
-echo ERROR: Could not configure FolderHeatMap.log in the repository root.
+call :red "ERROR: Could not configure FolderHeatMap.log in the repository root."
 goto fail
 :build_error
-echo ERROR: Build failed. See the errors above.
+call :red "ERROR: Build failed. See the compiler/CMake output above."
 goto fail
 :missing_artifact
-echo ERROR: One or more required artifacts are missing.
+call :red "ERROR: One or more required artifacts are missing."
 goto fail
 :tc_stop_error
-echo ERROR: Total Commander could not be stopped for deployment.
+call :red "ERROR: Total Commander could not be stopped for deployment."
 goto fail
 :dist_error
-echo ERROR: Could not prepare the dist package.
+call :red "ERROR: Could not prepare the dist package."
 goto fail
 :deploy_error
-echo ERROR: Could not deploy FolderHeatMap WDX/engine beside the registered plugin.
+call :red "ERROR: Could not deploy FolderHeatMap WDX/engine beside the registered plugin."
 goto fail
 
 :fail
+call :red "UPGRADE FAILED."
 pause
 exit /b 1
