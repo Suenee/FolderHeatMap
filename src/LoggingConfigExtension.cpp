@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <commctrl.h>
+#include <tlhelp32.h>
 #include <filesystem>
 #include <iterator>
 #include <string>
@@ -172,9 +173,6 @@ bool RunCleanupScript() {
 }
 
 void EnforceStagedNoColors(HWND hwnd) {
-    // The legacy Save() path still installs the color rules. During the staged
-    // diagnostic rebuild we immediately remove only FolderHeatMap-managed rules
-    // again, while TC is stopped, then restart it. This keeps Heat numeric-only.
     if (!IsTcRunning()) return;
     if (!StopTc()) {
         MessageBoxW(hwnd, L"Total Commander could not be stopped to keep staged Heat colors disabled.",
@@ -253,9 +251,6 @@ LRESULT CALLBACK LoggingWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (id == kIdSave && code == BN_CLICKED) {
-            // Critical ordering: persist Logging *before* legacy Save() restarts
-            // Total Commander. Otherwise the new engine session starts with the
-            // previous logging mode (the bug seen in 1.07).
             if (g_loggingDirty && !SaveLoggingMode()) {
                 MessageBoxW(hwnd, L"Could not save the Logging mode to FolderHeatMap.ini.",
                             L"FolderHeatMap", MB_OK | MB_ICONERROR);
