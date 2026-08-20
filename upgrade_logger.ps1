@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $logPath = Join-Path $RepositoryRoot 'upgrade.log'
-Set-Content -LiteralPath $logPath -Value '' -Encoding UTF8
+[System.IO.File]::WriteAllText($logPath, '', [System.Text.UTF8Encoding]::new($false))
 
 function Write-ClassifiedLine {
     param([string]$Line)
