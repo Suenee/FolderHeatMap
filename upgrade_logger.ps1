@@ -1,56 +1,111 @@
 $ErrorActionPreference = 'Stop'
 
-# 1.14 hardening: do not use a PowerShell param() block at all. Bootstrap
-# values are read from environment variables first. For compatibility with
-# short-lived 1.13 callers, plain positional $args are accepted as a fallback.
+# FolderHeatMap 1.14 bootstrap transport
+# --------------------------------------
+# The stable path is environment-only. No PowerShell param() binding and no
+# command-line bootstrap payload are used by current upgrade.cmd versions.
+# This avoids the Windows trailing-backslash/quote trap and PowerShell automatic
+# variable/parameter-name collisions that affected 1.12/1.13.
+#
+# A legacy recovery block remains intentionally small so an already-installed
+# broken 1.13 upgrade.cmd can bootstrap into 1.14 without another manual edit.
+
 $ScriptPath = $env:FHM_UPGRADE_SCRIPT
 $RepositoryRoot = $env:FHM_UPGRADE_REPO
 $CaptureStage = $env:FHM_UPGRADE_STAGE
+$InternalMarker = $env:FHM_UPGRADE_INTERNAL
+$LegacyTempScript = $null
 
-if ([string]::IsNullOrWhiteSpace($ScriptPath) -and $args.Count -ge 1) {
-    $ScriptPath = [string]$args[0]
-}
-if ([string]::IsNullOrWhiteSpace($RepositoryRoot) -and $args.Count -ge 2) {
-    $RepositoryRoot = [string]$args[1]
-}
-if ([string]::IsNullOrWhiteSpace($CaptureStage) -and $args.Count -ge 3) {
-    $CaptureStage = [string]$args[2]
+function Resolve-LegacyRepositoryRoot {
+    try {
+        $cwd = (Get-Location).ProviderPath
+        if (-not [string]::IsNullOrWhiteSpace($cwd)) {
+            & git -C $cwd rev-parse --is-inside-work-tree 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { return [System.IO.Path]::GetFullPath($cwd).TrimEnd('\') }
+        }
+    }
+    catch { }
+
+    if ($args.Count -ge 1) {
+        try {
+            $candidate = [System.IO.Path]::GetFullPath([string]$args[0])
+            $parent = Split-Path -Parent $candidate
+            & git -C $parent rev-parse --is-inside-work-tree 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { return [System.IO.Path]::GetFullPath($parent).TrimEnd('\') }
+        }
+        catch { }
+    }
+    return $null
 }
 
+# Compatibility bridge for 1.12/1.13 callers. In the known failure mode a
+# repository path ending in '\' swallows the following quoted stage token, so
+# PowerShell receives only two positional args. We deliberately do NOT trust the
+# malformed second arg. The repository is recovered from the working directory,
+# then the latest upgrade.cmd is extracted from origin/devel and run using the
+# new environment-only transport.
 if ([string]::IsNullOrWhiteSpace($ScriptPath) -or
     [string]::IsNullOrWhiteSpace($RepositoryRoot) -or
-    [string]::IsNullOrWhiteSpace($CaptureStage)) {
-    Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - bootstrap data missing; args=' + $args.Count) -ForegroundColor Red
-    exit 64
+    [string]::IsNullOrWhiteSpace($CaptureStage) -or
+    $InternalMarker -ne '1') {
+
+    $legacyRepo = Resolve-LegacyRepositoryRoot
+    if ([string]::IsNullOrWhiteSpace($legacyRepo)) {
+        Write-Host ('STATUS: FAILED - phase=LOGGER/LEGACY-RECOVERY - repository could not be resolved; args=' + $args.Count) -ForegroundColor Red
+        exit 64
+    }
+
+    try {
+        & git -C $legacyRepo fetch origin 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'git fetch origin failed' }
+
+        $lines = @(& git -C $legacyRepo show 'origin/devel:upgrade.cmd' 2>&1)
+        if ($LASTEXITCODE -ne 0 -or $lines.Count -eq 0) { throw 'could not read origin/devel:upgrade.cmd' }
+
+        $LegacyTempScript = Join-Path $env:TEMP ('FolderHeatMap-upgrade-recovered-' + [guid]::NewGuid().ToString('N') + '.cmd')
+        [System.IO.File]::WriteAllLines($LegacyTempScript, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
+        if (-not (Test-Path -LiteralPath $LegacyTempScript -PathType Leaf)) { throw 'recovered upgrade.cmd was not created' }
+        if ((Get-Item -LiteralPath $LegacyTempScript).Length -lt 1000) { throw 'recovered upgrade.cmd is unexpectedly small' }
+
+        $ScriptPath = $LegacyTempScript
+        $RepositoryRoot = $legacyRepo
+        $CaptureStage = 'fresh'
+        $env:FHM_UPGRADE_SCRIPT = $ScriptPath
+        $env:FHM_UPGRADE_REPO = $RepositoryRoot
+        $env:FHM_UPGRADE_STAGE = $CaptureStage
+        $env:FHM_UPGRADE_INTERNAL = '1'
+    }
+    catch {
+        Write-Host ('STATUS: FAILED - phase=LOGGER/LEGACY-RECOVERY - ' + $_.Exception.Message) -ForegroundColor Red
+        if ($LegacyTempScript) { Remove-Item -LiteralPath $LegacyTempScript -Force -ErrorAction SilentlyContinue }
+        exit 64
+    }
 }
 
 try {
     $ScriptPath = [System.IO.Path]::GetFullPath($ScriptPath)
-    $RepositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $RepositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
 }
 catch {
     Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - invalid path: ' + $_.Exception.Message) -ForegroundColor Red
+    if ($LegacyTempScript) { Remove-Item -LiteralPath $LegacyTempScript -Force -ErrorAction SilentlyContinue }
     exit 64
 }
 
 if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
     Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - script not found: ' + $ScriptPath) -ForegroundColor Red
+    if ($LegacyTempScript) { Remove-Item -LiteralPath $LegacyTempScript -Force -ErrorAction SilentlyContinue }
     exit 64
 }
 if (-not (Test-Path -LiteralPath $RepositoryRoot -PathType Container)) {
     Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - repository not found: ' + $RepositoryRoot) -ForegroundColor Red
+    if ($LegacyTempScript) { Remove-Item -LiteralPath $LegacyTempScript -Force -ErrorAction SilentlyContinue }
     exit 64
 }
-
-switch ($CaptureStage.ToLowerInvariant()) {
-    'bootstrap'            { $BatchSwitch = '--captured-bootstrap' }
-    'fresh'                { $BatchSwitch = '--captured-fresh' }
-    '--captured-bootstrap' { $BatchSwitch = '--captured-bootstrap' }
-    '--captured-fresh'     { $BatchSwitch = '--captured-fresh' }
-    default {
-        Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - unsupported stage: ' + $CaptureStage) -ForegroundColor Red
-        exit 64
-    }
+if ($CaptureStage.ToLowerInvariant() -ne 'fresh') {
+    Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - unsupported environment stage: ' + $CaptureStage) -ForegroundColor Red
+    if ($LegacyTempScript) { Remove-Item -LiteralPath $LegacyTempScript -Force -ErrorAction SilentlyContinue }
+    exit 64
 }
 
 $logPath = Join-Path $RepositoryRoot 'upgrade.log'
@@ -82,10 +137,10 @@ function Write-ClassifiedLine {
     }
 }
 
-# PowerShell invokes the .cmd file directly with separate argv values. No
-# reconstructed command string is used, avoiding quoting/metacharacter issues.
+# No bootstrap data is passed on argv. The child inherits the four FHM_UPGRADE_*
+# environment variables and therefore cannot lose a value through quote parsing.
 try {
-    & $ScriptPath $BatchSwitch $RepositoryRoot 2>&1 | ForEach-Object {
+    & $ScriptPath 2>&1 | ForEach-Object {
         Write-ClassifiedLine ([string]$_)
     }
     $rc = $LASTEXITCODE
@@ -104,6 +159,10 @@ if ($lastLine -notmatch '^STATUS:\s+(SUCCESS|WARNING|FAILED)') {
     $fallback = "STATUS: FAILED - phase=LOGGER/UNEXPECTED-EXIT - exit_code=$rc"
     Write-ClassifiedLine $fallback
     if ($rc -eq 0) { $rc = 1 }
+}
+
+if ($LegacyTempScript) {
+    Remove-Item -LiteralPath $LegacyTempScript -Force -ErrorAction SilentlyContinue
 }
 
 exit $rc
