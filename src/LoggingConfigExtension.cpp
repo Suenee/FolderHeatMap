@@ -1,10 +1,8 @@
 #include <windows.h>
 #include <commctrl.h>
-#include <tlhelp32.h>
 #include <filesystem>
 #include <iterator>
 #include <string>
-#include <vector>
 
 namespace {
 constexpr wchar_t kConfigWindowClass[] = L"FolderHeatMapConfigWindow";
@@ -70,7 +68,10 @@ std::wstring SettingsIni() {
 std::wstring LogPath() {
     const auto ini = SettingsIni();
     if (ini.empty()) return {};
-    return (std::filesystem::path(ini).parent_path() / L"FolderHeatMap.log").wstring();
+    wchar_t path[32768]{};
+    GetPrivateProfileStringW(L"Logging", L"Path", L"", path,
+                             static_cast<DWORD>(std::size(path)), ini.c_str());
+    return path;
 }
 
 int ReadLoggingModeIndex() {
@@ -95,95 +96,6 @@ bool SaveLoggingMode() {
         g_loggingDirty = false;
     }
     return ok;
-}
-
-std::vector<DWORD> TcProcessIds() {
-    std::vector<DWORD> result;
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) return result;
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    if (Process32FirstW(snapshot, &entry)) {
-        do {
-            if (_wcsicmp(entry.szExeFile, L"TOTALCMD64.EXE") == 0 || _wcsicmp(entry.szExeFile, L"TOTALCMD.EXE") == 0)
-                result.push_back(entry.th32ProcessID);
-        } while (Process32NextW(snapshot, &entry));
-    }
-    CloseHandle(snapshot);
-    return result;
-}
-
-bool IsTcRunning() { return !TcProcessIds().empty(); }
-
-BOOL CALLBACK CloseTcWindow(HWND hwnd, LPARAM) {
-    wchar_t cls[128]{};
-    if (GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls))) > 0 && wcscmp(cls, L"TTOTAL_CMD") == 0)
-        PostMessageW(hwnd, WM_CLOSE, 0, 0);
-    return TRUE;
-}
-
-bool StopTc() {
-    if (!IsTcRunning()) return true;
-    EnumWindows(CloseTcWindow, 0);
-    for (int i = 0; i < 50; ++i) { Sleep(100); if (!IsTcRunning()) return true; }
-    return false;
-}
-
-std::wstring FindTcExe() {
-    wchar_t env[2048]{};
-    DWORD n = GetEnvironmentVariableW(L"COMMANDER_PATH", env, 2048);
-    std::wstring dir;
-    if (n > 0 && n < 2048) dir = ExpandEnvironment(env);
-    if (dir.empty()) dir = QueryRegString(HKEY_CURRENT_USER, L"Software\\Ghisler\\Total Commander", L"InstallDir");
-    if (dir.empty()) dir = QueryRegString(HKEY_LOCAL_MACHINE, L"Software\\Ghisler\\Total Commander", L"InstallDir");
-    if (dir.empty()) return {};
-    const auto p64 = std::filesystem::path(dir) / L"TOTALCMD64.EXE";
-    if (std::filesystem::exists(p64)) return p64.wstring();
-    const auto p32 = std::filesystem::path(dir) / L"TOTALCMD.EXE";
-    return std::filesystem::exists(p32) ? p32.wstring() : L"";
-}
-
-void StartTc() {
-    const auto exe = FindTcExe();
-    if (!exe.empty()) ShellExecuteW(nullptr, L"open", exe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
-bool RunCleanupScript() {
-    wchar_t exePath[32768]{};
-    if (!GetModuleFileNameW(nullptr, exePath, static_cast<DWORD>(std::size(exePath)))) return false;
-    const auto script = std::filesystem::path(exePath).parent_path() / L"cleanup_tc_integration.ps1";
-    if (!std::filesystem::exists(script)) return false;
-    const auto wincmd = FindWincmdIni();
-    if (wincmd.empty()) return false;
-
-    std::wstring params = L"-NoProfile -ExecutionPolicy Bypass -File \"" + script.wstring() +
-                          L"\" -WincmdIni \"" + wincmd + L"\"";
-    SHELLEXECUTEINFOW sei{};
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-    sei.lpFile = L"powershell.exe";
-    sei.lpParameters = params.c_str();
-    sei.nShow = SW_HIDE;
-    if (!ShellExecuteExW(&sei)) return false;
-    WaitForSingleObject(sei.hProcess, INFINITE);
-    DWORD rc = 1;
-    GetExitCodeProcess(sei.hProcess, &rc);
-    CloseHandle(sei.hProcess);
-    return rc == 0;
-}
-
-void EnforceStagedNoColors(HWND hwnd) {
-    if (!IsTcRunning()) return;
-    if (!StopTc()) {
-        MessageBoxW(hwnd, L"Total Commander could not be stopped to keep staged Heat colors disabled.",
-                    L"FolderHeatMap", MB_OK | MB_ICONWARNING);
-        return;
-    }
-    const bool ok = RunCleanupScript();
-    StartTc();
-    if (!ok)
-        MessageBoxW(hwnd, L"FolderHeatMap settings were saved, but staged color-rule cleanup failed.",
-                    L"FolderHeatMap", MB_OK | MB_ICONWARNING);
 }
 
 void MoveControlDown(HWND parent, int id, int dy) {
@@ -226,7 +138,9 @@ void AddLoggingControls(HWND hwnd) {
         SendMessageW(g_loggingCombo, CB_SETCURSEL, ReadLoggingModeIndex(), 0);
     }
 
-    const std::wstring logText = L"Log: " + LogPath();
+    std::wstring logText = L"Log: ";
+    const auto logPath = LogPath();
+    logText += logPath.empty() ? L"not configured - run upgrade.cmd" : logPath;
     HWND pathLabel = CreateWindowExW(0, L"STATIC", logText.c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT,
         36, 500, 484, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdLogPathLabel)),
         GetModuleHandleW(nullptr), nullptr);
@@ -251,14 +165,16 @@ LRESULT CALLBACK LoggingWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (id == kIdSave && code == BN_CLICKED) {
+            // Save the logging mode BEFORE the existing configurator performs
+            // its normal Save/restart cycle, so the restarted engine sees it.
             if (g_loggingDirty && !SaveLoggingMode()) {
                 MessageBoxW(hwnd, L"Could not save the Logging mode to FolderHeatMap.ini.",
                             L"FolderHeatMap", MB_OK | MB_ICONERROR);
                 return 0;
             }
-            const LRESULT result = CallWindowProcW(g_originalProc, hwnd, msg, wp, lp);
-            EnforceStagedNoColors(hwnd);
-            return result;
+            // Do not alter or clean Total Commander color/icon rules here.
+            // The existing FolderHeatMap configurator remains authoritative.
+            return CallWindowProcW(g_originalProc, hwnd, msg, wp, lp);
         }
     }
 
