@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Version = '1.15'
-$Revision = '1.15-powershell-runner-reset-r5'
+$Revision = '1.15-powershell-runner-reset-r6'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -27,12 +27,14 @@ function Run-Native {
         [Parameter(Mandatory=$true)][string]$Phase,
         [Parameter(Mandatory=$true)][string]$Exe,
         [Parameter(Mandatory=$true)][string[]]$ArgumentList,
-        [switch]$AllowFailure
+        [switch]$AllowFailure,
+        [switch]$SuppressOutput
     )
     $savedPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
         & $Exe @ArgumentList 2>&1 | ForEach-Object {
+            if ($SuppressOutput) { return }
             $line = [string]$_
             if ($line -match '(?i)\b(error|failed|fatal error)\b|\berror\s+(C|LNK)\d+|MSB\d+.*\berror\b') { Write-Line $line Red }
             elseif ($line -match '(?i)\bwarning\b') { Write-Line $line Yellow }
@@ -106,9 +108,6 @@ try {
 
     Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('pull','--ff-only','origin','devel') | Out-Null
 
-    # Verify repository state by Git object identity, not by raw working-tree
-    # bytes. Windows line-ending normalization can make CRLF working-tree files
-    # hash differently even when Git considers them clean and identical to HEAD.
     $head = (& git rev-parse HEAD 2>$null).Trim()
     $remoteHead = (& git rev-parse origin/devel 2>$null).Trim()
     if (-not $head -or -not $remoteHead -or $head -ne $remoteHead) { Fail $FailPhase 'Local devel HEAD is not identical to origin/devel after update.' }
@@ -147,11 +146,21 @@ try {
     foreach ($name in @('FolderHeatMapConfig','FolderHeatMapReset')) { Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
     $tcWasRunning = Is-ProcessRunning @('TOTALCMD64','TOTALCMD')
     if ($tcWasRunning) {
-        foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { & taskkill.exe /IM $name 2>$null | Out-Null }
-        $deadline = [DateTime]::UtcNow.AddSeconds(20); while ((Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
-        if (Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) { Warn 'Normal Total Commander close timed out; forcing process termination.'; foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { & taskkill.exe /F /IM $name 2>$null | Out-Null } }
+        # TOTALCMD64 and TOTALCMD are alternatives. Missing one is expected and must
+        # never be treated as a failure. Stop only processes that actually exist.
+        foreach ($name in @('TOTALCMD64','TOTALCMD')) {
+            $proc = Get-Process -Name $name -ErrorAction SilentlyContinue
+            if ($proc) { $proc | Stop-Process -ErrorAction SilentlyContinue }
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while ((Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+        if (Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) {
+            Warn 'Normal Total Commander close timed out; forcing process termination.'
+            foreach ($name in @('TOTALCMD64','TOTALCMD')) { Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
+        }
     }
-    $deadline = [DateTime]::UtcNow.AddSeconds(30); while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
     if (Is-ProcessRunning @('FolderHeatMapEngine')) { Warn 'FolderHeatMapEngine did not finish graceful shutdown within 30 seconds; forcing it to stop.'; Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force }
 
     $FailPhase = 'CONFIGURATION'; Info '[2/7] Configuring repository-local logging path...'
