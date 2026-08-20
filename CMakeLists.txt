@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.10 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.11 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -13,19 +13,18 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/vendor/sqlite/sqlite3.c")
     message(FATAL_ERROR "SQLite amalgamation is missing. Run upgrade.cmd first.")
 endif()
 
-# 1.10 backend optimization:
-# - keep the verified WDX/Heat/color behavior unchanged
-# - suppress duplicate same-directory navigation work
-# - do not publish unchanged RAM snapshots/batches
-# - do not queue the same hot predictions a second time from SLOW refresh
-# - persist runtime cache only when the public RAM state actually changed
-#
-# EngineApp.cpp is intentionally left untouched. GitHub's whole-file edit API
-# is risky for this large, now-stable source, so a guarded CMake generator
-# patches a build-only copy. Configuration aborts if any expected source anchor
-# differs, preventing a stale/partial optimization from being compiled.
+# 1.11 SLOW-worker optimization and lifecycle reconciliation:
+# - keep exactly two workers: FAST and SLOW
+# - debounce full runtime-cache persistence and flush dirty RAM in batches
+# - track stable volume-local file IDs in SLOW only
+# - preserve history across same-volume move/rename
+# - treat recycle/delete/cross-volume move as deletion on the old volume
+# - move an entire directory subtree with prefix SQL updates, not per-file updates
+# - batch large sets of individual lifecycle mutations inside one SQLite transaction
+# - invalidate/remap RAM and recalculate old/new ancestor branches once per batch
+# - keep WDX foreground, Heat math and Total Commander color behavior unchanged
 set(FHM_ENGINE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated_engine")
-set(FHM_ENGINE_GENERATED_CPP "${FHM_ENGINE_GENERATED_DIR}/EngineApp.1.10.cpp")
+set(FHM_ENGINE_GENERATED_CPP "${FHM_ENGINE_GENERATED_DIR}/EngineApp.1.11.cpp")
 file(MAKE_DIRECTORY "${FHM_ENGINE_GENERATED_DIR}")
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
@@ -35,7 +34,7 @@ execute_process(
     RESULT_VARIABLE FHM_ENGINE_GENERATE_RESULT
 )
 if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_CPP}")
-    message(FATAL_ERROR "Could not generate the guarded FolderHeatMap 1.10 engine source.")
+    message(FATAL_ERROR "Could not generate the guarded FolderHeatMap 1.11 engine source.")
 endif()
 
 add_library(FolderHeatMap SHARED
@@ -52,6 +51,9 @@ add_executable(FolderHeatMapEngine
     src/DatabaseBaseline.cpp
     src/ResetDatabase.cpp
     src/RuntimeCacheDatabase.cpp
+    src/LifecycleDatabase.cpp
+    src/LifecycleBatchDatabase.cpp
+    src/Lifecycle.cpp
     src/Settings.cpp
     vendor/sqlite/sqlite3.c
 )
