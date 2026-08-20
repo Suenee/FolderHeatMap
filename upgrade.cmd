@@ -6,7 +6,7 @@ rem SELF-BOOTSTRAP GUARANTEE
 rem Never trust the local copy of this script. Every normal launch fetches
 rem origin/devel and executes the repository copy from TEMP first.
 rem ---------------------------------------------------------------------------
-set "UPGRADE_REV=1.08-logging-path-no-colors"
+set "UPGRADE_REV=1.09-repo-logging-colors-preserved"
 set "BOOTSTRAP_STAGE=%~1"
 set "ORIGINAL_REPO=%~dp0"
 
@@ -45,6 +45,7 @@ set "TC_INI=%COMMANDER_INI%"
 set "TC_PLUGIN="
 set "TC_EXE="
 set "TC_WAS_RUNNING=0"
+set "SETTINGS_INI="
 
 where git.exe >nul 2>nul || goto git_missing
 
@@ -66,7 +67,6 @@ if errorlevel 1 (
 git pull --ff-only origin devel || goto git_pull_error
 if "!LOCAL_STASHED!"=="1" echo [GIT] Previous local changes remain safely stored in git stash.
 
-rem Hard guard: the working-tree upgrader must equal origin/devel before build.
 set "REMOTE_UPGRADE_HASH="
 set "LOCAL_UPGRADE_HASH="
 for /f "delims=" %%H in ('git rev-parse origin/devel:upgrade.cmd 2^>nul') do set "REMOTE_UPGRADE_HASH=%%H"
@@ -77,7 +77,6 @@ if /I not "!REMOTE_UPGRADE_HASH!"=="!LOCAL_UPGRADE_HASH!" goto bootstrap_verify_
 
 echo [BOOTSTRAP] upgrade.cmd verified current: !LOCAL_UPGRADE_HASH!
 
-rem Locate Total Commander and its INI.
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
 if not defined TC_PATH for /f "tokens=2,*" %%A in ('reg query "HKLM\Software\Wow6432Node\Ghisler\Total Commander" /v InstallDir 2^>nul ^| find /i "InstallDir"') do set "TC_PATH=%%B"
@@ -88,6 +87,7 @@ if defined TC_PATH (
     if exist "!TC_PATH!\TOTALCMD64.EXE" set "TC_EXE=!TC_PATH!\TOTALCMD64.EXE"
     if not defined TC_EXE if exist "!TC_PATH!\TOTALCMD.EXE" set "TC_EXE=!TC_PATH!\TOTALCMD.EXE"
 )
+if defined TC_INI for %%I in ("!TC_INI!") do set "SETTINGS_INI=%%~dpIFolderHeatMap.ini"
 if defined TC_INI if exist "!TC_INI!" (
     for /f "usebackq tokens=1,* delims==" %%A in (`findstr /I /C:"FolderHeatMap.wdx64" "!TC_INI!" 2^>nul`) do if not defined TC_PLUGIN set "TC_PLUGIN=%%B"
     if defined TC_PLUGIN set "TC_PLUGIN=!TC_PLUGIN:"=!"
@@ -100,12 +100,13 @@ echo ============================================================
 if defined TC_PATH echo [TC] Total Commander: !TC_PATH!
 if defined TC_INI echo [TC] Configuration:   !TC_INI!
 if defined TC_PLUGIN echo [TC] Registered plugin: !TC_PLUGIN!
+if defined SETTINGS_INI echo [FHM] Settings:       !SETTINGS_INI!
+echo [FHM] Log file:       %CD%\FolderHeatMap.log
 echo.
 
 call :is_tc_running
 if "!TC_RUNNING!"=="1" set "TC_WAS_RUNNING=1"
 
-rem Find CMake or install the required Visual Studio Build Tools.
 for /f "delims=" %%I in ('where cmake.exe 2^>nul') do if not defined CMAKE set "CMAKE=%%I"
 if not defined CMAKE if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.CMake.Project -find Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`) do if not defined CMAKE set "CMAKE=%%I"
 if defined CMAKE goto dependencies
@@ -146,15 +147,12 @@ if errorlevel 1 (
     timeout /t 1 /nobreak >nul
 )
 
-:cleanup_tc
-echo [2/7] Keeping FolderHeatMap color/icon integration disabled for staged testing...
-if not exist "cleanup_tc_integration.ps1" goto cleanup_error
-if defined TC_INI (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1" -WincmdIni "!TC_INI!"
-) else (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\cleanup_tc_integration.ps1"
-)
-if errorlevel 1 goto cleanup_error
+:configure_logging
+echo [2/7] Configuring repository-local logging path...
+if not defined SETTINGS_INI goto logging_path_error
+if not exist "configure_logging_path.ps1" goto logging_path_error
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\configure_logging_path.ps1" -SettingsIni "!SETTINGS_INI!" -RepositoryRoot "%CD%"
+if errorlevel 1 goto logging_path_error
 
 :build
 echo [3/7] Preparing build...
@@ -175,7 +173,6 @@ copy /y "build\Release\FolderHeatMap.wdx64" "dist\FolderHeatMap.wdx64" >nul || g
 copy /y "build\Release\FolderHeatMapEngine.exe" "dist\FolderHeatMapEngine.exe" >nul || goto dist_error
 copy /y "build\Release\FolderHeatMapConfig.exe" "dist\FolderHeatMapConfig.exe" >nul || goto dist_error
 copy /y "build\Release\FolderHeatMapReset.exe" "dist\FolderHeatMapReset.exe" >nul || goto dist_error
-copy /y "cleanup_tc_integration.ps1" "dist\cleanup_tc_integration.ps1" >nul
 copy /y "configure.cmd" "dist\configure.cmd" >nul
 copy /y "README.md" "dist\README.md" >nul
 copy /y "TESTING.md" "dist\TESTING.md" >nul
@@ -201,11 +198,11 @@ echo SUCCESS.
 echo WDX:       %CD%\dist\FolderHeatMap.wdx64
 echo Engine:    %CD%\dist\FolderHeatMapEngine.exe
 echo Config:    %CD%\dist\FolderHeatMapConfig.exe
+echo Log:       %CD%\FolderHeatMap.log
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.08: Heat, Visits and Writes are RAM-only diagnostics.
-echo Logging path is shown in the configurator and single/all create the log at engine startup.
-echo TC heat colors/icons remain disabled even after configurator Save.
+echo FolderHeatMap 1.09: repository-local logging; existing TC colors/icons are preserved.
+echo Heat, Visits and Writes remain RAM-only diagnostics with FAST/SLOW workers.
 pause
 exit /b 0
 
@@ -281,8 +278,8 @@ goto fail
 :restart_required
 echo Build Tools were installed successfully, but Windows requires a restart.
 goto fail
-:cleanup_error
-echo ERROR: Could not keep FolderHeatMap TC color/icon rules disabled safely.
+:logging_path_error
+echo ERROR: Could not configure FolderHeatMap.log in the repository root.
 goto fail
 :build_error
 echo ERROR: Build failed. See the errors above.
