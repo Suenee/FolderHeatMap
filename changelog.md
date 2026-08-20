@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.14 - 20.08.2026
+
+- Replaced CMD/PowerShell bootstrap argument passing with environment-only transport (`FHM_UPGRADE_INTERNAL`, `FHM_UPGRADE_STAGE`, `FHM_UPGRADE_REPO`, `FHM_UPGRADE_SCRIPT`). Current bootstrap execution passes no repository path or stage token on argv.
+- Root cause of the 1.13 `args=2` failure was the Windows command-line quoting edge case where a quoted directory ending in `\` can consume the closing quote / following token when forwarded across process boundaries. The repository path is now normalized without a trailing separator before bootstrap handoff.
+- Simplified self-update flow: the local launcher silently fetches `origin/devel`, extracts both the newest `upgrade_logger.ps1` and newest `upgrade.cmd` to TEMP, then the logger runs that fresh upgrader. The real upgrade therefore never needs to update the batch file it is currently executing.
+- Added legacy recovery in `upgrade_logger.ps1` for already-installed 1.12/1.13 launchers. If positional arguments arrive malformed or incomplete, the logger ignores the malformed repository argument, resolves the Git repository from the working directory, extracts the newest `upgrade.cmd` from `origin/devel`, and switches to the environment-only transport automatically.
+- Fixed PowerShell script-scope vs function-scope `$args` handling in legacy recovery by capturing script arguments once in `$ScriptArgs`.
+- Removed all PowerShell `param()` binding from the bootstrap logger. This eliminates collisions with PowerShell automatic variables and prevents interactive `Supply values...` prompts.
+- Added explicit bootstrap validation for Git working tree, extracted TEMP file existence/size, repository resolution, local-vs-remote `upgrade.cmd` hash, and captured environment state.
+- Bootstrap failures now also write a single-run `upgrade.log` with a final `STATUS: FAILED - phase=SELF-UPDATE/BOOTSTRAP` line even if the logger itself cannot start.
+- Reviewed remaining PowerShell calls in `upgrade.cmd`: the bootstrap path no longer passes quoted trailing-directory arguments; the remaining logging-path helper receives a normalized `%CD%` path and a file path, and inline PowerShell commands do not use bootstrap parameter binding.
+- Preserved console classification (gray normal, yellow warning, red error, green final success), single-run `upgrade.log`, and the 1.11 FAST/SLOW engine/lifecycle behavior.
+
 ## 1.13 - 20.08.2026
 
 - Deep-reviewed the `upgrade.cmd` / PowerShell logger bootstrap argument flow after repeated interactive `Supply values` prompts.
