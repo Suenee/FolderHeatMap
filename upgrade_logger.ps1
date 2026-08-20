@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+$ScriptArgs = @($args)
 
 # FolderHeatMap 1.14 bootstrap transport
 # --------------------------------------
@@ -26,9 +27,9 @@ function Resolve-LegacyRepositoryRoot {
     }
     catch { }
 
-    if ($args.Count -ge 1) {
+    if ($ScriptArgs.Count -ge 1) {
         try {
-            $candidate = [System.IO.Path]::GetFullPath([string]$args[0])
+            $candidate = [System.IO.Path]::GetFullPath([string]$ScriptArgs[0])
             $parent = Split-Path -Parent $candidate
             & git -C $parent rev-parse --is-inside-work-tree 2>$null | Out-Null
             if ($LASTEXITCODE -eq 0) { return [System.IO.Path]::GetFullPath($parent).TrimEnd('\') }
@@ -51,7 +52,7 @@ if ([string]::IsNullOrWhiteSpace($ScriptPath) -or
 
     $legacyRepo = Resolve-LegacyRepositoryRoot
     if ([string]::IsNullOrWhiteSpace($legacyRepo)) {
-        Write-Host ('STATUS: FAILED - phase=LOGGER/LEGACY-RECOVERY - repository could not be resolved; args=' + $args.Count) -ForegroundColor Red
+        Write-Host ('STATUS: FAILED - phase=LOGGER/LEGACY-RECOVERY - repository could not be resolved; args=' + $ScriptArgs.Count) -ForegroundColor Red
         exit 64
     }
 
