@@ -66,12 +66,10 @@ target_compile_definitions(FolderHeatMapEngine PRIVATE
 
 add_dependencies(FolderHeatMap FolderHeatMapEngine)
 
-add_custom_command(TARGET FolderHeatMapEngine POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/dist"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:FolderHeatMapEngine>"
-        "${CMAKE_SOURCE_DIR}/dist/FolderHeatMapEngine.exe"
-)
+# IMPORTANT: build targets write only to the build tree. Do not copy binaries
+# into dist from a POST_BUILD command: dist can be the live Total Commander
+# plugin directory, so an old/running process or scanner may lock those files.
+# upgrade.ps1 owns the dist/deploy phase after all targets have built cleanly.
 
 set(FHM_CONFIG_ICON_B64 "${CMAKE_SOURCE_DIR}/assets/FolderHeatMapConfig.ico.b64")
 set(FHM_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
