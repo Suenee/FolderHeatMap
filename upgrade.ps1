@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Version = '1.15'
-$Revision = '1.15-powershell-runner-reset'
+$Revision = '1.15-powershell-runner-reset-r2'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -22,8 +22,14 @@ function Fail([string]$Phase, [string]$Text) {
     Write-Line ('ERROR: ' + $Text) Red
     throw [InvalidOperationException]::new($Text)
 }
-function Run-Native([string]$Phase, [string]$Exe, [string[]]$Args, [switch]$AllowFailure) {
-    & $Exe @Args 2>&1 | ForEach-Object {
+function Run-Native {
+    param(
+        [Parameter(Mandatory=$true)][string]$Phase,
+        [Parameter(Mandatory=$true)][string]$Exe,
+        [Parameter(Mandatory=$true)][string[]]$ArgumentList,
+        [switch]$AllowFailure
+    )
+    & $Exe @ArgumentList 2>&1 | ForEach-Object {
         $line = [string]$_
         if ($line -match '(?i)\b(error|failed|fatal error)\b|\berror\s+(C|LNK)\d+|MSB\d+.*\berror\b') { Write-Line $line Red }
         elseif ($line -match '(?i)\bwarning\b') { Write-Line $line Yellow }
@@ -57,15 +63,9 @@ function Resolve-TC {
     if (-not $tcPath) { foreach ($k in $keys) { $v = Get-RegValue $k 'InstallDir'; if ($v) { $tcPath = $v; break } } }
     if (-not $tcIni) { foreach ($k in $keys) { $v = Get-RegValue $k 'IniFileName'; if ($v) { $tcIni = $v; break } } }
     $tcExe = $null
-    if ($tcPath) {
-        foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { $p = Join-Path $tcPath $name; if (Test-Path $p) { $tcExe = $p; break } }
-    }
+    if ($tcPath) { foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { $p = Join-Path $tcPath $name; if (Test-Path $p) { $tcExe = $p; break } } }
     $plugin = $null
-    if ($tcIni -and (Test-Path $tcIni)) {
-        foreach ($line in Get-Content -LiteralPath $tcIni) {
-            if ($line -match 'FolderHeatMap\.wdx64' -and $line -match '=') { $plugin = ($line -split '=',2)[1].Trim('"'); break }
-        }
-    }
+    if ($tcIni -and (Test-Path $tcIni)) { foreach ($line in Get-Content -LiteralPath $tcIni) { if ($line -match 'FolderHeatMap\.wdx64' -and $line -match '=') { $plugin = ($line -split '=',2)[1].Trim('"'); break } } }
     $settings = if ($tcIni) { Join-Path (Split-Path -Parent $tcIni) 'FolderHeatMap.ini' } else { $null }
     [pscustomobject]@{ Path=$tcPath; Ini=$tcIni; Exe=$tcExe; Plugin=$plugin; Settings=$settings }
 }
@@ -86,16 +86,16 @@ try {
 
     $FailPhase = 'SELF-UPDATE'
     if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { Fail $FailPhase 'Git was not found in PATH.' }
-    Run-Native $FailPhase 'git.exe' @('fetch','origin') | Out-Null
+    Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('fetch','origin') | Out-Null
     $currentBranch = (& git branch --show-current).Trim()
-    if ($currentBranch -ne 'devel') { Run-Native $FailPhase 'git.exe' @('switch','devel') | Out-Null }
+    if ($currentBranch -ne 'devel') { Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('switch','devel') | Out-Null }
 
     $dirty = ((& git status --porcelain) -join '')
     if ($dirty) {
         Warn 'Local tracked/untracked changes detected; stashing them before update.'
-        Run-Native $FailPhase 'git.exe' @('stash','push','-u','-m','FolderHeatMap automatic pre-upgrade stash') | Out-Null
+        Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-u','-m','FolderHeatMap automatic pre-upgrade stash') | Out-Null
     }
-    Run-Native $FailPhase 'git.exe' @('pull','--ff-only','origin','devel') | Out-Null
+    Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('pull','--ff-only','origin','devel') | Out-Null
 
     foreach ($f in @('upgrade.cmd','upgrade.ps1')) {
         $remote = (& git rev-parse ("origin/devel:$f") 2>$null).Trim()
@@ -117,86 +117,49 @@ try {
     if (-not $cmake) { Fail 'DEPENDENCIES' 'CMake/Visual Studio Build Tools were not found. Install Visual Studio 2022 Build Tools with C++ and CMake support.' }
 
     if (-not (Test-Path "$Repo\vendor\sqlite\sqlite3.c") -or -not (Test-Path "$Repo\vendor\sqlite\sqlite3.h")) {
-        $FailPhase = 'DEPENDENCIES'
-        Info '[SETUP] Downloading SQLite 3.53.4...'
-        $zip = Join-Path $env:TEMP 'sqlite-amalgamation-3530400.zip'
-        Invoke-WebRequest -UseBasicParsing 'https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip' -OutFile $zip
-        $tmp = Join-Path $env:TEMP ('fhm-sqlite-' + [guid]::NewGuid().ToString('N'))
-        Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
-        $src = Get-ChildItem $tmp -Directory | Select-Object -First 1
-        New-Item -ItemType Directory -Path "$Repo\vendor\sqlite" -Force | Out-Null
-        Copy-Item (Join-Path $src.FullName 'sqlite3.c') "$Repo\vendor\sqlite\sqlite3.c" -Force
-        Copy-Item (Join-Path $src.FullName 'sqlite3.h') "$Repo\vendor\sqlite\sqlite3.h" -Force
+        $FailPhase = 'DEPENDENCIES'; Info '[SETUP] Downloading SQLite 3.53.4...'
+        $zip = Join-Path $env:TEMP 'sqlite-amalgamation-3530400.zip'; Invoke-WebRequest -UseBasicParsing 'https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip' -OutFile $zip
+        $tmp = Join-Path $env:TEMP ('fhm-sqlite-' + [guid]::NewGuid().ToString('N')); Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+        $src = Get-ChildItem $tmp -Directory | Select-Object -First 1; New-Item -ItemType Directory -Path "$Repo\vendor\sqlite" -Force | Out-Null
+        Copy-Item (Join-Path $src.FullName 'sqlite3.c') "$Repo\vendor\sqlite\sqlite3.c" -Force; Copy-Item (Join-Path $src.FullName 'sqlite3.h') "$Repo\vendor\sqlite\sqlite3.h" -Force
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    $FailPhase = 'STOP-RUNTIME'
-    Info '[1/7] Stopping Total Commander and FolderHeatMap engine...'
+    $FailPhase = 'STOP-RUNTIME'; Info '[1/7] Stopping Total Commander and FolderHeatMap engine...'
     foreach ($name in @('FolderHeatMapConfig','FolderHeatMapReset')) { Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
     $tcWasRunning = Is-ProcessRunning @('TOTALCMD64','TOTALCMD')
     if ($tcWasRunning) {
         foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { & taskkill.exe /IM $name 2>$null | Out-Null }
-        $deadline = [DateTime]::UtcNow.AddSeconds(20)
-        while ((Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
-        if (Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) {
-            Warn 'Normal Total Commander close timed out; forcing process termination.'
-            foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { & taskkill.exe /F /IM $name 2>$null | Out-Null }
-        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(20); while ((Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+        if (Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) { Warn 'Normal Total Commander close timed out; forcing process termination.'; foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { & taskkill.exe /F /IM $name 2>$null | Out-Null } }
     }
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
-    while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30); while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
     if (Is-ProcessRunning @('FolderHeatMapEngine')) { Warn 'FolderHeatMapEngine did not finish graceful shutdown within 30 seconds; forcing it to stop.'; Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force }
 
-    $FailPhase = 'CONFIGURATION'
-    Info '[2/7] Configuring repository-local logging path...'
+    $FailPhase = 'CONFIGURATION'; Info '[2/7] Configuring repository-local logging path...'
     if (-not $tc.Settings) { Fail $FailPhase 'FolderHeatMap settings path could not be resolved.' }
-    $helper = Join-Path $Repo 'configure_logging_path.ps1'
-    if (-not (Test-Path $helper)) { Fail $FailPhase 'configure_logging_path.ps1 is missing.' }
+    $helper = Join-Path $Repo 'configure_logging_path.ps1'; if (-not (Test-Path $helper)) { Fail $FailPhase 'configure_logging_path.ps1 is missing.' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -SettingsIni $tc.Settings -RepositoryRoot $Repo 2>&1 | ForEach-Object { Info ([string]$_) }
     if ($LASTEXITCODE -ne 0) { Fail $FailPhase 'Could not configure FolderHeatMap.log in the repository root.' }
 
-    $FailPhase = 'BUILD'
-    Info '[3/7] Preparing build...'
-    $build = Join-Path $Repo 'build'
-    if (Test-Path $build) { Remove-Item $build -Recurse -Force }
-    Info '[4/7] Configuring x64 Release build...'
-    Run-Native 'CMAKE-CONFIGURE' $cmake @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.15 FAST/SLOW engine and tools...'
-    Run-Native 'BUILD' $cmake @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
+    Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.15 FAST/SLOW engine and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
-    $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe')
-    foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "Required build artifact $f is missing." } }
-
-    $FailPhase = 'DIST'
-    Info '[6/7] Preparing dist package...'
-    $dist = Join-Path $Repo 'dist'
-    New-Item -ItemType Directory -Path $dist -Force | Out-Null
+    $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "Required build artifact $f is missing." } }
+    $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
     foreach ($f in $artifacts) { Copy-Item (Join-Path "$build\Release" $f) (Join-Path $dist $f) -Force }
     foreach ($f in @('configure.cmd','README.md','TESTING.md')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item (Join-Path $Repo $f) (Join-Path $dist $f) -Force } }
 
-    $FailPhase = 'DEPLOY'
-    Info '[7/7] Deploying to Total Commander...'
+    $FailPhase = 'DEPLOY'; Info '[7/7] Deploying to Total Commander...'
     if ($tc.Plugin) {
-        $pluginFull = [IO.Path]::GetFullPath($tc.Plugin)
-        $distPlugin = [IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
-        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) {
-            $pluginDir = Split-Path -Parent $pluginFull
-            Copy-Item $distPlugin $pluginFull -Force
-            Copy-Item (Join-Path $dist 'FolderHeatMapEngine.exe') (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Force
-            Info ("[TC] Updated WDX and engine in: $pluginDir")
-        } else { Info '[TC] Registered plugin already points to dist; engine is beside the WDX.' }
+        $pluginFull = [IO.Path]::GetFullPath($tc.Plugin); $distPlugin = [IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
+        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) { $pluginDir = Split-Path -Parent $pluginFull; Copy-Item $distPlugin $pluginFull -Force; Copy-Item (Join-Path $dist 'FolderHeatMapEngine.exe') (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Force; Info ("[TC] Updated WDX and engine in: $pluginDir") } else { Info '[TC] Registered plugin already points to dist; engine is beside the WDX.' }
     }
-
     if ($tcWasRunning -and $tc.Exe) { Start-Process -FilePath $tc.Exe | Out-Null }
 
-    Write-Line '' Gray
-    Write-Line "SUCCESS - FolderHeatMap $Version installed." Green
-    Info ("WDX:         $dist\FolderHeatMap.wdx64")
-    Info ("Engine:      $dist\FolderHeatMapEngine.exe")
-    Info ("Config:      $dist\FolderHeatMapConfig.exe")
-    Info ("Engine log:  $Repo\FolderHeatMap.log")
-    Info ("Upgrade log: $Log")
-    Write-Line '' Gray
+    Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green
+    Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $Repo\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
     if ($HadWarning) { Write-Line 'STATUS: WARNING - phase=COMPLETE' Yellow } else { Write-Line 'STATUS: SUCCESS - phase=COMPLETE' Green }
     exit 0
 }
