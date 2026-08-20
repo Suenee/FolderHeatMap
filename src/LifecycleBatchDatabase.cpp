@@ -164,25 +164,11 @@ bool Database::ApplyTrackedLifecycleBatch(const std::wstring& volumeId,
     if (sqlite3_prepare_v2(db_, findSql, -1, &find, nullptr) != SQLITE_OK ||
         sqlite3_prepare_v2(db_, upsertSql, -1, &upsert, nullptr) != SQLITE_OK) ok = false;
 
-    for (const auto& obs : observations) {
-        if (!ok || obs.objectId.empty()) break;
-        std::wstring oldPath;
-        ok = FindTrackedPath(db_, find, volumeId, obs.objectId, oldPath);
-        if (!ok) break;
-        if (!oldPath.empty() && oldPath != obs.relativePath) {
-            ok = MoveHistory(db_, volumeId, oldPath, obs.relativePath, obs.isDirectory);
-            if (!ok) break;
-            if (appliedActions) appliedActions->push_back({TrackedActionKind::Move, obs.objectId, oldPath, obs.relativePath, obs.isDirectory});
-        }
-        sqlite3_reset(upsert);
-        sqlite3_clear_bindings(upsert);
-        sqlite3_bind_text16(upsert, 1, volumeId.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text16(upsert, 2, obs.objectId.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text16(upsert, 3, obs.relativePath.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(upsert, 4, obs.isDirectory ? 1 : 0);
-        ok = sqlite3_step(upsert) == SQLITE_DONE;
-    }
-
+    // Apply disappearance/move actions before observations. This ordering is
+    // essential for delete+recreate-at-the-same-path: the old object's history
+    // must be removed before the replacement object is inserted. The previous
+    // ordering inserted the replacement first and then deleted by path, which
+    // could leave stale RAM/history visible or remove the new tracking row.
     for (const auto& action : explicitActions) {
         if (!ok) break;
         if (action.kind == TrackedActionKind::Move) {
@@ -200,6 +186,25 @@ bool Database::ApplyTrackedLifecycleBatch(const std::wstring& volumeId,
             ok = DeleteHistory(db_, volumeId, action.oldRelativePath, action.isDirectory);
         }
         if (ok && appliedActions) appliedActions->push_back(action);
+    }
+
+    for (const auto& obs : observations) {
+        if (!ok || obs.objectId.empty()) break;
+        std::wstring oldPath;
+        ok = FindTrackedPath(db_, find, volumeId, obs.objectId, oldPath);
+        if (!ok) break;
+        if (!oldPath.empty() && oldPath != obs.relativePath) {
+            ok = MoveHistory(db_, volumeId, oldPath, obs.relativePath, obs.isDirectory);
+            if (!ok) break;
+            if (appliedActions) appliedActions->push_back({TrackedActionKind::Move, obs.objectId, oldPath, obs.relativePath, obs.isDirectory});
+        }
+        sqlite3_reset(upsert);
+        sqlite3_clear_bindings(upsert);
+        sqlite3_bind_text16(upsert, 1, volumeId.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text16(upsert, 2, obs.objectId.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text16(upsert, 3, obs.relativePath.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(upsert, 4, obs.isDirectory ? 1 : 0);
+        ok = sqlite3_step(upsert) == SQLITE_DONE;
     }
 
     if (find) sqlite3_finalize(find);
