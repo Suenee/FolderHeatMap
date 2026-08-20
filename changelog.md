@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.08 - 20.08.2026
+
+- Fixed logging-save ordering in the configurator. `Logging = single/all` is now written to `FolderHeatMap.ini` before Total Commander is restarted, so the newly started engine reads the selected mode immediately.
+- Made the log location deterministic and visible in the configurator. `FolderHeatMap.log` is stored next to `FolderHeatMap.ini`, normally in `%APPDATA%\GHISLER\FolderHeatMap.log`.
+- The engine now creates and flushes an initial logging-session line immediately on startup when logging is enabled. A navigation or file-write event is no longer required before the log file appears.
+- `single` truncates the log for every new engine/TC session; `all` appends to the existing log; `off` does not create or write the log.
+- Fixed a staged-testing regression where pressing Save in the configurator reinstalled FolderHeatMap color filters and immediately re-enabled Heat coloring. During the current diagnostic phase Save now removes FolderHeatMap-managed color/icon integration again before TC continues.
+- Heat, Visits and Writes remain read-only RAM diagnostics. No repaint request or foreground Heat calculation was added.
+
 ## 1.07 - 19.08.2026
 
 - Added `Writes` back to the staged WDX as a read-only shared-RAM diagnostic next to `Heat` and `Visits`. The WDX hot path remains RAM-only and does not perform filesystem work, SQLite access, Heat math, queueing, prediction or repaint requests.
