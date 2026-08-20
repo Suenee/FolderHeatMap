@@ -1,17 +1,17 @@
 param(
     [Parameter(Position = 0)][string]$ScriptPath,
     [Parameter(Position = 1)][string]$RepositoryRoot,
-    [Parameter(Position = 2)][Alias('Mode','RunMode')][string]$CaptureMode
+    [Parameter(Position = 2)][Alias('Mode','RunMode','CaptureMode')][string]$CaptureStage
 )
 
 $ErrorActionPreference = 'Stop'
 
-# Never use Mandatory parameters here. This logger is part of the bootstrap
-# recovery path, so a missing/mis-bound argument must fail deterministically
-# instead of PowerShell opening an interactive "Supply values" prompt.
+# Bootstrap code must never prompt interactively for missing parameters. All
+# parameters are optional at the PowerShell binding layer and validated here.
+# This also keeps compatibility with the short-lived 1.12 callers using -Mode.
 if ([string]::IsNullOrWhiteSpace($ScriptPath) -or
     [string]::IsNullOrWhiteSpace($RepositoryRoot) -or
-    [string]::IsNullOrWhiteSpace($CaptureMode)) {
+    [string]::IsNullOrWhiteSpace($CaptureStage)) {
     Write-Host 'STATUS: FAILED - phase=LOGGER/ARGUMENTS - required bootstrap argument missing' -ForegroundColor Red
     exit 64
 }
@@ -33,9 +33,18 @@ if (-not (Test-Path -LiteralPath $RepositoryRoot -PathType Container)) {
     Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - repository not found: ' + $RepositoryRoot) -ForegroundColor Red
     exit 64
 }
-if ($CaptureMode -notin @('--captured-bootstrap','--captured-fresh')) {
-    Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - unsupported mode: ' + $CaptureMode) -ForegroundColor Red
-    exit 64
+
+# Normalize both the stable 1.13 tokens and legacy 1.12 values. New callers use
+# plain tokens so PowerShell never has to parse a value beginning with '-'.
+switch ($CaptureStage.ToLowerInvariant()) {
+    'bootstrap'            { $BatchSwitch = '--captured-bootstrap' }
+    'fresh'                { $BatchSwitch = '--captured-fresh' }
+    '--captured-bootstrap' { $BatchSwitch = '--captured-bootstrap' }
+    '--captured-fresh'     { $BatchSwitch = '--captured-fresh' }
+    default {
+        Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - unsupported stage: ' + $CaptureStage) -ForegroundColor Red
+        exit 64
+    }
 }
 
 $logPath = Join-Path $RepositoryRoot 'upgrade.log'
@@ -67,11 +76,11 @@ function Write-ClassifiedLine {
     }
 }
 
-# Invoke the batch file directly with an argument array. Do not rebuild a
-# command-line string: that reintroduces quoting/escaping collisions for spaces,
-# parentheses, ampersands and bootstrap switches.
+# Invoke the batch file directly with separate arguments. Do not reconstruct a
+# command-line string: separate argv values are safe for spaces, parentheses,
+# ampersands and other cmd.exe metacharacters in repository paths.
 try {
-    & $ScriptPath $CaptureMode $RepositoryRoot 2>&1 | ForEach-Object {
+    & $ScriptPath $BatchSwitch $RepositoryRoot 2>&1 | ForEach-Object {
         Write-ClassifiedLine ([string]$_)
     }
     $rc = $LASTEXITCODE
@@ -82,8 +91,6 @@ catch {
 }
 if ($null -eq $rc) { $rc = 65 }
 
-# The child script is responsible for making STATUS the final log line.
-# If it terminated unexpectedly before doing so, append an unmistakable fallback.
 $lastLine = ''
 if (Test-Path -LiteralPath $logPath) {
     $lastLine = Get-Content -LiteralPath $logPath -Tail 1 -ErrorAction SilentlyContinue
