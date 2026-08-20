@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.14 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.15 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -66,10 +66,6 @@ target_compile_definitions(FolderHeatMapEngine PRIVATE
 
 add_dependencies(FolderHeatMap FolderHeatMapEngine)
 
-# Copying the engine as a POST_BUILD step of FolderHeatMap is unsafe when
-# FolderHeatMap and FolderHeatMapEngine are both explicit MSBuild targets:
-# MSBuild may consider the dependency complete while the engine output is still
-# being finalized/locked. Make the engine own its dist copy instead.
 add_custom_command(TARGET FolderHeatMapEngine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/dist"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
