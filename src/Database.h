@@ -47,6 +47,12 @@ struct RuntimeCacheRecord {
     std::int32_t colorStep = 0;
 };
 
+struct TrackedObject {
+    std::wstring objectId;
+    std::wstring relativePath;
+    bool isDirectory = false;
+};
+
 class Database {
 public:
     Database() = default;
@@ -86,6 +92,18 @@ public:
     // Reset a folder and all tracked folders/files below it. Ancestor heat is
     // not stored, so it automatically recalculates from the remaining sources.
     bool ResetRecursiveActivity(const FolderIdentity& identity);
+
+    // SLOW-worker lifecycle tracking. Object IDs are volume-local stable file
+    // identifiers. A move/rename on the same volume preserves activity history;
+    // a delete or cross-volume move removes the old-volume history.
+    std::vector<TrackedObject> GetTrackedChildren(const std::wstring& volumeId, const std::wstring& parentRelativePath);
+    bool ObserveTrackedObject(const FolderIdentity& identity, const std::wstring& objectId, bool isDirectory,
+                              std::wstring* movedFromRelativePath = nullptr);
+    bool MoveTrackedObject(const std::wstring& volumeId, const std::wstring& objectId,
+                           const std::wstring& oldRelativePath, const std::wstring& newRelativePath,
+                           bool isDirectory);
+    bool DeleteTrackedObject(const std::wstring& volumeId, const std::wstring& objectId,
+                             const std::wstring& relativePath, bool isDirectory);
 
     int GetRecentActiveDays(const FILETIME& now, int windowDays);
 
