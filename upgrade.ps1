@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Version = '1.15'
-$Revision = '1.15-powershell-runner-reset-r4'
+$Revision = '1.15-powershell-runner-reset-r5'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -95,11 +95,6 @@ try {
     $currentBranch = (& git branch --show-current).Trim()
     if ($currentBranch -ne 'devel') { Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('switch','devel') | Out-Null }
 
-    # Only tracked changes can block pull. The launcher/runner may themselves be
-    # locally modified because the user manually checked out a newer bootstrap.
-    # Stash tracked changes, pull, then verify the repository files actually
-    # match origin/devel. Verification must happen against files on disk after
-    # pull, never against the already-running TEMP runner copy.
     & git diff --quiet --ignore-submodules --
     $trackedDirty = ($LASTEXITCODE -ne 0)
     & git diff --cached --quiet --ignore-submodules --
@@ -111,14 +106,18 @@ try {
 
     Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('pull','--ff-only','origin','devel') | Out-Null
 
-    # Validate HEAD and the repository copies, not this executing TEMP script.
+    # Verify repository state by Git object identity, not by raw working-tree
+    # bytes. Windows line-ending normalization can make CRLF working-tree files
+    # hash differently even when Git considers them clean and identical to HEAD.
     $head = (& git rev-parse HEAD 2>$null).Trim()
     $remoteHead = (& git rev-parse origin/devel 2>$null).Trim()
     if (-not $head -or -not $remoteHead -or $head -ne $remoteHead) { Fail $FailPhase 'Local devel HEAD is not identical to origin/devel after update.' }
     foreach ($f in @('upgrade.cmd','upgrade.ps1')) {
-        $remote = (& git rev-parse ("origin/devel:$f") 2>$null).Trim()
-        $local = (& git hash-object -- (Join-Path $Repo $f) 2>$null).Trim()
-        if (-not $remote -or -not $local -or $remote -ne $local) { Fail $FailPhase "$f in the repository is not identical to origin/devel after update." }
+        & git diff --quiet -- "$f"
+        if ($LASTEXITCODE -ne 0) { Fail $FailPhase "$f has local working-tree changes after update." }
+        $headBlob = (& git rev-parse ("HEAD:$f") 2>$null).Trim()
+        $remoteBlob = (& git rev-parse ("origin/devel:$f") 2>$null).Trim()
+        if (-not $headBlob -or -not $remoteBlob -or $headBlob -ne $remoteBlob) { Fail $FailPhase "$f in HEAD is not identical to origin/devel after update." }
     }
     Info '[BOOTSTRAP] repository launcher and runner verified current.'
     $buildCommit = (& git rev-parse HEAD).Trim()
@@ -170,7 +169,7 @@ try {
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
     Info '[5/7] Building FolderHeatMap 1.15 FAST/SLOW engine and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
-    $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "Required build artifact $f is missing." } }
+    $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
     $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
     foreach ($f in $artifacts) { Copy-Item (Join-Path "$build\Release" $f) (Join-Path $dist $f) -Force }
     foreach ($f in @('configure.cmd','README.md','TESTING.md')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item (Join-Path $Repo $f) (Join-Path $dist $f) -Force } }
