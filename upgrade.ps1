@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Version = '1.15'
-$Revision = '1.15-powershell-runner-reset-r3'
+$Revision = '1.15-powershell-runner-reset-r4'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -29,12 +29,6 @@ function Run-Native {
         [Parameter(Mandatory=$true)][string[]]$ArgumentList,
         [switch]$AllowFailure
     )
-
-    # Windows PowerShell 5.1 converts native STDERR records into PowerShell
-    # ErrorRecord objects when 2>&1 is used. With ErrorActionPreference=Stop a
-    # harmless Git/compiler warning can therefore abort the whole upgrade.
-    # Temporarily use Continue while the native process runs; the real process
-    # exit code remains the only success/failure authority.
     $savedPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
@@ -46,10 +40,7 @@ function Run-Native {
         }
         $rc = $LASTEXITCODE
     }
-    finally {
-        $ErrorActionPreference = $savedPreference
-    }
-
+    finally { $ErrorActionPreference = $savedPreference }
     if ($rc -ne 0 -and -not $AllowFailure) { Fail $Phase ("$Exe failed with exit code $rc") }
     return $rc
 }
@@ -104,9 +95,11 @@ try {
     $currentBranch = (& git branch --show-current).Trim()
     if ($currentBranch -ne 'devel') { Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('switch','devel') | Out-Null }
 
-    # Only tracked changes can block pull. Do not stash untracked runtime files.
-    # This also avoids accidentally stashing the historical literal
-    # %APPDATA%/GHISLER/FolderHeatMap.ini artifact created by an old build.
+    # Only tracked changes can block pull. The launcher/runner may themselves be
+    # locally modified because the user manually checked out a newer bootstrap.
+    # Stash tracked changes, pull, then verify the repository files actually
+    # match origin/devel. Verification must happen against files on disk after
+    # pull, never against the already-running TEMP runner copy.
     & git diff --quiet --ignore-submodules --
     $trackedDirty = ($LASTEXITCODE -ne 0)
     & git diff --cached --quiet --ignore-submodules --
@@ -118,11 +111,16 @@ try {
 
     Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('pull','--ff-only','origin','devel') | Out-Null
 
+    # Validate HEAD and the repository copies, not this executing TEMP script.
+    $head = (& git rev-parse HEAD 2>$null).Trim()
+    $remoteHead = (& git rev-parse origin/devel 2>$null).Trim()
+    if (-not $head -or -not $remoteHead -or $head -ne $remoteHead) { Fail $FailPhase 'Local devel HEAD is not identical to origin/devel after update.' }
     foreach ($f in @('upgrade.cmd','upgrade.ps1')) {
         $remote = (& git rev-parse ("origin/devel:$f") 2>$null).Trim()
-        $local = (& git hash-object $f 2>$null).Trim()
-        if (-not $remote -or -not $local -or $remote -ne $local) { Fail $FailPhase "$f is not identical to origin/devel after update." }
+        $local = (& git hash-object -- (Join-Path $Repo $f) 2>$null).Trim()
+        if (-not $remote -or -not $local -or $remote -ne $local) { Fail $FailPhase "$f in the repository is not identical to origin/devel after update." }
     }
+    Info '[BOOTSTRAP] repository launcher and runner verified current.'
     $buildCommit = (& git rev-parse HEAD).Trim()
     Info ("[GIT] Build commit: $buildCommit")
 
