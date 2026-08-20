@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.08 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.09 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -13,14 +13,14 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/vendor/sqlite/sqlite3.c")
     message(FATAL_ERROR "SQLite amalgamation is missing. Run upgrade.cmd first.")
 endif()
 
-# 1.08 staged rebuild:
+# 1.09 staged rebuild:
 # - WDX exposes Heat, Visits and Writes as read-only shared-RAM diagnostics
-# - TC Heat color/icon integration remains disabled even after configurator Save
+# - existing Total Commander Heat colors/icons are preserved and left untouched
 # - full Heat math remains external in FAST/SLOW workers
 # - a real visit refreshes the visited directory's own RAM snapshot
 # - File Heat uses a zero-write baseline on first discovery
 # - WDX performs no filesystem, SQLite, math, queueing or repaint work
-# - logging off/single/all is saved before TC restart and log path is explicit
+# - logging off/single/all is saved before TC restart and writes only to the repo log path configured by upgrade.cmd
 add_library(FolderHeatMap SHARED
     src/FolderHeatMapCounterOnly.cpp
 )
