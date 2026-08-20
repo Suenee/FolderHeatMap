@@ -31,34 +31,55 @@ std::wstring JoinPath(const std::wstring& root, const std::wstring& relative) {
     return out;
 }
 
-std::optional<std::array<unsigned char, 16>> ReadObjectIdBytes(const std::wstring& path, bool isDirectory) {
+struct ObjectIdentity {
+    std::array<unsigned char, 16> fileId{};
+    ULONGLONG creationTime = 0;
+};
+
+std::optional<ObjectIdentity> ReadObjectIdentity(const std::wstring& path, bool isDirectory) {
     const DWORD flags = isDirectory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL;
     HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            nullptr, OPEN_EXISTING, flags, nullptr);
     if (h == INVALID_HANDLE_VALUE) return std::nullopt;
-    FILE_ID_INFO info{};
-    const BOOL ok = GetFileInformationByHandleEx(h, FileIdInfo, &info, sizeof(info));
+
+    FILE_ID_INFO idInfo{};
+    FILE_BASIC_INFO basicInfo{};
+    const BOOL idOk = GetFileInformationByHandleEx(h, FileIdInfo, &idInfo, sizeof(idInfo));
+    const BOOL basicOk = GetFileInformationByHandleEx(h, FileBasicInfo, &basicInfo, sizeof(basicInfo));
     CloseHandle(h);
-    if (!ok) return std::nullopt;
-    std::array<unsigned char, 16> bytes{};
-    for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = info.FileId.Identifier[i];
-    return bytes;
+    if (!idOk || !basicOk) return std::nullopt;
+
+    ObjectIdentity identity;
+    for (size_t i = 0; i < identity.fileId.size(); ++i)
+        identity.fileId[i] = idInfo.FileId.Identifier[i];
+    identity.creationTime = static_cast<ULONGLONG>(basicInfo.CreationTime.QuadPart);
+    return identity;
 }
 
-std::wstring EncodeObjectId(const std::array<unsigned char, 16>& bytes) {
+std::wstring EncodeObjectId(const ObjectIdentity& identity) {
     static constexpr wchar_t hex[] = L"0123456789abcdef";
     std::wstring out;
-    out.reserve(32);
-    for (unsigned char value : bytes) {
+    out.reserve(49);
+    for (unsigned char value : identity.fileId) {
         out.push_back(hex[(value >> 4) & 0x0f]);
         out.push_back(hex[value & 0x0f]);
     }
+    // FILE_ID_INFO alone is not sufficient for the delete+immediate-recreate case:
+    // NTFS may reuse an ID quickly. Creation time makes the persisted identity a
+    // generation fingerprint while keeping the first 32 hex characters usable by
+    // OpenFileById for same-volume move detection.
+    out.push_back(L':');
+    for (int shift = 60; shift >= 0; shift -= 4)
+        out.push_back(hex[(identity.creationTime >> shift) & 0x0f]);
     return out;
 }
 
 std::optional<std::array<unsigned char, 16>> DecodeObjectId(const std::wstring& text) {
-    if (text.size() != 32) return std::nullopt;
+    // New IDs are "32-hex-file-id:16-hex-creation-time". Legacy 1.11-1.15
+    // records contain only the first 32 hex characters. Both remain resolvable
+    // by OpenFileById during migration/reconciliation.
+    if (text.size() < 32) return std::nullopt;
     auto nibble = [](wchar_t c) -> int {
         if (c >= L'0' && c <= L'9') return c - L'0';
         if (c >= L'a' && c <= L'f') return 10 + c - L'a';
@@ -145,12 +166,12 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
             if (!full.empty() && full.back() != L'\\') full += L'\\';
             full += data.cFileName;
             const bool isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            const auto idBytes = ReadObjectIdBytes(full, isDirectory);
-            if (!idBytes) continue;
+            const auto objectIdentity = ReadObjectIdentity(full, isDirectory);
+            if (!objectIdentity) continue;
             const auto identity = ResolveFolderIdentity(full);
             if (!identity) continue;
             TrackedObservation observation;
-            observation.objectId = EncodeObjectId(*idBytes);
+            observation.objectId = EncodeObjectId(*objectIdentity);
             observation.relativePath = identity->relativePath;
             observation.isDirectory = isDirectory;
             observedIds.insert(observation.objectId);
