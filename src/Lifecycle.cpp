@@ -37,12 +37,10 @@ std::optional<std::array<unsigned char, 16>> ReadObjectIdBytes(const std::wstrin
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            nullptr, OPEN_EXISTING, flags, nullptr);
     if (h == INVALID_HANDLE_VALUE) return std::nullopt;
-
     FILE_ID_INFO info{};
     const BOOL ok = GetFileInformationByHandleEx(h, FileIdInfo, &info, sizeof(info));
     CloseHandle(h);
     if (!ok) return std::nullopt;
-
     std::array<unsigned char, 16> bytes{};
     for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = info.FileId.Identifier[i];
     return bytes;
@@ -79,9 +77,7 @@ std::optional<std::array<unsigned char, 16>> DecodeObjectId(const std::wstring& 
 
 std::wstring VolumeHandlePath(const FolderIdentity& identity) {
     if (identity.mountPoint.size() >= 2 && identity.mountPoint[1] == L':') {
-        std::wstring out = L"\\\\.\\";
-        out += identity.mountPoint.substr(0, 2);
-        return out;
+        return L"\\\\.\\" + identity.mountPoint.substr(0, 2);
     }
     std::wstring out = identity.volumeId;
     while (!out.empty() && (out.back() == L'\\' || out.back() == L'/')) out.pop_back();
@@ -93,30 +89,25 @@ std::optional<std::wstring> ResolveCurrentPathByObjectId(const FolderIdentity& v
                                                          bool isDirectory) {
     const auto bytes = DecodeObjectId(objectId);
     if (!bytes) return std::nullopt;
-
     const std::wstring volumePath = VolumeHandlePath(volumeIdentity);
     HANDLE volume = CreateFileW(volumePath.c_str(), FILE_READ_ATTRIBUTES,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (volume == INVALID_HANDLE_VALUE) return std::nullopt;
-
     FILE_ID_DESCRIPTOR descriptor{};
     descriptor.dwSize = sizeof(descriptor);
     descriptor.Type = ExtendedFileIdType;
     for (size_t i = 0; i < bytes->size(); ++i) descriptor.ExtendedFileId.Identifier[i] = (*bytes)[i];
-
     HANDLE item = OpenFileById(volume, &descriptor, FILE_READ_ATTRIBUTES,
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                nullptr, isDirectory ? FILE_FLAG_BACKUP_SEMANTICS : 0);
     CloseHandle(volume);
     if (item == INVALID_HANDLE_VALUE) return std::nullopt;
-
     std::vector<wchar_t> buffer(32768, L'\0');
-    DWORD length = GetFinalPathNameByHandleW(item, buffer.data(), static_cast<DWORD>(buffer.size()),
-                                             FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    const DWORD length = GetFinalPathNameByHandleW(item, buffer.data(), static_cast<DWORD>(buffer.size()),
+                                                   FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
     CloseHandle(item);
     if (length == 0 || length >= buffer.size()) return std::nullopt;
-
     std::wstring path(buffer.data(), length);
     if (path.starts_with(L"\\\\?\\UNC\\")) path = L"\\\\" + path.substr(8);
     else if (path.starts_with(L"\\\\?\\")) path = path.substr(4);
@@ -138,6 +129,8 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
     const auto previous = database.GetTrackedChildren(directoryIdentity->volumeId,
                                                        directoryIdentity->relativePath);
     std::unordered_set<std::wstring> observedIds;
+    std::vector<TrackedObservation> observations;
+    std::vector<TrackedAction> explicitActions;
 
     std::wstring pattern = directory;
     if (!pattern.empty() && pattern.back() != L'\\') pattern += L'\\';
@@ -154,58 +147,59 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
             const bool isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
             const auto idBytes = ReadObjectIdBytes(full, isDirectory);
             if (!idBytes) continue;
-            const std::wstring objectId = EncodeObjectId(*idBytes);
-            observedIds.insert(objectId);
-            ++result.observed;
-
             const auto identity = ResolveFolderIdentity(full);
             if (!identity) continue;
-            std::wstring movedFrom;
-            if (database.ObserveTrackedObject(*identity, objectId, isDirectory, &movedFrom) && !movedFrom.empty()) {
-                LifecycleChange change;
-                change.kind = LifecycleChangeKind::Moved;
-                change.oldPath = JoinPath(identity->mountPoint, movedFrom);
-                change.newPath = full;
-                change.isDirectory = isDirectory;
-                result.changes.push_back(std::move(change));
-            }
+            TrackedObservation observation;
+            observation.objectId = EncodeObjectId(*idBytes);
+            observation.relativePath = identity->relativePath;
+            observation.isDirectory = isDirectory;
+            observedIds.insert(observation.objectId);
+            observations.push_back(std::move(observation));
+            ++result.observed;
         } while (FindNextFileW(find, &data));
         FindClose(find);
     }
 
     for (const auto& old : previous) {
         if (observedIds.contains(old.objectId)) continue;
+        TrackedAction action;
+        action.objectId = old.objectId;
+        action.oldRelativePath = old.relativePath;
+        action.isDirectory = old.isDirectory;
 
         const auto currentPath = ResolveCurrentPathByObjectId(*directoryIdentity, old.objectId, old.isDirectory);
         if (currentPath) {
             const auto currentIdentity = ResolveFolderIdentity(*currentPath);
             if (currentIdentity && currentIdentity->volumeId == directoryIdentity->volumeId &&
-                !IsRecycleBinPath(*currentIdentity)) {
-                if (currentIdentity->relativePath != old.relativePath &&
-                    database.MoveTrackedObject(directoryIdentity->volumeId, old.objectId,
-                                               old.relativePath, currentIdentity->relativePath,
-                                               old.isDirectory)) {
-                    LifecycleChange change;
-                    change.kind = LifecycleChangeKind::Moved;
-                    change.oldPath = JoinPath(directoryIdentity->mountPoint, old.relativePath);
-                    change.newPath = *currentPath;
-                    change.isDirectory = old.isDirectory;
-                    result.changes.push_back(std::move(change));
-                }
+                !IsRecycleBinPath(*currentIdentity) && currentIdentity->relativePath != old.relativePath) {
+                action.kind = TrackedActionKind::Move;
+                action.newRelativePath = currentIdentity->relativePath;
+                explicitActions.push_back(std::move(action));
                 continue;
             }
         }
-
-        if (database.DeleteTrackedObject(directoryIdentity->volumeId, old.objectId,
-                                         old.relativePath, old.isDirectory)) {
-            LifecycleChange change;
-            change.kind = LifecycleChangeKind::Deleted;
-            change.oldPath = JoinPath(directoryIdentity->mountPoint, old.relativePath);
-            change.isDirectory = old.isDirectory;
-            result.changes.push_back(std::move(change));
-        }
+        action.kind = TrackedActionKind::Delete;
+        explicitActions.push_back(std::move(action));
     }
 
+    std::vector<TrackedAction> applied;
+    if (!database.ApplyTrackedLifecycleBatch(directoryIdentity->volumeId, observations, explicitActions, &applied)) {
+        return result;
+    }
+
+    result.changes.reserve(applied.size());
+    for (const auto& action : applied) {
+        LifecycleChange change;
+        change.isDirectory = action.isDirectory;
+        change.oldPath = JoinPath(directoryIdentity->mountPoint, action.oldRelativePath);
+        if (action.kind == TrackedActionKind::Move) {
+            change.kind = LifecycleChangeKind::Moved;
+            change.newPath = JoinPath(directoryIdentity->mountPoint, action.newRelativePath);
+        } else {
+            change.kind = LifecycleChangeKind::Deleted;
+        }
+        result.changes.push_back(std::move(change));
+    }
     return result;
 }
 
