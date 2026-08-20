@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13 - 20.08.2026
+
+- Deep-reviewed the `upgrade.cmd` / PowerShell logger bootstrap argument flow after repeated interactive `Supply values` prompts.
+- Removed mandatory PowerShell bootstrap parameters so missing or malformed arguments now fail deterministically with `STATUS: FAILED - phase=LOGGER/ARGUMENTS` instead of opening an interactive prompt.
+- Added backward-compatible aliases for the short-lived 1.12 `-Mode` / `-RunMode` / `-CaptureMode` callers, so an older local upgrader can still bootstrap the fixed logger directly from `origin/devel`.
+- New 1.13 callers no longer pass dash-prefixed bootstrap switches through PowerShell parameter binding. They use plain positional `bootstrap` / `fresh` tokens; the logger maps these internally to the private batch switches.
+- Removed reconstructed `cmd.exe /c` command strings from the logger. `upgrade.cmd`, its mode and repository path are invoked as separate arguments, avoiding quoting collisions for spaces, parentheses, ampersands and other command-line metacharacters.
+- Added explicit validation for logger script path, repository path and capture stage before any upgrade work begins.
+- Preserved single-run `upgrade.log`, gray/yellow/red/green console classification, final `STATUS` line, self-update guarantees and the 1.11 FAST/SLOW lifecycle behavior.
+
 ## 1.12 - 20.08.2026
 
 - Added `upgrade.log` in the repository root as a single-run diagnostic log. Every new `upgrade.cmd` run truncates the previous log and records the complete visible bootstrap, configure, build and deploy output.
@@ -48,7 +58,7 @@
 - Fixed logging-save ordering in the configurator. `Logging = single/all` is now written to `FolderHeatMap.ini` before Total Commander is restarted, so the newly started engine reads the selected mode immediately.
 - Made the log location deterministic and visible in the configurator. `FolderHeatMap.log` is stored next to `FolderHeatMap.ini`, normally in `%APPDATA%\GHISLER\FolderHeatMap.log`.
 - The engine now creates and flushes an initial logging-session line immediately on startup when logging is enabled. A navigation or file-write event is no longer required before the log file appears.
-- `single` truncates the log for every new engine/TC session; `all` appends to the existing log; `off` does not create or write the log.
+- `single` truncates the log for every new engine/TC session; `all` appends across sessions. `off` performs no file logging.
 - Fixed a staged-testing regression where pressing Save in the configurator reinstalled FolderHeatMap color filters and immediately re-enabled Heat coloring. During the current diagnostic phase Save now removes FolderHeatMap-managed color/icon integration again before TC continues.
 - Heat, Visits and Writes remain read-only RAM diagnostics. No repaint request or foreground Heat calculation was added.
 
