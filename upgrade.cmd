@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.12-upgrade-diagnostics"
+set "UPGRADE_REV=1.13-bootstrap-hardening"
 set "BOOTSTRAP_STAGE=%~1"
 set "ORIGINAL_REPO=%~dp0"
 set "HAD_WARNING=0"
@@ -13,6 +13,8 @@ if /I "%BOOTSTRAP_STAGE%"=="--fresh-bootstrap" goto legacy_fresh_bootstrap
 
 rem Normal entry point. Bootstrap the logger silently, then let it capture and
 rem color the complete visible bootstrap/build/deploy run into upgrade.log.
+rem IMPORTANT: PowerShell receives only plain positional tokens here. Do not
+rem pass bootstrap stage values beginning with '-' through its parameter binder.
 cd /d "%ORIGINAL_REPO%"
 where git.exe >nul 2>nul || (
     echo ERROR: Git was not found in PATH.
@@ -35,7 +37,7 @@ git show origin/devel:upgrade_logger.ps1 > "!LOGGER_TEMP!" 2>nul || (
     pause
     exit /b 1
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!LOGGER_TEMP!" -ScriptPath "%~f0" -RepositoryRoot "%ORIGINAL_REPO%" -Mode "--captured-bootstrap"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!LOGGER_TEMP!" "%~f0" "%ORIGINAL_REPO%" "bootstrap"
 set "BOOTSTRAP_RC=!ERRORLEVEL!"
 del /q "!LOGGER_TEMP!" >nul 2>nul
 exit /b !BOOTSTRAP_RC!
@@ -79,7 +81,7 @@ del /q "!FRESH_UPGRADER!" >nul 2>nul
 exit /b !BOOTSTRAP_RC!
 
 rem Compatibility path for the first launch from an older local upgrade.cmd.
-rem The old wrapper has already fetched origin/devel and invokes this fresh 1.12
+rem The old wrapper has already fetched origin/devel and invokes this fresh
 rem script directly. Start the new logger here so the actual upgrade is captured.
 :legacy_fresh_bootstrap
 set "REPO_DIR=%~2"
@@ -95,7 +97,7 @@ if errorlevel 1 (
     call "%~f0" --captured-fresh "%REPO_DIR%"
     exit /b !ERRORLEVEL!
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!LOGGER_TEMP!" -ScriptPath "%~f0" -RepositoryRoot "%REPO_DIR%" -Mode "--captured-fresh"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!LOGGER_TEMP!" "%~f0" "%REPO_DIR%" "fresh"
 set "BOOTSTRAP_RC=!ERRORLEVEL!"
 del /q "!LOGGER_TEMP!" >nul 2>nul
 exit /b !BOOTSTRAP_RC!
@@ -322,7 +324,7 @@ echo [4/7] Configuring x64 Release build...
     goto fail
 )
 
-echo [5/7] Building FolderHeatMap 1.12 FAST/SLOW engine and tools...
+echo [5/7] Building FolderHeatMap 1.13 FAST/SLOW engine and tools...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 (
     set "FAIL_PHASE=BUILD"
@@ -363,7 +365,7 @@ goto success
 
 :success
 echo.
-echo SUCCESS - FolderHeatMap 1.12 installed.
+echo SUCCESS - FolderHeatMap 1.13 installed.
 echo WDX:         %CD%\dist\FolderHeatMap.wdx64
 echo Engine:      %CD%\dist\FolderHeatMapEngine.exe
 echo Config:      %CD%\dist\FolderHeatMapConfig.exe
@@ -371,7 +373,7 @@ echo Engine log:  %CD%\FolderHeatMap.log
 echo Upgrade log: %CD%\upgrade.log
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo 1.12 keeps the 1.11 FAST/SLOW lifecycle behavior and adds upgrade diagnostics.
+echo 1.13 hardens bootstrap argument transport and keeps the 1.11 FAST/SLOW lifecycle behavior.
 echo Upload upgrade.log to ChatGPT for a complete build/deploy diagnosis.
 pause
 if "!HAD_WARNING!"=="1" (
