@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.11 - 20.08.2026
+
+- Kept the two-worker architecture only: FAST remains interactive/predictive and SLOW owns persistence, file-write observation and lifecycle maintenance.
+- Added SLOW-only lifecycle reconciliation using stable volume-local Windows file IDs where supported. Same-volume rename/move preserves the tracked history; recycle-bin moves, deletes and cross-volume moves remove the old-volume history.
+- Added a `tracked_objects` persistence index so a missing path can be resolved by file ID on the same volume. Moving a whole tracked directory updates its subtree by SQL prefix operations instead of visiting every descendant record individually.
+- Large sets of file lifecycle changes are accumulated and applied in one SQLite transaction rather than thousands of per-file commits.
+- RAM/cache lifecycle changes are coalesced into one atomic publication per SLOW batch. Moved paths are remapped, deleted paths are removed, and stale ready batches touching the old/new branches are invalidated.
+- Recalculate both sides of a tree mutation: ancestors of the old location lose the removed contribution and ancestors of the new location gain it. Duplicate dirty ancestors are collapsed so each affected branch is recalculated only once per batch.
+- Full runtime-cache persistence is now dirty/debounced. SLOW flushes after a short idle delay instead of rewriting the complete cache after every navigation, while graceful shutdown still performs a mandatory final flush.
+- Preserved the 1.10 duplicate-navigation suppression, unchanged-batch suppression, single FAST prediction trigger, Heat/File Heat mathematics, Total Commander color/icon behavior and RAM-only WDX foreground path.
+- Reworked `upgrade.cmd` bootstrap return handling to remove the spurious post-success `RAP_RC` error. Upgrade-owned error messages are now printed in red, warnings in yellow and successful completion in green.
+
 ## 1.10 - 20.08.2026
 
 - Coalesced shared-RAM publication so batches and own-directory snapshots equivalent to the already published state no longer create a new cache generation.
@@ -101,7 +113,7 @@
 ## 1.00 - 18.08.2026
 
 - Architecture reset. Preserved the existing Folder Heat/File Heat mathematics, settings, configurator, reset tooling, colors and icon integration while replacing the runtime path completely.
-- Saved the complete pre-reset implementation on the `legacy-0.34` branch as a return point and removed the old in-process async cache headers from `devel`.
+- Saved the complete pre-reset implementation on `legacy-0.34` branch as a return point and removed the old in-process async cache headers from `devel`.
 - Reduced the WDX plugin to a dumb read-only shared-memory client. `ContentGetValueW()` no longer performs filesystem work, SQLite access, heat calculations, background queueing or cache mutation.
 - Added `FolderHeatMapEngine.exe` as a separate background process. All filesystem analysis, heat calculation, prediction and database persistence now live outside the Total Commander process.
 - Added double-buffered shared RAM with reader counters and atomic buffer switching. Total Commander always reads one complete cache generation; partially calculated data is never exposed.
