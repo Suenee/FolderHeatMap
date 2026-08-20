@@ -65,7 +65,12 @@ target_compile_definitions(FolderHeatMapEngine PRIVATE
 )
 
 add_dependencies(FolderHeatMap FolderHeatMapEngine)
-add_custom_command(TARGET FolderHeatMap POST_BUILD
+
+# Copying the engine as a POST_BUILD step of FolderHeatMap is unsafe when
+# FolderHeatMap and FolderHeatMapEngine are both explicit MSBuild targets:
+# MSBuild may consider the dependency complete while the engine output is still
+# being finalized/locked. Make the engine own its dist copy instead.
+add_custom_command(TARGET FolderHeatMapEngine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/dist"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:FolderHeatMapEngine>"
