@@ -1,116 +1,122 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.13-bootstrap-hardening"
-set "BOOTSTRAP_STAGE=%~1"
+set "UPGRADE_REV=1.14-bootstrap-transport"
 set "ORIGINAL_REPO=%~dp0"
+if "%ORIGINAL_REPO:~-1%"=="\" set "ORIGINAL_REPO=%ORIGINAL_REPO:~0,-1%"
 set "HAD_WARNING=0"
 set "FAIL_PHASE=UNKNOWN"
 
-if /I "%BOOTSTRAP_STAGE%"=="--captured-bootstrap" goto captured_bootstrap
-if /I "%BOOTSTRAP_STAGE%"=="--captured-fresh" goto captured_fresh
-if /I "%BOOTSTRAP_STAGE%"=="--fresh-bootstrap" goto legacy_fresh_bootstrap
+rem ---------------------------------------------------------------------------
+rem INTERNAL ENTRY
+rem Current bootstrap communication is environment-only. No repository path or
+rem stage token is passed on argv between CMD and PowerShell.
+rem ---------------------------------------------------------------------------
+if /I "%FHM_UPGRADE_INTERNAL%"=="1" if /I "%FHM_UPGRADE_STAGE%"=="fresh" goto captured_fresh
 
-rem Normal entry point. Bootstrap the logger silently, then let it capture and
-rem color the complete visible bootstrap/build/deploy run into upgrade.log.
-rem IMPORTANT: PowerShell receives only plain positional tokens here. Do not
-rem pass bootstrap stage values beginning with '-' through its parameter binder.
-cd /d "%ORIGINAL_REPO%"
+rem ---------------------------------------------------------------------------
+rem NORMAL ENTRY / SELF-UPDATE
+rem 1) silently fetch origin/devel
+rem 2) extract the newest logger and newest upgrade.cmd to TEMP
+rem 3) pass bootstrap data only through environment variables
+rem 4) logger captures/colors the entire real run into upgrade.log
+rem
+rem Keeping the real run in a TEMP copy means git pull may safely replace the
+rem repository's upgrade.cmd while the upgrade is executing.
+rem ---------------------------------------------------------------------------
+cd /d "%ORIGINAL_REPO%" || (
+    set "BOOTSTRAP_ERROR=Could not enter repository directory."
+    goto bootstrap_fail
+)
 where git.exe >nul 2>nul || (
-    echo ERROR: Git was not found in PATH.
-    pause
-    exit /b 1
+    set "BOOTSTRAP_ERROR=Git was not found in PATH."
+    goto bootstrap_fail
 )
 git rev-parse --is-inside-work-tree >nul 2>nul || (
-    echo ERROR: This folder is not a Git working tree.
-    pause
-    exit /b 1
+    set "BOOTSTRAP_ERROR=This folder is not a Git working tree."
+    goto bootstrap_fail
 )
 git fetch origin >nul 2>nul || (
-    echo ERROR: git fetch origin failed before upgrade logging could start.
-    pause
-    exit /b 1
+    set "BOOTSTRAP_ERROR=git fetch origin failed before upgrade logging could start."
+    goto bootstrap_fail
 )
+
 set "LOGGER_TEMP=%TEMP%\FolderHeatMap-upgrade-logger-%RANDOM%-%RANDOM%.ps1"
-git show origin/devel:upgrade_logger.ps1 > "!LOGGER_TEMP!" 2>nul || (
-    echo ERROR: Could not extract upgrade_logger.ps1 from origin/devel.
-    pause
-    exit /b 1
-)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!LOGGER_TEMP!" "%~f0" "%ORIGINAL_REPO%" "bootstrap"
-set "BOOTSTRAP_RC=!ERRORLEVEL!"
-del /q "!LOGGER_TEMP!" >nul 2>nul
-exit /b !BOOTSTRAP_RC!
-
-:captured_bootstrap
-set "REPO_DIR=%~2"
-if not defined REPO_DIR (
-    set "FAIL_PHASE=SELF-UPDATE"
-    echo ERROR: Logged bootstrap did not receive the repository path.
-    goto fail
-)
-cd /d "%REPO_DIR%"
-set "FHM_HEADER_WRITTEN=1"
-call :write_header
-
-echo [BOOTSTRAP] Fetching latest upgrade.cmd from origin/devel...
-git fetch origin || (
-    set "FAIL_PHASE=SELF-UPDATE"
-    echo ERROR: git fetch origin failed.
-    goto fail
-)
 set "FRESH_UPGRADER=%TEMP%\FolderHeatMap-upgrade-%RANDOM%-%RANDOM%.cmd"
-git show origin/devel:upgrade.cmd > "!FRESH_UPGRADER!" || (
-    set "FAIL_PHASE=SELF-UPDATE"
-    echo ERROR: Could not extract the latest upgrade.cmd from origin/devel.
-    goto fail
+
+git show origin/devel:upgrade_logger.ps1 > "!LOGGER_TEMP!" 2>nul || (
+    set "BOOTSTRAP_ERROR=Could not extract upgrade_logger.ps1 from origin/devel."
+    goto bootstrap_cleanup_fail
+)
+git show origin/devel:upgrade.cmd > "!FRESH_UPGRADER!" 2>nul || (
+    set "BOOTSTRAP_ERROR=Could not extract upgrade.cmd from origin/devel."
+    goto bootstrap_cleanup_fail
+)
+if not exist "!LOGGER_TEMP!" (
+    set "BOOTSTRAP_ERROR=Temporary upgrade logger was not created."
+    goto bootstrap_cleanup_fail
 )
 if not exist "!FRESH_UPGRADER!" (
-    set "FAIL_PHASE=SELF-UPDATE"
-    echo ERROR: Fresh upgrade.cmd was not created.
-    goto fail
+    set "BOOTSTRAP_ERROR=Temporary fresh upgrade.cmd was not created."
+    goto bootstrap_cleanup_fail
+)
+for %%I in ("!LOGGER_TEMP!") do if %%~zI LSS 500 (
+    set "BOOTSTRAP_ERROR=Temporary upgrade logger is unexpectedly small."
+    goto bootstrap_cleanup_fail
 )
 for %%I in ("!FRESH_UPGRADER!") do if %%~zI LSS 1000 (
-    set "FAIL_PHASE=SELF-UPDATE"
-    echo ERROR: Fresh upgrade.cmd is unexpectedly small.
-    goto fail
+    set "BOOTSTRAP_ERROR=Temporary fresh upgrade.cmd is unexpectedly small."
+    goto bootstrap_cleanup_fail
 )
-call "!FRESH_UPGRADER!" --captured-fresh "%REPO_DIR%"
+
+set "FHM_UPGRADE_INTERNAL=1"
+set "FHM_UPGRADE_STAGE=fresh"
+set "FHM_UPGRADE_REPO=%ORIGINAL_REPO%"
+set "FHM_UPGRADE_SCRIPT=!FRESH_UPGRADER!"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!LOGGER_TEMP!"
 set "BOOTSTRAP_RC=!ERRORLEVEL!"
+
+del /q "!LOGGER_TEMP!" >nul 2>nul
 del /q "!FRESH_UPGRADER!" >nul 2>nul
 exit /b !BOOTSTRAP_RC!
 
-rem Compatibility path for the first launch from an older local upgrade.cmd.
-rem The old wrapper has already fetched origin/devel and invokes this fresh
-rem script directly. Start the new logger here so the actual upgrade is captured.
-:legacy_fresh_bootstrap
-set "REPO_DIR=%~2"
-if not defined REPO_DIR (
-    echo ERROR: Fresh upgrader did not receive the repository path.
-    exit /b 1
-)
-cd /d "%REPO_DIR%"
-set "LOGGER_TEMP=%TEMP%\FolderHeatMap-upgrade-logger-%RANDOM%-%RANDOM%.ps1"
-git show origin/devel:upgrade_logger.ps1 > "!LOGGER_TEMP!" 2>nul
-if errorlevel 1 (
-    rem Last-resort fallback: do the upgrade without capture rather than block it.
-    call "%~f0" --captured-fresh "%REPO_DIR%"
-    exit /b !ERRORLEVEL!
-)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!LOGGER_TEMP!" "%~f0" "%REPO_DIR%" "fresh"
-set "BOOTSTRAP_RC=!ERRORLEVEL!"
+:bootstrap_cleanup_fail
 del /q "!LOGGER_TEMP!" >nul 2>nul
-exit /b !BOOTSTRAP_RC!
+del /q "!FRESH_UPGRADER!" >nul 2>nul
+goto bootstrap_fail
 
+:bootstrap_fail
+> "%ORIGINAL_REPO%\upgrade.log" echo FolderHeatMap upgrade bootstrap failed.
+>> "%ORIGINAL_REPO%\upgrade.log" echo ERROR: !BOOTSTRAP_ERROR!
+>> "%ORIGINAL_REPO%\upgrade.log" echo STATUS: FAILED - phase=SELF-UPDATE/BOOTSTRAP
+powershell.exe -NoProfile -Command "Write-Host 'ERROR: !BOOTSTRAP_ERROR!' -ForegroundColor Red; Write-Host 'STATUS: FAILED - phase=SELF-UPDATE/BOOTSTRAP' -ForegroundColor Red"
+pause
+exit /b 1
+
+rem ---------------------------------------------------------------------------
+rem CAPTURED FRESH RUN
+rem Reached only from upgrade_logger.ps1. Repository and stage came through the
+rem environment; no bootstrap argv is parsed here.
+rem ---------------------------------------------------------------------------
 :captured_fresh
-set "REPO_DIR=%~2"
+set "REPO_DIR=%FHM_UPGRADE_REPO%"
 if not defined REPO_DIR (
     set "FAIL_PHASE=SELF-UPDATE"
-    echo ERROR: Fresh upgrader did not receive the repository path.
+    echo ERROR: FHM_UPGRADE_REPO is missing in captured run.
     goto fail
 )
-cd /d "%REPO_DIR%"
-if not defined FHM_HEADER_WRITTEN call :write_header
+if not exist "%REPO_DIR%\.git" (
+    set "FAIL_PHASE=SELF-UPDATE"
+    echo ERROR: Captured repository path is not a Git working tree: %REPO_DIR%
+    goto fail
+)
+cd /d "%REPO_DIR%" || (
+    set "FAIL_PHASE=SELF-UPDATE"
+    echo ERROR: Could not enter captured repository path: %REPO_DIR%
+    goto fail
+)
+call :write_header
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSBT=%TEMP%\vs_BuildTools.exe"
@@ -306,6 +312,7 @@ if not exist "configure_logging_path.ps1" (
     echo ERROR: configure_logging_path.ps1 is missing.
     goto fail
 )
+rem Safe here: both values are file/directory paths without a trailing separator.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CD%\configure_logging_path.ps1" -SettingsIni "!SETTINGS_INI!" -RepositoryRoot "%CD%"
 if errorlevel 1 (
     set "FAIL_PHASE=CONFIGURATION"
@@ -324,7 +331,7 @@ echo [4/7] Configuring x64 Release build...
     goto fail
 )
 
-echo [5/7] Building FolderHeatMap 1.13 FAST/SLOW engine and tools...
+echo [5/7] Building FolderHeatMap 1.14 FAST/SLOW engine and tools...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 (
     set "FAIL_PHASE=BUILD"
@@ -365,16 +372,23 @@ goto success
 
 :success
 echo.
-echo SUCCESS - FolderHeatMap 1.13 installed.
+echo SUCCESS - FolderHeatMap 1.14 installed.
 echo WDX:         %CD%\dist\FolderHeatMap.wdx64
 echo Engine:      %CD%\dist\FolderHeatMapEngine.exe
 echo Config:      %CD%\dist\FolderHeatMapConfig.exe
 echo Engine log:  %CD%\FolderHeatMap.log
 echo Upgrade log: %CD%\upgrade.log
-if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo 1.13 hardens bootstrap argument transport and keeps the 1.11 FAST/SLOW lifecycle behavior.
+echo 1.14 uses environment-only bootstrap transport and keeps the 1.11 FAST/SLOW lifecycle behavior.
 echo Upload upgrade.log to ChatGPT for a complete build/deploy diagnosis.
+
+rem Do not leak internal bootstrap state into Total Commander.
+set "FHM_UPGRADE_INTERNAL="
+set "FHM_UPGRADE_STAGE="
+set "FHM_UPGRADE_REPO="
+set "FHM_UPGRADE_SCRIPT="
+
+if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 pause
 if "!HAD_WARNING!"=="1" (
     echo STATUS: WARNING - phase=COMPLETE
@@ -426,7 +440,8 @@ echo Started:    !STARTED_AT!
 echo Repository: %CD%
 echo Branch:     !START_BRANCH!
 echo Commit:     !START_COMMIT!
-echo ============================================================
+echo Transport:  environment-only
+necho ============================================================
 exit /b 0
 
 :dist_error
