@@ -30,14 +30,16 @@ public:
         else if (mode == L"all") mode_ = Mode::All;
         else return;
 
-        // The log always lives next to FolderHeatMap.ini. For a normal Total
-        // Commander installation this is the writable GHISLER configuration
-        // directory (typically %APPDATA%\GHISLER), independent of where the
-        // WDX/engine binary itself happens to be deployed.
-        const std::filesystem::path settings(settingsPath);
-        path_ = settings.has_parent_path()
-            ? settings.parent_path() / L"FolderHeatMap.log"
-            : std::filesystem::path(L"FolderHeatMap.log");
+        // The log path is explicit and is written by upgrade.cmd. Never fall
+        // back to the Total Commander profile/configuration directory.
+        wchar_t configuredPath[32768]{};
+        GetPrivateProfileStringW(L"Logging", L"Path", L"", configuredPath,
+                                 static_cast<DWORD>(std::size(configuredPath)), settingsPath.c_str());
+        if (configuredPath[0] == L'\0') {
+            mode_ = Mode::Off;
+            return;
+        }
+        path_ = std::filesystem::path(configuredPath);
 
         std::error_code ec;
         if (path_.has_parent_path()) std::filesystem::create_directories(path_.parent_path(), ec);
@@ -49,8 +51,6 @@ public:
             return;
         }
 
-        // Create visible proof immediately at engine startup. A user does not
-        // need to perform any navigation/write before FolderHeatMap.log exists.
         SYSTEMTIME st{};
         GetLocalTime(&st);
         char stamp[64]{};
