@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.09 - 20.08.2026
+
+- Logging is now strictly repository-local. `upgrade.cmd` writes the absolute repository-root `FolderHeatMap.log` path into `[Logging] Path` in `FolderHeatMap.ini`; the engine has no fallback to the Total Commander profile directory.
+- `upgrade.cmd` removes the obsolete profile-local `FolderHeatMap.log` created by the short-lived 1.08 behavior.
+- Added repository `*.log` ignore so runtime logs never enter Git history.
+- The configurator displays the configured repository log path and still saves `Logging = off/single/all` before Total Commander restarts.
+- Reverted the 1.08 staged color cleanup. Neither the logging extension nor `upgrade.cmd` removes or rewrites Total Commander color/icon rules. Existing FolderHeatMap coloring is preserved and the normal configurator remains authoritative for color settings.
+- Heat, Visits and Writes remain read-only RAM diagnostics with FAST/SLOW workers and no explicit repaint request.
+
 ## 1.08 - 20.08.2026
 
 - Fixed logging-save ordering in the configurator. `Logging = single/all` is now written to `FolderHeatMap.ini` before Total Commander is restarted, so the newly started engine reads the selected mode immediately.
@@ -134,6 +143,6 @@
 
 ## 0.30
 
-- Added configurable Folder Heat color/icon mapping and File Heat support.
+- Added configurable Folder Heat/File Heat support.
 - Added heat reset tooling and Total Commander integration.
 - Added asynchronous cache/database groundwork for performance optimization.
