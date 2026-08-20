@@ -6,7 +6,7 @@ rem SELF-BOOTSTRAP GUARANTEE
 rem Never trust the local copy of this script. Every normal launch fetches
 rem origin/devel and executes the repository copy from TEMP first.
 rem ---------------------------------------------------------------------------
-set "UPGRADE_REV=1.07-diagnostics-logging"
+set "UPGRADE_REV=1.08-logging-path-no-colors"
 set "BOOTSTRAP_STAGE=%~1"
 set "ORIGINAL_REPO=%~dp0"
 
@@ -203,9 +203,9 @@ echo Engine:    %CD%\dist\FolderHeatMapEngine.exe
 echo Config:    %CD%\dist\FolderHeatMapConfig.exe
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.07: Heat, Visits and Writes are RAM-only diagnostics.
-echo File first observation is a zero-write baseline. Logging modes: off / single / all.
-echo TC heat colors/icons remain disabled for this staged test.
+echo FolderHeatMap 1.08: Heat, Visits and Writes are RAM-only diagnostics.
+echo Logging path is shown in the configurator and single/all create the log at engine startup.
+echo TC heat colors/icons remain disabled even after configurator Save.
 pause
 exit /b 0
 
