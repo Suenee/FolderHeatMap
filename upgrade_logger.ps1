@@ -23,6 +23,28 @@ function Resolve-LegacyRepositoryRoot {
     return $null
 }
 
+function Normalize-BatchFileForCmd {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # Git stores text blobs with LF. `git show ... > temp.cmd` therefore creates
+    # an LF-only batch file even when the working-tree checkout is CRLF. cmd.exe
+    # can execute simple LF batches but CALL :label is not reliable and can fail
+    # with "The system cannot find the batch label specified". Normalize every
+    # temporary batch before execution, independently of how it was produced.
+    $text = [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
+    $text = $text -replace "`r`n", "`n"
+    $text = $text -replace "`r", "`n"
+    $text = $text -replace "`n", "`r`n"
+    [System.IO.File]::WriteAllText($Path, $text, [System.Text.UTF8Encoding]::new($false))
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    for ($i = 0; $i -lt $bytes.Length; $i++) {
+        if ($bytes[$i] -eq 10 -and ($i -eq 0 -or $bytes[$i - 1] -ne 13)) {
+            throw 'batch normalization verification failed: LF without CR detected'
+        }
+    }
+}
+
 # Recovery for short-lived 1.12/1.13 launchers.
 if ([string]::IsNullOrWhiteSpace($ScriptPath) -or
     [string]::IsNullOrWhiteSpace($RepositoryRoot) -or
@@ -39,9 +61,6 @@ if ([string]::IsNullOrWhiteSpace($ScriptPath) -or
         & git -C $legacyRepo fetch origin 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'git fetch origin failed' }
 
-        # IMPORTANT: git.exe is a native process. Redirect its stdout directly
-        # to a file so PowerShell never decodes/re-encodes the batch source.
-        # This preserves CRLF and all CMD labels exactly.
         $LegacyTempScript = Join-Path $env:TEMP ('FolderHeatMap-upgrade-recovered-' + [guid]::NewGuid().ToString('N') + '.cmd')
         $spec = 'origin/devel:upgrade.cmd'
         $psi = [System.Diagnostics.ProcessStartInfo]::new()
@@ -59,6 +78,8 @@ if ([string]::IsNullOrWhiteSpace($ScriptPath) -or
         if ($p.ExitCode -ne 0) { throw ('could not read origin/devel:upgrade.cmd: ' + $stderr.Trim()) }
         if (-not (Test-Path -LiteralPath $LegacyTempScript -PathType Leaf)) { throw 'recovered upgrade.cmd was not created' }
         if ((Get-Item -LiteralPath $LegacyTempScript).Length -lt 1000) { throw 'recovered upgrade.cmd is unexpectedly small' }
+
+        Normalize-BatchFileForCmd -Path $LegacyTempScript
 
         $ScriptPath = $LegacyTempScript
         $RepositoryRoot = $legacyRepo
@@ -98,6 +119,15 @@ if ($CaptureStage.ToLowerInvariant() -ne 'fresh') {
     exit 64
 }
 
+try {
+    Normalize-BatchFileForCmd -Path $ScriptPath
+}
+catch {
+    Write-Host ('STATUS: FAILED - phase=LOGGER/BATCH-NORMALIZE - ' + $_.Exception.Message) -ForegroundColor Red
+    if ($LegacyTempScript) { Remove-Item -LiteralPath $LegacyTempScript -Force -ErrorAction SilentlyContinue }
+    exit 66
+}
+
 $logPath = Join-Path $RepositoryRoot 'upgrade.log'
 [System.IO.File]::WriteAllText($logPath, '', [System.Text.UTF8Encoding]::new($false))
 
@@ -110,9 +140,8 @@ function Write-ClassifiedLine {
     else { Write-Host $Line -ForegroundColor Gray }
 }
 
-# A .cmd file must be executed by cmd.exe. PowerShell's call operator is not a
-# reliable batch-file host for this bootstrap and caused "batch label specified"
-# failures. Pass the batch path through COMSPEC and quote only the script path.
+# Execute batch files only through cmd.exe. The temporary script has already
+# been normalized to CRLF above, so CALL :label and GOTO labels are reliable.
 try {
     $cmdLine = '"' + $ScriptPath + '"'
     & $env:ComSpec /d /s /c $cmdLine 2>&1 | ForEach-Object {
