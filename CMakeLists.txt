@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.09 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.10 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -13,14 +13,31 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/vendor/sqlite/sqlite3.c")
     message(FATAL_ERROR "SQLite amalgamation is missing. Run upgrade.cmd first.")
 endif()
 
-# 1.09 staged rebuild:
-# - WDX exposes Heat, Visits and Writes as read-only shared-RAM diagnostics
-# - existing Total Commander Heat colors/icons are preserved and left untouched
-# - full Heat math remains external in FAST/SLOW workers
-# - a real visit refreshes the visited directory's own RAM snapshot
-# - File Heat uses a zero-write baseline on first discovery
-# - WDX performs no filesystem, SQLite, math, queueing or repaint work
-# - logging off/single/all is saved before TC restart and writes only to the repo log path configured by upgrade.cmd
+# 1.10 backend optimization:
+# - keep the verified WDX/Heat/color behavior unchanged
+# - suppress duplicate same-directory navigation work
+# - do not publish unchanged RAM snapshots/batches
+# - do not queue the same hot predictions a second time from SLOW refresh
+# - persist runtime cache only when the public RAM state actually changed
+#
+# EngineApp.cpp is intentionally left untouched. GitHub's whole-file edit API
+# is risky for this large, now-stable source, so a guarded CMake generator
+# patches a build-only copy. Configuration aborts if any expected source anchor
+# differs, preventing a stale/partial optimization from being compiled.
+set(FHM_ENGINE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated_engine")
+set(FHM_ENGINE_GENERATED_CPP "${FHM_ENGINE_GENERATED_DIR}/EngineApp.1.10.cpp")
+file(MAKE_DIRECTORY "${FHM_ENGINE_GENERATED_DIR}")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DINPUT=${CMAKE_SOURCE_DIR}/src/EngineApp.cpp"
+        "-DOUTPUT=${FHM_ENGINE_GENERATED_CPP}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/GenerateOptimizedEngine.cmake"
+    RESULT_VARIABLE FHM_ENGINE_GENERATE_RESULT
+)
+if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_CPP}")
+    message(FATAL_ERROR "Could not generate the guarded FolderHeatMap 1.10 engine source.")
+endif()
+
 add_library(FolderHeatMap SHARED
     src/FolderHeatMapCounterOnly.cpp
 )
@@ -29,7 +46,7 @@ target_compile_features(FolderHeatMap PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMap PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 add_executable(FolderHeatMapEngine
-    src/EngineApp.cpp
+    "${FHM_ENGINE_GENERATED_CPP}"
     src/FolderIdentity.cpp
     src/Database.cpp
     src/DatabaseBaseline.cpp
