@@ -1,18 +1,26 @@
-param(
-    [Parameter(Position = 0)][string]$ScriptPath,
-    [Parameter(Position = 1)][string]$RepositoryRoot,
-    [Parameter(Position = 2)][Alias('Mode','RunMode','CaptureMode')][string]$CaptureStage
-)
-
 $ErrorActionPreference = 'Stop'
 
-# Bootstrap code must never prompt interactively for missing parameters. All
-# parameters are optional at the PowerShell binding layer and validated here.
-# This also keeps compatibility with the short-lived 1.12 callers using -Mode.
+# 1.14 hardening: do not use a PowerShell param() block at all. Bootstrap
+# values are read from environment variables first. For compatibility with
+# short-lived 1.13 callers, plain positional $args are accepted as a fallback.
+$ScriptPath = $env:FHM_UPGRADE_SCRIPT
+$RepositoryRoot = $env:FHM_UPGRADE_REPO
+$CaptureStage = $env:FHM_UPGRADE_STAGE
+
+if ([string]::IsNullOrWhiteSpace($ScriptPath) -and $args.Count -ge 1) {
+    $ScriptPath = [string]$args[0]
+}
+if ([string]::IsNullOrWhiteSpace($RepositoryRoot) -and $args.Count -ge 2) {
+    $RepositoryRoot = [string]$args[1]
+}
+if ([string]::IsNullOrWhiteSpace($CaptureStage) -and $args.Count -ge 3) {
+    $CaptureStage = [string]$args[2]
+}
+
 if ([string]::IsNullOrWhiteSpace($ScriptPath) -or
     [string]::IsNullOrWhiteSpace($RepositoryRoot) -or
     [string]::IsNullOrWhiteSpace($CaptureStage)) {
-    Write-Host 'STATUS: FAILED - phase=LOGGER/ARGUMENTS - required bootstrap argument missing' -ForegroundColor Red
+    Write-Host ('STATUS: FAILED - phase=LOGGER/ARGUMENTS - bootstrap data missing; args=' + $args.Count) -ForegroundColor Red
     exit 64
 }
 
@@ -34,8 +42,6 @@ if (-not (Test-Path -LiteralPath $RepositoryRoot -PathType Container)) {
     exit 64
 }
 
-# Normalize both the stable 1.13 tokens and legacy 1.12 values. New callers use
-# plain tokens so PowerShell never has to parse a value beginning with '-'.
 switch ($CaptureStage.ToLowerInvariant()) {
     'bootstrap'            { $BatchSwitch = '--captured-bootstrap' }
     'fresh'                { $BatchSwitch = '--captured-fresh' }
@@ -76,9 +82,8 @@ function Write-ClassifiedLine {
     }
 }
 
-# Invoke the batch file directly with separate arguments. Do not reconstruct a
-# command-line string: separate argv values are safe for spaces, parentheses,
-# ampersands and other cmd.exe metacharacters in repository paths.
+# PowerShell invokes the .cmd file directly with separate argv values. No
+# reconstructed command string is used, avoiding quoting/metacharacter issues.
 try {
     & $ScriptPath $BatchSwitch $RepositoryRoot 2>&1 | ForEach-Object {
         Write-ClassifiedLine ([string]$_)
