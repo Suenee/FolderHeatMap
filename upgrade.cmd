@@ -6,7 +6,7 @@ rem SELF-BOOTSTRAP GUARANTEE
 rem Never trust the local copy of this script. Every normal launch fetches
 rem origin/devel and executes the repository copy from TEMP first.
 rem ---------------------------------------------------------------------------
-set "UPGRADE_REV=1.09-repo-logging-colors-preserved"
+set "UPGRADE_REV=1.10-backend-coalescing"
 set "BOOTSTRAP_STAGE=%~1"
 set "ORIGINAL_REPO=%~dp0"
 
@@ -161,7 +161,7 @@ if exist build rmdir /s /q build
 echo [4/7] Configuring x64 Release build...
 "%CMAKE%" -S . -B build -A x64 || goto build_error
 
-echo [5/7] Building Heat+Visits+Writes diagnostics, FAST/SLOW engine and tools...
+echo [5/7] Building optimized Heat+Visits+Writes engine, FAST/SLOW workers and tools...
 "%CMAKE%" --build build --config Release --target FolderHeatMap FolderHeatMapEngine FolderHeatMapConfig FolderHeatMapReset
 if errorlevel 1 goto build_error
 
@@ -201,8 +201,8 @@ echo Config:    %CD%\dist\FolderHeatMapConfig.exe
 echo Log:       %CD%\FolderHeatMap.log
 if "!TC_WAS_RUNNING!"=="1" if defined TC_EXE start "" "!TC_EXE!"
 echo.
-echo FolderHeatMap 1.09: repository-local logging; existing TC colors/icons are preserved.
-echo Heat, Visits and Writes remain RAM-only diagnostics with FAST/SLOW workers.
+echo FolderHeatMap 1.10: backend publication/prediction/persistence coalescing enabled.
+echo Heat math, TC colors/icons, repository logging and WDX foreground behavior are unchanged.
 pause
 exit /b 0
 
