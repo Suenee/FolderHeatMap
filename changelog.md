@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.12 - 20.08.2026
+
+- Added `upgrade.log` in the repository root as a single-run diagnostic log. Every new `upgrade.cmd` run truncates the previous log and records the complete visible bootstrap, configure, build and deploy output.
+- Added live console classification through `upgrade_logger.ps1`: normal output is gray, warnings are yellow, compiler/CMake/upgrade errors are red, and the final successful status is green.
+- The first diagnostic block records the upgrade revision, start timestamp, repository path, branch and starting commit; after self-update the exact build commit is logged as well.
+- `upgrade.log` is covered by the existing `*.log` repository ignore rule and is intended as the quick artifact to upload for troubleshooting a failed or suspicious upgrade.
+- The final line of every captured run is now a machine- and human-readable status: `STATUS: SUCCESS`, `STATUS: WARNING`, or `STATUS: FAILED`, with the failed phase included where applicable.
+- Added a logger-side fallback status if the child upgrade exits unexpectedly before writing its own final status.
+- Preserved the self-updating `upgrade.cmd` guarantee. A compatibility path allows the first launch from an older local upgrader to start the new logger after fetching the current 1.12 script.
+- Kept the 1.11 two-worker FAST/SLOW lifecycle, Heat/File Heat, colors, WDX hot path and persistence behavior unchanged.
+
 ## 1.11 - 20.08.2026
 
 - Kept the two-worker architecture only: FAST remains interactive/predictive and SLOW owns persistence, file-write observation and lifecycle maintenance.
@@ -75,7 +86,7 @@
 - Restored the two-speed worker architecture in the external `FolderHeatMapEngine.exe` process.
 - **FAST worker** handles real navigation first and can prepare high-probability follow-up directories in RAM.
 - **SLOW worker** handles persistence, file-write observation, durable runtime-cache saves and lower-priority preparation.
-- Restored the existing Heat mathematics, inherited path Heat, optional File Heat calculations, runtime cache persistence and heat-based prediction internally, but none of these results are exposed to Total Commander yet.
+- Restored the existing Heat mathematics, inherited heat, optional File Heat calculations, runtime cache persistence and heat-based prediction internally, but none of these results are exposed to Total Commander yet.
 - Real navigation always outranks predictive work. Prediction remains background-only and cannot request a TC repaint.
 - The WDX foreground path remains unchanged in principle: it reads only `Visits` from shared RAM and performs no Heat calculation, SQLite query, filesystem scan, prediction or repaint operation.
 - Added the settings path when launching the background engine so the restored workers use the configured cooling, path contribution, File Heat and logging settings.
