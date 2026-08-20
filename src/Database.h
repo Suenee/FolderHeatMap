@@ -18,7 +18,6 @@ namespace fhm {
 struct StoredActivity {
     std::uint64_t visits = 0;
     FILETIME lastVisit{};
-
     std::uint64_t heatVisits = 0;
     std::uint64_t recentVisits = 0;
     std::uint64_t activeDays = 0;
@@ -53,6 +52,25 @@ struct TrackedObject {
     bool isDirectory = false;
 };
 
+struct TrackedObservation {
+    std::wstring objectId;
+    std::wstring relativePath;
+    bool isDirectory = false;
+};
+
+enum class TrackedActionKind {
+    Move,
+    Delete
+};
+
+struct TrackedAction {
+    TrackedActionKind kind = TrackedActionKind::Delete;
+    std::wstring objectId;
+    std::wstring oldRelativePath;
+    std::wstring newRelativePath;
+    bool isDirectory = false;
+};
+
 class Database {
 public:
     Database() = default;
@@ -70,33 +88,27 @@ public:
     std::vector<std::pair<std::wstring, StoredActivity>> GetVolumeActivities(const std::wstring& volumeId);
 
     bool ObserveFileWrite(const FolderIdentity& identity, const FILETIME& lastWrite);
-
-    // Baseline-safe observation used by the background engine. The first time a
-    // file is discovered we only remember its current LastWrite timestamp with
-    // zero write events. A later timestamp change is the first real write event.
     bool ObserveFileWriteBaselineSafe(const FolderIdentity& identity, const FILETIME& lastWrite);
-
     std::optional<StoredFileActivity> GetFileActivity(const FolderIdentity& identity);
     std::vector<std::pair<std::wstring, StoredFileActivity>> GetVolumeFileActivities(const std::wstring& volumeId);
 
-    // Runtime cache persistence. SQLite is a durable backup of the latest
-    // complete RAM generation, never the foreground source for WDX reads.
     bool SaveRuntimeCache(const std::vector<RuntimeCacheRecord>& records);
     std::vector<RuntimeCacheRecord> LoadRuntimeCache();
 
-    // Reset only the selected item's own activity. For files, currentLastWrite
-    // becomes the new cold baseline so the same timestamp cannot immediately
-    // reheat the file after the reset.
     bool ResetDirectActivity(const FolderIdentity& identity, bool isDirectory, const FILETIME* currentLastWrite = nullptr);
-
-    // Reset a folder and all tracked folders/files below it. Ancestor heat is
-    // not stored, so it automatically recalculates from the remaining sources.
     bool ResetRecursiveActivity(const FolderIdentity& identity);
 
-    // SLOW-worker lifecycle tracking. Object IDs are volume-local stable file
-    // identifiers. A move/rename on the same volume preserves activity history;
-    // a delete or cross-volume move removes the old-volume history.
+    // SLOW-worker lifecycle tracking. Object IDs are stable only inside one
+    // volume. Same-volume move/rename keeps history; delete/recycle/cross-volume
+    // move removes old-volume history. Large sets are applied in one SQLite
+    // transaction so SLOW does not stall on thousands of tiny commits.
     std::vector<TrackedObject> GetTrackedChildren(const std::wstring& volumeId, const std::wstring& parentRelativePath);
+    bool ApplyTrackedLifecycleBatch(const std::wstring& volumeId,
+                                    const std::vector<TrackedObservation>& observations,
+                                    const std::vector<TrackedAction>& explicitActions,
+                                    std::vector<TrackedAction>* appliedActions = nullptr);
+
+    // Kept as small internal-compatible primitives for diagnostics/tools.
     bool ObserveTrackedObject(const FolderIdentity& identity, const std::wstring& objectId, bool isDirectory,
                               std::wstring* movedFromRelativePath = nullptr);
     bool MoveTrackedObject(const std::wstring& volumeId, const std::wstring& objectId,
