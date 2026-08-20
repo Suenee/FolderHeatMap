@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10 - 20.08.2026
+
+- Coalesced shared-RAM publication so batches and own-directory snapshots equivalent to the already published state no longer create a new cache generation.
+- Suppressed duplicate same-directory navigation notifications before they can enqueue SLOW work or FAST predictions.
+- Removed the second scheduling of the same hot-child predictions from the SLOW refresh path. Real navigation remains the authoritative prediction trigger.
+- Runtime cache persistence now runs only when the public RAM state actually changed; failed persistence marks the cache dirty again for a later retry.
+- Added a 0.001 Heat-equivalence tolerance so tiny cooling-time differences do not create pointless cache generations while Visits, Writes, timestamps, Heat Level and Color Step remain exact change triggers.
+- Coalesced shutdown publication/persistence instead of blindly republishing unchanged ready batches.
+- Left Heat/File Heat mathematics, Total Commander color/icon behavior, repository-local logging, the WDX foreground hot path and the FAST/SLOW architecture unchanged.
+- Added guarded build-time engine source generation in `cmake/GenerateOptimizedEngine.cmake`. The verified `src/EngineApp.cpp` remains untouched; CMake aborts if any expected 1.09 source anchor no longer matches, preventing a partial/stale optimization from being compiled.
+
 ## 1.09 - 20.08.2026
 
 - Logging is now strictly repository-local. `upgrade.cmd` writes the absolute repository-root `FolderHeatMap.log` path into `[Logging] Path` in `FolderHeatMap.ini`; the engine has no fallback to the Total Commander profile directory.
