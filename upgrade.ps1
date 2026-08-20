@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Version = '1.15'
-$Revision = '1.15-powershell-runner-reset-r2'
+$Revision = '1.15-powershell-runner-reset-r3'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -29,13 +29,27 @@ function Run-Native {
         [Parameter(Mandatory=$true)][string[]]$ArgumentList,
         [switch]$AllowFailure
     )
-    & $Exe @ArgumentList 2>&1 | ForEach-Object {
-        $line = [string]$_
-        if ($line -match '(?i)\b(error|failed|fatal error)\b|\berror\s+(C|LNK)\d+|MSB\d+.*\berror\b') { Write-Line $line Red }
-        elseif ($line -match '(?i)\bwarning\b') { Write-Line $line Yellow }
-        else { Write-Line $line Gray }
+
+    # Windows PowerShell 5.1 converts native STDERR records into PowerShell
+    # ErrorRecord objects when 2>&1 is used. With ErrorActionPreference=Stop a
+    # harmless Git/compiler warning can therefore abort the whole upgrade.
+    # Temporarily use Continue while the native process runs; the real process
+    # exit code remains the only success/failure authority.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $Exe @ArgumentList 2>&1 | ForEach-Object {
+            $line = [string]$_
+            if ($line -match '(?i)\b(error|failed|fatal error)\b|\berror\s+(C|LNK)\d+|MSB\d+.*\berror\b') { Write-Line $line Red }
+            elseif ($line -match '(?i)\bwarning\b') { Write-Line $line Yellow }
+            else { Write-Line $line Gray }
+        }
+        $rc = $LASTEXITCODE
     }
-    $rc = $LASTEXITCODE
+    finally {
+        $ErrorActionPreference = $savedPreference
+    }
+
     if ($rc -ne 0 -and -not $AllowFailure) { Fail $Phase ("$Exe failed with exit code $rc") }
     return $rc
 }
@@ -90,11 +104,18 @@ try {
     $currentBranch = (& git branch --show-current).Trim()
     if ($currentBranch -ne 'devel') { Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('switch','devel') | Out-Null }
 
-    $dirty = ((& git status --porcelain) -join '')
-    if ($dirty) {
-        Warn 'Local tracked/untracked changes detected; stashing them before update.'
-        Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-u','-m','FolderHeatMap automatic pre-upgrade stash') | Out-Null
+    # Only tracked changes can block pull. Do not stash untracked runtime files.
+    # This also avoids accidentally stashing the historical literal
+    # %APPDATA%/GHISLER/FolderHeatMap.ini artifact created by an old build.
+    & git diff --quiet --ignore-submodules --
+    $trackedDirty = ($LASTEXITCODE -ne 0)
+    & git diff --cached --quiet --ignore-submodules --
+    if ($LASTEXITCODE -ne 0) { $trackedDirty = $true }
+    if ($trackedDirty) {
+        Warn 'Local tracked changes detected; stashing tracked files before update.'
+        Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-m','FolderHeatMap automatic pre-upgrade stash') | Out-Null
     }
+
     Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('pull','--ff-only','origin','devel') | Out-Null
 
     foreach ($f in @('upgrade.cmd','upgrade.ps1')) {
@@ -139,8 +160,13 @@ try {
     $FailPhase = 'CONFIGURATION'; Info '[2/7] Configuring repository-local logging path...'
     if (-not $tc.Settings) { Fail $FailPhase 'FolderHeatMap settings path could not be resolved.' }
     $helper = Join-Path $Repo 'configure_logging_path.ps1'; if (-not (Test-Path $helper)) { Fail $FailPhase 'configure_logging_path.ps1 is missing.' }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -SettingsIni $tc.Settings -RepositoryRoot $Repo 2>&1 | ForEach-Object { Info ([string]$_) }
-    if ($LASTEXITCODE -ne 0) { Fail $FailPhase 'Could not configure FolderHeatMap.log in the repository root.' }
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -SettingsIni $tc.Settings -RepositoryRoot $Repo 2>&1 | ForEach-Object { Info ([string]$_) }
+        $helperRc = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedPreference }
+    if ($helperRc -ne 0) { Fail $FailPhase 'Could not configure FolderHeatMap.log in the repository root.' }
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
