@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ScriptPath,
     [Parameter(Mandatory = $true)][string]$RepositoryRoot,
-    [Parameter(Mandatory = $true)][string]$Mode
+    [Parameter(Mandatory = $true)][Alias('RunMode')][string]$CaptureMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,7 +32,7 @@ function Write-ClassifiedLine {
 
 $quotedScript = '"' + $ScriptPath + '"'
 $quotedRepo = '"' + $RepositoryRoot + '"'
-$command = "$quotedScript $Mode $quotedRepo"
+$command = "$quotedScript $CaptureMode $quotedRepo"
 
 & $env:ComSpec /d /s /c $command 2>&1 | ForEach-Object {
     Write-ClassifiedLine ([string]$_)
