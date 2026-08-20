@@ -106,7 +106,7 @@ if not defined REPO_DIR (
     echo ERROR: FHM_UPGRADE_REPO is missing in captured run.
     goto fail
 )
-if not exist "%REPO_DIR%\.git" (
+git -C "%REPO_DIR%" rev-parse --is-inside-work-tree >nul 2>nul || (
     set "FAIL_PHASE=SELF-UPDATE"
     echo ERROR: Captured repository path is not a Git working tree: %REPO_DIR%
     goto fail
@@ -441,7 +441,7 @@ echo Repository: %CD%
 echo Branch:     !START_BRANCH!
 echo Commit:     !START_COMMIT!
 echo Transport:  environment-only
-necho ============================================================
+echo ============================================================
 exit /b 0
 
 :dist_error
