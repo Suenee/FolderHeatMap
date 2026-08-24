@@ -79,24 +79,17 @@ void OpenSharedMemory() {
 void LaunchEngine(const ContentDefaultParamStruct* dps) {
     const std::wstring engine = EnginePath();
     if (engine.empty() || !std::filesystem::exists(engine)) return;
-
     HANDLE existing = OpenMutexW(SYNCHRONIZE, FALSE, fhm::runtime::kEngineMutexName);
-    if (existing) {
-        CloseHandle(existing);
-        return;
-    }
-
+    if (existing) { CloseHandle(existing); return; }
     const std::wstring defaultIni = DefaultIniPath(dps);
     const std::wstring db = DatabasePath(defaultIni);
     const std::wstring settings = SettingsPath(defaultIni);
     std::wstring command = L"\"" + engine + L"\" --db \"" + db + L"\" --settings \"" + settings + L"\"";
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (CreateProcessW(engine.c_str(), command.data(), nullptr, nullptr, FALSE,
-                       CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
+    if (CreateProcessW(engine.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                       nullptr, nullptr, &startup, &process)) {
+        CloseHandle(process.hThread); CloseHandle(process.hProcess);
     }
 }
 
@@ -104,19 +97,14 @@ int ReadRamValue(const wchar_t* fileName, int fieldIndex, void* fieldValue) {
     if (fieldIndex == kFieldHeat) *static_cast<double*>(fieldValue) = 0.0;
     else if (fieldIndex == kFieldVisits || fieldIndex == kFieldWrites) *static_cast<__int64*>(fieldValue) = 0;
     else return ft_nosuchfield;
-
     const int type = fieldIndex == kFieldHeat ? ft_numeric_floating : ft_numeric_64;
-    if (!g_shared || g_shared->magic != fhm::runtime::kMagic || g_shared->version != fhm::runtime::kVersion)
-        return type;
-
+    if (!g_shared || g_shared->magic != fhm::runtime::kMagic || g_shared->version != fhm::runtime::kVersion) return type;
     std::uint32_t pathLength = 0;
     const std::uint64_t pathHash = fhm::runtime::HashNormalizedPath(fileName, pathLength);
     if (!pathHash) return type;
-
     const LONG active = InterlockedCompareExchange(&g_shared->activeBuffer, 0, 0) & 1;
     auto& buffer = g_shared->buffers[active];
-    InterlockedIncrement(&buffer.readers);
-    MemoryBarrier();
+    InterlockedIncrement(&buffer.readers); MemoryBarrier();
     const auto* entry = fhm::runtime::FindEntry(buffer, pathHash, pathLength);
     if (entry) {
         if (fieldIndex == kFieldHeat) *static_cast<double*>(fieldValue) = entry->heat;
@@ -135,28 +123,32 @@ void PublishNavigation(const wchar_t* path) {
     InterlockedIncrement(&g_shared->navigationSeq);
 }
 
+void PublishStateEvent(int state, const wchar_t* path) {
+    if (!g_shared) return;
+    InterlockedExchange(&g_shared->stateCode, state);
+    if (path && *path) {
+        const std::wstring normalized = fhm::runtime::NormalizePath(path);
+        wcsncpy_s(g_shared->statePath, normalized.c_str(), _TRUNCATE);
+    } else {
+        g_shared->statePath[0] = L'\0';
+    }
+    MemoryBarrier();
+    InterlockedIncrement(&g_shared->stateEventSeq);
+}
+
 void CloseRuntime() {
     if (g_shared && g_clientRegistered) {
         const LONG clients = InterlockedDecrement(&g_shared->clientCount);
         g_clientRegistered = false;
         if (clients <= 0) InterlockedExchange(&g_shared->shutdownRequested, 1);
     }
-    if (g_shared) {
-        UnmapViewOfFile(g_shared);
-        g_shared = nullptr;
-    }
-    if (g_mapping) {
-        CloseHandle(g_mapping);
-        g_mapping = nullptr;
-    }
+    if (g_shared) { UnmapViewOfFile(g_shared); g_shared = nullptr; }
+    if (g_mapping) { CloseHandle(g_mapping); g_mapping = nullptr; }
 }
 } // namespace
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) {
-        g_module = instance;
-        DisableThreadLibraryCalls(instance);
-    }
+    if (reason == DLL_PROCESS_ATTACH) { g_module = instance; DisableThreadLibraryCalls(instance); }
     return TRUE;
 }
 
@@ -172,18 +164,9 @@ extern "C" __declspec(dllexport) void __stdcall ContentSetDefaultParams(ContentD
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fieldIndex, char* fieldName, char* units, int maxlen) {
     if (units && maxlen > 0) units[0] = '\0';
-    if (fieldIndex == kFieldHeat) {
-        CopyAnsi(fieldName, maxlen, "Heat");
-        return ft_numeric_floating;
-    }
-    if (fieldIndex == kFieldVisits) {
-        CopyAnsi(fieldName, maxlen, "Visits");
-        return ft_numeric_64;
-    }
-    if (fieldIndex == kFieldWrites) {
-        CopyAnsi(fieldName, maxlen, "Writes");
-        return ft_numeric_64;
-    }
+    if (fieldIndex == kFieldHeat) { CopyAnsi(fieldName, maxlen, "Heat"); return ft_numeric_floating; }
+    if (fieldIndex == kFieldVisits) { CopyAnsi(fieldName, maxlen, "Visits"); return ft_numeric_64; }
+    if (fieldIndex == kFieldWrites) { CopyAnsi(fieldName, maxlen, "Writes"); return ft_numeric_64; }
     return ft_nomorefields;
 }
 
@@ -203,6 +186,7 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fi
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
+    PublishStateEvent(state, path);
     if (state == contst_readnewdir) PublishNavigation(path);
 }
 
@@ -211,6 +195,4 @@ extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformation(int 
     ContentSendStateInformationW(state, wide.empty() ? nullptr : const_cast<WCHAR*>(wide.c_str()));
 }
 
-extern "C" __declspec(dllexport) void __stdcall ContentPluginUnloading() {
-    CloseRuntime();
-}
+extern "C" __declspec(dllexport) void __stdcall ContentPluginUnloading() { CloseRuntime(); }
