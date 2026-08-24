@@ -20,4 +20,10 @@ std::optional<FolderIdentity> ResolveFolderIdentity(const std::wstring& path);
 // filesystem object no longer exists and its cached/history data is stale.
 std::optional<std::wstring> ResolveFilesystemObjectId(const std::wstring& path, bool isDirectory);
 
+// Resolve a previously known per-volume File ID back to its current path.
+// This is used to distinguish a same-volume move/rename from a true delete.
+std::optional<std::wstring> ResolveFilesystemPathByObjectId(const FolderIdentity& volumeIdentity,
+                                                            const std::wstring& objectId,
+                                                            bool isDirectory);
+
 } // namespace fhm
