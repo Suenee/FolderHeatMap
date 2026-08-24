@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.15 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.16 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -13,16 +13,6 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/vendor/sqlite/sqlite3.c")
     message(FATAL_ERROR "SQLite amalgamation is missing. Run upgrade.cmd first.")
 endif()
 
-# 1.11 SLOW-worker optimization and lifecycle reconciliation:
-# - keep exactly two workers: FAST and SLOW
-# - debounce full runtime-cache persistence and flush dirty RAM in batches
-# - track stable volume-local file IDs in SLOW only
-# - preserve history across same-volume move/rename
-# - treat recycle/delete/cross-volume move as deletion on the old volume
-# - move an entire directory subtree with prefix SQL updates, not per-file updates
-# - batch large sets of individual lifecycle mutations inside one SQLite transaction
-# - invalidate/remap RAM and recalculate old/new ancestor branches once per batch
-# - keep WDX foreground, Heat math and Total Commander color behavior unchanged
 set(FHM_ENGINE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated_engine")
 set(FHM_ENGINE_GENERATED_CPP "${FHM_ENGINE_GENERATED_DIR}/EngineApp.1.11.cpp")
 file(MAKE_DIRECTORY "${FHM_ENGINE_GENERATED_DIR}")
@@ -37,6 +27,19 @@ if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_
     message(FATAL_ERROR "Could not generate the guarded FolderHeatMap 1.11 engine source.")
 endif()
 
+# 1.16 is intentionally diagnostic-only. It injects logging/telemetry around
+# filesystem delete/create notifications and SLOW load without changing DB,
+# lifecycle decisions, cache publication policy or repaint behavior.
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DINPUT=${FHM_ENGINE_GENERATED_CPP}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/InjectDeletionDiagnostics.cmake"
+    RESULT_VARIABLE FHM_DIAG_INJECT_RESULT
+)
+if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not inject FolderHeatMap 1.16 deletion diagnostics.")
+endif()
+
 add_library(FolderHeatMap SHARED
     src/FolderHeatMapCounterOnly.cpp
 )
@@ -46,6 +49,7 @@ target_compile_definitions(FolderHeatMap PRIVATE UNICODE _UNICODE WIN32_LEAN_AND
 
 add_executable(FolderHeatMapEngine
     "${FHM_ENGINE_GENERATED_CPP}"
+    src/DiagnosticWatcher.cpp
     src/FolderIdentity.cpp
     src/Database.cpp
     src/DatabaseBaseline.cpp
@@ -66,10 +70,7 @@ target_compile_definitions(FolderHeatMapEngine PRIVATE
 
 add_dependencies(FolderHeatMap FolderHeatMapEngine)
 
-# IMPORTANT: build targets write only to the build tree. Do not copy binaries
-# into dist from a POST_BUILD command: dist can be the live Total Commander
-# plugin directory, so an old/running process or scanner may lock those files.
-# upgrade.ps1 owns the dist/deploy phase after all targets have built cleanly.
+# Build targets write only to the build tree. upgrade.ps1 owns DIST/DEPLOY.
 
 set(FHM_CONFIG_ICON_B64 "${CMAKE_SOURCE_DIR}/assets/FolderHeatMapConfig.ico.b64")
 set(FHM_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
