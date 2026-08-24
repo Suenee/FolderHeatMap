@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.17 - 24.08.2026
+
+- Promoted the proven 1.16 filesystem diagnostics into the real deletion lifecycle while keeping the detailed diagnostic log active for verification.
+- Added an immediate in-memory tombstone barrier for confirmed `REMOVED` filesystem events. The removed path/subtree is invalidated from published RAM immediately; recursive database cleanup is deferred to SLOW.
+- Added a prioritized SLOW `purge_subtree` queue. The urgent path is O(1)-style invalidation/tombstoning; physical cleanup of folder history, file activity and tracked object identities runs afterward without blocking the watcher.
+- Coalesced nested tombstones so a higher removed branch replaces descendant tombstones instead of creating redundant subtree cleanup work.
+- Added stable per-volume filesystem object ID validation. `same path + same ID` keeps history; `same path + different ID` is treated as a new filesystem object and the stale history is never exposed.
+- Added protection for deletes performed outside Total Commander or outside the currently watched directory: a later identity mismatch immediately returns a cold snapshot and schedules stale subtree cleanup.
+- Kept same-volume rename/move history preservation through the existing File ID lifecycle logic. Cross-volume moves remain intentionally treated as delete + new object.
+- Changed lifecycle reconciliation ordering so old delete/move actions are applied before current observations. This prevents a recreated object at the same path from inheriting history from the deleted object.
+- Recursive lifecycle cleanup now also removes matching `tracked_objects` rows, not only folder/file activity.
+- Retained cooling/expiry as the final garbage-collection fallback for stale records that are never encountered again.
+- Upgrader and build version updated to 1.17 (`1.17-delete-lifecycle`).
+
 ## 1.14 - 20.08.2026
 
 - Replaced CMD/PowerShell bootstrap argument passing with environment-only transport (`FHM_UPGRADE_INTERNAL`, `FHM_UPGRADE_STAGE`, `FHM_UPGRADE_REPO`, `FHM_UPGRADE_SCRIPT`). Current bootstrap execution passes no repository path or stage token on argv.
