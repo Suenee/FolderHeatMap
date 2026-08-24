@@ -7,11 +7,21 @@
 
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 
 namespace fhm {
 namespace {
+
+std::string Utf8(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return {};
+    std::string out(static_cast<size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), bytes, nullptr, nullptr);
+    return out;
+}
 
 std::string ActionName(DWORD action) {
     switch (action) {
@@ -45,18 +55,11 @@ std::string SlowState(runtime::SharedState* shared) {
     const LONG busy = InterlockedCompareExchange(&shared->slowBusy, 0, 0);
     const LONG queued = InterlockedCompareExchange(&shared->slowQueueDepth, 0, 0);
     const LONG pending = InterlockedCompareExchange(&shared->slowPendingCount, 0, 0);
-    std::wstring task(shared->slowCurrentPath);
+    const std::wstring task(shared->slowCurrentPath);
     std::string text = "slow_busy=" + std::to_string(busy) +
                        " queue=" + std::to_string(queued) +
                        " pending=" + std::to_string(pending);
-    if (!task.empty()) {
-        const int bytes = WideCharToMultiByte(CP_UTF8, 0, task.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (bytes > 1) {
-            std::string utf8(static_cast<size_t>(bytes - 1), '\0');
-            WideCharToMultiByte(CP_UTF8, 0, task.c_str(), -1, utf8.data(), bytes - 1, nullptr, nullptr);
-            text += " task=" + utf8;
-        }
-    }
+    if (!task.empty()) text += " task=" + Utf8(task);
     return text;
 }
 
@@ -73,7 +76,6 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log, std
     HANDLE eventHandle = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     std::array<unsigned char, 64 * 1024> buffer{};
     OVERLAPPED ov{};
-    ov.hEvent = eventHandle;
     bool readPending = false;
 
     auto closeWatch = [&] {
@@ -88,6 +90,7 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log, std
 
     auto openWatch = [&](const std::wstring& path) {
         closeWatch();
+        watched = path;
         if (path.empty()) return;
         directory = CreateFileW(path.c_str(), FILE_LIST_DIRECTORY,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -97,7 +100,6 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log, std
             log->WritePath("DIAG", "WATCH_OPEN_FAILED", path);
             return;
         }
-        watched = path;
         log->WritePath("DIAG", "WATCH_START", watched);
     };
 
@@ -114,7 +116,7 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log, std
         if (!readPending) log->WritePath("DIAG", "WATCH_READ_FAILED", watched);
     };
 
-    log->Write("DIAG", "delete diagnostics active; read-only mode, no lifecycle repair is performed");
+    log->Write("DIAG", "delete diagnostics active; observation/logging only; no lifecycle repair is performed");
 
     while (!stopping->load()) {
         wchar_t currentBuf[runtime::kDirectoryChars]{};
@@ -127,30 +129,22 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log, std
         if (stateSeq != seenState) {
             seenState = stateSeq;
             const LONG code = InterlockedCompareExchange(&shared->stateCode, 0, 0);
-            std::wstring statePath(shared->statePath);
+            const std::wstring statePath(shared->statePath);
             log->Write("DIAG_TC", "state=" + StateName(code) + " code=" + std::to_string(code) + " " + SlowState(shared));
             if (!statePath.empty()) log->WritePath("DIAG_TC", "path", statePath);
         }
 
-        if (directory == INVALID_HANDLE_VALUE || !readPending) {
-            Sleep(50);
-            continue;
-        }
-
-        const DWORD wait = WaitForSingleObject(eventHandle, 50);
-        if (wait != WAIT_OBJECT_0) continue;
+        if (directory == INVALID_HANDLE_VALUE || !readPending) { Sleep(50); continue; }
+        if (WaitForSingleObject(eventHandle, 50) != WAIT_OBJECT_0) continue;
 
         DWORD bytes = 0;
-        if (!GetOverlappedResult(directory, &ov, &bytes, FALSE)) {
-            readPending = false;
-            continue;
-        }
+        if (!GetOverlappedResult(directory, &ov, &bytes, FALSE)) { readPending = false; continue; }
         readPending = false;
 
         size_t offset = 0;
         while (offset < bytes) {
             auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buffer.data() + offset);
-            std::wstring name(info->FileName, info->FileNameLength / sizeof(wchar_t));
+            const std::wstring name(info->FileName, info->FileNameLength / sizeof(wchar_t));
             const std::wstring full = runtime::NormalizePath(Join(watched, name));
             const bool existsNow = GetFileAttributesW(full.c_str()) != INVALID_FILE_ATTRIBUTES;
             const auto now = Clock::now();
