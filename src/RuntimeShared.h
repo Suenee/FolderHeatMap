@@ -9,11 +9,11 @@
 
 namespace fhm::runtime {
 
-constexpr wchar_t kMappingName[] = L"Local\\FolderHeatMapRuntimeV1";
+constexpr wchar_t kMappingName[] = L"Local\\FolderHeatMapRuntimeV2";
 constexpr wchar_t kEngineMutexName[] = L"Local\\FolderHeatMapEngineMutexV1";
 constexpr wchar_t kEngineStoppedEventName[] = L"Local\\FolderHeatMapEngineStoppedV1";
 constexpr std::uint32_t kMagic = 0x314D4846; // FHM1
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 constexpr std::size_t kBucketCount = 32768;
 constexpr std::size_t kDirectoryChars = 1024;
 
@@ -51,6 +51,18 @@ struct SharedState {
     volatile LONG shutdownRequested = 0;
     volatile LONG clientCount = 0;
     wchar_t currentDirectory[kDirectoryChars]{};
+
+    // 1.16 diagnostic-only telemetry. WDX publishes every state notification TC
+    // sends; the engine publishes SLOW load. These fields do not alter runtime
+    // decisions, cache contents, DB state or repaint behavior.
+    volatile LONG stateEventSeq = 0;
+    volatile LONG stateCode = 0;
+    wchar_t statePath[kDirectoryChars]{};
+    volatile LONG slowBusy = 0;
+    volatile LONG slowQueueDepth = 0;
+    volatile LONG slowPendingCount = 0;
+    wchar_t slowCurrentPath[kDirectoryChars]{};
+
     CacheBuffer buffers[2]{};
 };
 
