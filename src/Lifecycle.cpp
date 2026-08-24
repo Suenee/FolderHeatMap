@@ -31,32 +31,6 @@ std::wstring JoinPath(const std::wstring& root, const std::wstring& relative) {
     return out;
 }
 
-std::optional<std::array<unsigned char, 16>> ReadObjectIdBytes(const std::wstring& path, bool isDirectory) {
-    const DWORD flags = isDirectory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL;
-    HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           nullptr, OPEN_EXISTING, flags, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return std::nullopt;
-    FILE_ID_INFO info{};
-    const BOOL ok = GetFileInformationByHandleEx(h, FileIdInfo, &info, sizeof(info));
-    CloseHandle(h);
-    if (!ok) return std::nullopt;
-    std::array<unsigned char, 16> bytes{};
-    for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = info.FileId.Identifier[i];
-    return bytes;
-}
-
-std::wstring EncodeObjectId(const std::array<unsigned char, 16>& bytes) {
-    static constexpr wchar_t hex[] = L"0123456789abcdef";
-    std::wstring out;
-    out.reserve(32);
-    for (unsigned char value : bytes) {
-        out.push_back(hex[(value >> 4) & 0x0f]);
-        out.push_back(hex[value & 0x0f]);
-    }
-    return out;
-}
-
 std::optional<std::array<unsigned char, 16>> DecodeObjectId(const std::wstring& text) {
     if (text.size() != 32) return std::nullopt;
     auto nibble = [](wchar_t c) -> int {
@@ -76,9 +50,8 @@ std::optional<std::array<unsigned char, 16>> DecodeObjectId(const std::wstring& 
 }
 
 std::wstring VolumeHandlePath(const FolderIdentity& identity) {
-    if (identity.mountPoint.size() >= 2 && identity.mountPoint[1] == L':') {
+    if (identity.mountPoint.size() >= 2 && identity.mountPoint[1] == L':')
         return L"\\\\.\\" + identity.mountPoint.substr(0, 2);
-    }
     std::wstring out = identity.volumeId;
     while (!out.empty() && (out.back() == L'\\' || out.back() == L'/')) out.pop_back();
     return out;
@@ -145,12 +118,12 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
             if (!full.empty() && full.back() != L'\\') full += L'\\';
             full += data.cFileName;
             const bool isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            const auto idBytes = ReadObjectIdBytes(full, isDirectory);
-            if (!idBytes) continue;
+            const auto objectId = ResolveFilesystemObjectId(full, isDirectory);
+            if (!objectId) continue;
             const auto identity = ResolveFolderIdentity(full);
             if (!identity) continue;
             TrackedObservation observation;
-            observation.objectId = EncodeObjectId(*idBytes);
+            observation.objectId = *objectId;
             observation.relativePath = identity->relativePath;
             observation.isDirectory = isDirectory;
             observedIds.insert(observation.objectId);
@@ -182,10 +155,18 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
         explicitActions.push_back(std::move(action));
     }
 
+    // Critical ordering: invalidate/delete/move the previous filesystem objects
+    // before inserting observations for objects currently present at the same
+    // path. This makes external DELETE + recreate safe even when the watcher did
+    // not see the original deletion.
     std::vector<TrackedAction> applied;
-    if (!database.ApplyTrackedLifecycleBatch(directoryIdentity->volumeId, observations, explicitActions, &applied)) {
+    const std::vector<TrackedObservation> noObservations;
+    const std::vector<TrackedAction> noActions;
+    if (!explicitActions.empty() &&
+        !database.ApplyTrackedLifecycleBatch(directoryIdentity->volumeId, noObservations, explicitActions, &applied))
         return result;
-    }
+    if (!database.ApplyTrackedLifecycleBatch(directoryIdentity->volumeId, observations, noActions, nullptr))
+        return result;
 
     result.changes.reserve(applied.size());
     for (const auto& action : applied) {
