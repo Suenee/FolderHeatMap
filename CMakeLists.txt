@@ -41,6 +41,16 @@ if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap 1.17 deletion lifecycle.")
 endif()
 
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DINPUT=${FHM_ENGINE_GENERATED_CPP}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/CoalesceDeleteQueue.cmake"
+    RESULT_VARIABLE FHM_DELETE_COALESCE_RESULT
+)
+if(NOT FHM_DELETE_COALESCE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not inject FolderHeatMap 1.17 delete queue coalescing.")
+endif()
+
 # A directory watcher reports an item moved out of the watched directory as
 # REMOVED too. Before any subtree purge, preserve history if the previous File ID
 # still resolves elsewhere on the same volume (except the recycle bin).
