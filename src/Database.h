@@ -98,17 +98,13 @@ public:
     bool ResetDirectActivity(const FolderIdentity& identity, bool isDirectory, const FILETIME* currentLastWrite = nullptr);
     bool ResetRecursiveActivity(const FolderIdentity& identity);
 
-    // SLOW-worker lifecycle tracking. Object IDs are stable only inside one
-    // volume. Same-volume move/rename keeps history; delete/recycle/cross-volume
-    // move removes old-volume history. Large sets are applied in one SQLite
-    // transaction so SLOW does not stall on thousands of tiny commits.
     std::vector<TrackedObject> GetTrackedChildren(const std::wstring& volumeId, const std::wstring& parentRelativePath);
+    std::optional<TrackedObject> GetTrackedObjectAtPath(const std::wstring& volumeId, const std::wstring& relativePath);
     bool ApplyTrackedLifecycleBatch(const std::wstring& volumeId,
                                     const std::vector<TrackedObservation>& observations,
                                     const std::vector<TrackedAction>& explicitActions,
                                     std::vector<TrackedAction>* appliedActions = nullptr);
 
-    // Kept as small internal-compatible primitives for diagnostics/tools.
     bool ObserveTrackedObject(const FolderIdentity& identity, const std::wstring& objectId, bool isDirectory,
                               std::wstring* movedFromRelativePath = nullptr);
     bool MoveTrackedObject(const std::wstring& volumeId, const std::wstring& objectId,
