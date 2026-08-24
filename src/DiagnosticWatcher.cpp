@@ -65,7 +65,8 @@ std::string SlowState(runtime::SharedState* shared) {
 
 } // namespace
 
-void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log, std::atomic<bool>* stopping) {
+void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
+                            std::atomic<bool>* stopping, RemovalCallback onRemoved) {
     if (!shared || !log || !stopping) return;
 
     using Clock = std::chrono::steady_clock;
@@ -116,7 +117,7 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log, std
         if (!readPending) log->WritePath("DIAG", "WATCH_READ_FAILED", watched);
     };
 
-    log->Write("DIAG", "delete diagnostics active; observation/logging only; no lifecycle repair is performed");
+    log->Write("DIAG", "delete diagnostics active; lifecycle removal callback enabled");
 
     while (!stopping->load()) {
         wchar_t currentBuf[runtime::kDirectoryChars]{};
@@ -158,7 +159,12 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log, std
             log->Write("DIAG_FS", "action=" + ActionName(info->Action) + " " + timing + " " + SlowState(shared));
             log->WritePath("DIAG_FS", "path", full);
 
-            if (info->Action == FILE_ACTION_REMOVED || info->Action == FILE_ACTION_RENAMED_OLD_NAME) {
+            if (info->Action == FILE_ACTION_REMOVED) {
+                removed[full] = now;
+                if (onRemoved) onRemoved(full);
+            } else if (info->Action == FILE_ACTION_RENAMED_OLD_NAME) {
+                // A rename on the same volume must preserve history, so it is
+                // diagnostic only. ReconcileDirectoryLifecycle pairs it by ID.
                 removed[full] = now;
             } else if (info->Action == FILE_ACTION_ADDED || info->Action == FILE_ACTION_RENAMED_NEW_NAME) {
                 const auto it = removed.find(full);
