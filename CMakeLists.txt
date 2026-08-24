@@ -41,6 +41,19 @@ if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap 1.17 deletion lifecycle.")
 endif()
 
+# A directory watcher reports an item moved out of the watched directory as
+# REMOVED too. Before any subtree purge, preserve history if the previous File ID
+# still resolves elsewhere on the same volume (except the recycle bin).
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DINPUT=${FHM_ENGINE_GENERATED_CPP}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/ProtectSameVolumeMoves.cmake"
+    RESULT_VARIABLE FHM_MOVE_GUARD_RESULT
+)
+if(NOT FHM_MOVE_GUARD_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not inject FolderHeatMap 1.17 same-volume move protection.")
+endif()
+
 add_library(FolderHeatMap SHARED
     src/FolderHeatMapCounterOnly.cpp
 )
