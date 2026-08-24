@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.15'
-$Revision = '1.15-powershell-runner-reset-r6'
+$Version = '1.16'
+$Revision = '1.16-delete-diagnostics'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -146,8 +146,6 @@ try {
     foreach ($name in @('FolderHeatMapConfig','FolderHeatMapReset')) { Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
     $tcWasRunning = Is-ProcessRunning @('TOTALCMD64','TOTALCMD')
     if ($tcWasRunning) {
-        # TOTALCMD64 and TOTALCMD are alternatives. Missing one is expected and must
-        # never be treated as a failure. Stop only processes that actually exist.
         foreach ($name in @('TOTALCMD64','TOTALCMD')) {
             $proc = Get-Process -Name $name -ErrorAction SilentlyContinue
             if ($proc) { $proc | Stop-Process -ErrorAction SilentlyContinue }
@@ -176,7 +174,7 @@ try {
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.15 FAST/SLOW engine and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.16 diagnostic engine and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
     $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
     $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
