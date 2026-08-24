@@ -86,10 +86,26 @@ bool Database::ResetRecursiveActivity(const FolderIdentity& identity) {
         "DELETE FROM file_activity WHERE volume_id=?1 AND ("
         " ?2='' OR relative_path=?2 OR substr(relative_path,1,length(?2)+1)=?2||'\\'"
         ");";
+    static constexpr const char* kTrackedSql =
+        "DELETE FROM tracked_objects WHERE volume_id=?1 AND ("
+        " ?2='' OR relative_path=?2 OR substr(relative_path,1,length(?2)+1)=?2||'\\'"
+        ");";
 
     bool ok = ExecTreeDelete(db_, kUsageSql, identity);
     if (ok) ok = ExecTreeDelete(db_, kFoldersSql, identity);
     if (ok) ok = ExecTreeDelete(db_, kFilesSql, identity);
+    // Older databases may not have tracked_objects yet. Lifecycle creates it
+    // before normal use; ignore 'no such table' only by checking existence.
+    if (ok) {
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db_, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tracked_objects';", -1, &st, nullptr) == SQLITE_OK) {
+            const bool exists = sqlite3_step(st) == SQLITE_ROW;
+            sqlite3_finalize(st);
+            if (exists) ok = ExecTreeDelete(db_, kTrackedSql, identity);
+        } else if (st) {
+            sqlite3_finalize(st);
+        }
+    }
 
     sqlite3_exec(db_, ok ? "COMMIT;" : "ROLLBACK;", nullptr, nullptr, nullptr);
     return ok;
