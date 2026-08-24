@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.16 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.17 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -27,9 +27,10 @@ if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_
     message(FATAL_ERROR "Could not generate the guarded FolderHeatMap 1.11 engine source.")
 endif()
 
-# 1.16 is intentionally diagnostic-only. It injects logging/telemetry around
-# filesystem delete/create notifications and SLOW load without changing DB,
-# lifecycle decisions, cache publication policy or repaint behavior.
+# 1.17 promotes the proven 1.16 filesystem diagnostics into lifecycle handling:
+# immediate tombstones, prioritized SLOW subtree purge, same-volume File ID
+# validation, and safe external DELETE+recreate detection. Diagnostic logging is
+# intentionally retained for verification.
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
         "-DINPUT=${FHM_ENGINE_GENERATED_CPP}"
@@ -37,7 +38,7 @@ execute_process(
     RESULT_VARIABLE FHM_DIAG_INJECT_RESULT
 )
 if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
-    message(FATAL_ERROR "Could not inject FolderHeatMap 1.16 deletion diagnostics.")
+    message(FATAL_ERROR "Could not inject FolderHeatMap 1.17 deletion lifecycle.")
 endif()
 
 add_library(FolderHeatMap SHARED
@@ -56,6 +57,7 @@ add_executable(FolderHeatMapEngine
     src/ResetDatabase.cpp
     src/RuntimeCacheDatabase.cpp
     src/LifecycleDatabase.cpp
+    src/TrackedLookupDatabase.cpp
     src/LifecycleBatchDatabase.cpp
     src/Lifecycle.cpp
     src/Settings.cpp
