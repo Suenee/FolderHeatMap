@@ -4,6 +4,16 @@ endif()
 
 file(READ "${INPUT}" ENGINE)
 
+# 1.18-safe injection: the deletion patch already coalesces descendant
+# tombstones inside HandleObservedRemoval. This step is therefore idempotent.
+# Keep the file as a compatibility build stage so older CMakeLists/upgraders do
+# not fail just because there is no longer a separate 1.17 anchor to replace.
+string(FIND "${ENGINE}" "coveredDescendants" HAS_COALESCING)
+if(NOT HAS_COALESCING EQUAL -1)
+    message(STATUS "FolderHeatMap delete queue coalescing already present: ${INPUT}")
+    return()
+endif()
+
 set(OLD [=[        for (auto it = g_tombstones.begin(); it != g_tombstones.end();) {
             if (CoveredByPath(*it, key)) it = g_tombstones.erase(it);
             else ++it;
@@ -25,8 +35,12 @@ set(NEW [=[        std::vector<std::wstring> coveredDescendants;
 
 string(FIND "${ENGINE}" "${OLD}" POS)
 if(POS EQUAL -1)
-    message(FATAL_ERROR "1.17 delete coalescing anchor not found")
+    # Nothing to patch is not an error in 1.18. The lifecycle injector may
+    # already contain the finalized coalescing implementation.
+    message(STATUS "FolderHeatMap delete queue coalescing stage not required: ${INPUT}")
+    return()
 endif()
+
 string(REPLACE "${OLD}" "${NEW}" ENGINE "${ENGINE}")
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.17 delete queue coalescing: ${INPUT}")
+message(STATUS "Injected FolderHeatMap delete queue coalescing: ${INPUT}")
