@@ -25,6 +25,7 @@ vendor/sqlite/
 *.sqlite
 *.sqlite3
 *.log
+logs/
 
 # IDE / editor
 .vs/
