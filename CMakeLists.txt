@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.18 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.19 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -19,12 +19,16 @@ if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_
     message(FATAL_ERROR "Could not generate the guarded FolderHeatMap 1.11 engine source.")
 endif()
 
-# 1.18 keeps watcher-driven delete tombstones/purge, but makes identity mismatch
-# diagnostic-only after the 1.17 root-volume runaway regression. Root deletion
-# and purge are hard-blocked. Diagnostic logging remains enabled for verification.
+# 1.19 keeps the safe 1.18 delete lifecycle and adds a canonical native Win32
+# identity primitive plus non-destructive diagnostics. Identity mismatch remains
+# diagnostic-only until the canonical tuple is proven stable by tests.
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectDeletionDiagnostics.cmake" RESULT_VARIABLE FHM_DIAG_INJECT_RESULT)
 if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
-    message(FATAL_ERROR "Could not inject FolderHeatMap 1.18 safe deletion lifecycle.")
+    message(FATAL_ERROR "Could not inject FolderHeatMap safe deletion lifecycle.")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectCanonicalIdentityDiagnostics.cmake" RESULT_VARIABLE FHM_IDENTITY_DIAG_RESULT)
+if(NOT FHM_IDENTITY_DIAG_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not inject FolderHeatMap 1.19 canonical identity diagnostics.")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/CoalesceDeleteQueue.cmake" RESULT_VARIABLE FHM_DELETE_COALESCE_RESULT)
 if(NOT FHM_DELETE_COALESCE_RESULT EQUAL 0)
@@ -68,15 +72,3 @@ target_include_directories(FolderHeatMapReset PRIVATE src vendor/sqlite)
 target_compile_features(FolderHeatMapReset PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMapReset PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
 target_link_libraries(FolderHeatMapReset PRIVATE shell32 advapi32)
-
-if(MSVC)
-    target_compile_options(FolderHeatMap PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_compile_options(FolderHeatMapEngine PRIVATE /W4 /permissive- /EHsc /utf-8)
-    target_compile_options(FolderHeatMapConfig PRIVATE /W4 /permissive- /EHsc /utf-8 /FIwindows.h /FIshellapi.h)
-    target_compile_options(FolderHeatMapReset PRIVATE /W4 /permissive- /EHsc /utf-8)
-    set_source_files_properties(vendor/sqlite/sqlite3.c PROPERTIES COMPILE_OPTIONS "/W0")
-endif()
-set_target_properties(FolderHeatMap PROPERTIES PREFIX "" SUFFIX ".wdx64" OUTPUT_NAME "FolderHeatMap")
-set_target_properties(FolderHeatMapEngine PROPERTIES OUTPUT_NAME "FolderHeatMapEngine")
-set_target_properties(FolderHeatMapConfig PROPERTIES OUTPUT_NAME "FolderHeatMapConfig")
-set_target_properties(FolderHeatMapReset PROPERTIES OUTPUT_NAME "FolderHeatMapReset")
