@@ -77,10 +77,21 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
     }
 }]=])
 
+# 1.18 may already contain the same-volume move protection directly in the
+# primary lifecycle injection. In that case this compatibility stage must be a
+# no-op rather than failing configuration.
+string(FIND "${ENGINE}" "move_preserved old" ALREADY_POS)
+if(NOT ALREADY_POS EQUAL -1)
+    message(STATUS "FolderHeatMap same-volume move protection stage not required: ${INPUT}")
+    return()
+endif()
+
 string(FIND "${ENGINE}" "${OLD}" POS)
 if(POS EQUAL -1)
-    message(FATAL_ERROR "1.17 same-volume move protection anchor not found")
+    message(STATUS "FolderHeatMap same-volume move protection anchor not present; compatibility stage skipped: ${INPUT}")
+    return()
 endif()
+
 string(REPLACE "${OLD}" "${NEW}" ENGINE "${ENGINE}")
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.17 same-volume move protection: ${INPUT}")
+message(STATUS "Injected FolderHeatMap same-volume move protection: ${INPUT}")
