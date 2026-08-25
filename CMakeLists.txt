@@ -43,6 +43,9 @@ add_library(FolderHeatMap SHARED src/FolderHeatMapCounterOnly.cpp)
 target_include_directories(FolderHeatMap PRIVATE src)
 target_compile_features(FolderHeatMap PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMap PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+# Total Commander x64 content plugins use the .wdx64 extension. CMake otherwise
+# emits a normal .dll, which makes upgrade.ps1 correctly reject the package.
+set_target_properties(FolderHeatMap PROPERTIES PREFIX "" SUFFIX ".wdx64")
 
 add_executable(FolderHeatMapEngine "${FHM_ENGINE_GENERATED_CPP}" src/DiagnosticWatcher.cpp src/FolderIdentity.cpp src/Database.cpp src/DatabaseBaseline.cpp src/ResetDatabase.cpp src/RuntimeCacheDatabase.cpp src/LifecycleDatabase.cpp src/TrackedLookupDatabase.cpp src/LifecycleBatchDatabase.cpp src/Lifecycle.cpp src/Settings.cpp vendor/sqlite/sqlite3.c)
 target_include_directories(FolderHeatMapEngine PRIVATE src vendor/sqlite)
