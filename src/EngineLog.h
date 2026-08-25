@@ -47,6 +47,7 @@ public:
         WriteUnlocked(category, message);
     }
 
+    void WriteWide(const char* category, const std::wstring& message) { Write(category, Utf8(message)); }
     void WritePath(const char* category, const char* action, const std::wstring& path) { Write(category, std::string(action) + " " + Utf8(path)); }
     Mode GetMode() const { std::scoped_lock lock(mutex_); return mode_; }
     std::wstring Path() const { std::scoped_lock lock(mutex_); return path_.wstring(); }
