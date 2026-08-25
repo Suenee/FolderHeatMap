@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -12,12 +14,27 @@ struct FolderIdentity {
     std::wstring mountPoint;
 };
 
+// Canonical native Win32 filesystem identity. FILE_ID_INFO returns both parts
+// from one handle/query, so callers never compare IDs produced by different
+// APIs or representations.
+struct FilesystemIdentity {
+    std::uint64_t volumeSerial = 0;
+    std::array<unsigned char, 16> fileId{};
+    bool valid = false;
+};
+
 bool IsDirectory(const std::wstring& path);
 std::optional<FolderIdentity> ResolveFolderIdentity(const std::wstring& path);
 
-// Stable only inside one filesystem volume. This is intentionally separate
-// from the path identity: same path + different object ID means the previous
-// filesystem object no longer exists and its cached/history data is stale.
+// Resolve canonical identity through CreateFileW + GetFileInformationByHandleEx(FileIdInfo).
+// Directories are opened with FILE_FLAG_BACKUP_SEMANTICS. A zero 128-bit File ID
+// is treated as unsupported/invalid and is never eligible for lifecycle decisions.
+std::optional<FilesystemIdentity> ResolveFilesystemIdentity(const std::wstring& path, bool isDirectory);
+std::wstring EncodeFilesystemFileId(const FilesystemIdentity& identity);
+std::wstring DescribeFilesystemIdentity(const FilesystemIdentity& identity);
+
+// Compatibility wrapper used by the existing tracked_objects schema. It returns
+// only the canonical 128-bit File ID; volume identity remains stored separately.
 std::optional<std::wstring> ResolveFilesystemObjectId(const std::wstring& path, bool isDirectory);
 
 // Resolve a previously known per-volume File ID back to its current path.
