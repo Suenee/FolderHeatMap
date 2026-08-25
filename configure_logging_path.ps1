@@ -10,7 +10,8 @@ $ErrorActionPreference = 'Stop'
 
 $settingsFull = [System.IO.Path]::GetFullPath($SettingsIni)
 $repoFull = [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
-$logPath = Join-Path $repoFull 'FolderHeatMap.log'
+$logsDir = Join-Path $repoFull 'logs'
+$logPath = Join-Path $logsDir 'FolderHeatMap.log'
 
 $settingsDir = Split-Path -Parent $settingsFull
 if (-not (Test-Path -LiteralPath $settingsDir)) {
@@ -18,6 +19,9 @@ if (-not (Test-Path -LiteralPath $settingsDir)) {
 }
 if (-not (Test-Path -LiteralPath $settingsFull)) {
     New-Item -ItemType File -Path $settingsFull -Force | Out-Null
+}
+if (-not (Test-Path -LiteralPath $logsDir)) {
+    New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 }
 
 Add-Type @'
@@ -33,12 +37,22 @@ if (-not [FolderHeatMapIniNative]::WritePrivateProfileString('Logging', 'Path', 
 }
 [FolderHeatMapIniNative]::WritePrivateProfileString($null, $null, $null, $settingsFull) | Out-Null
 
-# Remove the obsolete profile-local log created by the short-lived 1.08 build.
-$legacyLog = Join-Path $settingsDir 'FolderHeatMap.log'
-if (-not [string]::Equals($legacyLog, $logPath, [System.StringComparison]::OrdinalIgnoreCase) -and
-    (Test-Path -LiteralPath $legacyLog)) {
-    Remove-Item -LiteralPath $legacyLog -Force
-    Write-Host "Removed legacy profile log: $legacyLog"
+# Migrate historical runtime logs into the permanent repository-local log directory.
+$legacyLogs = @(
+    (Join-Path $repoFull 'FolderHeatMap.log'),
+    (Join-Path $settingsDir 'FolderHeatMap.log')
+)
+foreach ($legacyLog in $legacyLogs) {
+    if (-not [string]::Equals($legacyLog, $logPath, [System.StringComparison]::OrdinalIgnoreCase) -and
+        (Test-Path -LiteralPath $legacyLog)) {
+        $destination = Join-Path $logsDir ([IO.Path]::GetFileName($legacyLog))
+        if (Test-Path -LiteralPath $destination) {
+            $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
+            $destination = Join-Path $logsDir ("FolderHeatMap-$stamp.log")
+        }
+        Move-Item -LiteralPath $legacyLog -Destination $destination -Force
+        Write-Host "Moved legacy log: $legacyLog -> $destination"
+    }
 }
 
 Write-Host "FolderHeatMap log path: $logPath"
