@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.19 - 25.08.2026
+
+- Reworked filesystem identity around one canonical native Win32 primitive: `CreateFileW` + `GetFileInformationByHandleEx(FileIdInfo)` using `FILE_ID_INFO`.
+- Canonical identity now carries both the 64-bit volume serial and the full 128-bit `FILE_ID_128`; the existing tracked-object database continues to store the per-volume 128-bit File ID while volume identity remains separate.
+- Directory handles use `FILE_FLAG_BACKUP_SEMANTICS` and `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`.
+- A zero 128-bit File ID is treated as unsupported/invalid and can never trigger lifecycle invalidation or deletion.
+- Added detailed non-destructive identity diagnostics showing path, stored File ID, current volume serial and current full 128-bit File ID, plus explicit match/unavailable states.
+- Identity mismatch remains diagnostic-only. Watcher-confirmed `REMOVED` remains the only active destructive delete signal while the canonical identity primitive is being verified.
+- Kept the 1.18 drive-root tombstone/purge safety barrier and 10 MiB per-run log cap.
+- Added a dedicated build injection stage for canonical identity diagnostics so the identity experiment is isolated from the proven watcher-delete lifecycle.
+
 ## 1.18 - 25.08.2026
 
 - Hotfixed the 1.17 lifecycle regression where a false identity mismatch on a healthy volume root could enter a destructive `identity_mismatch -> tombstone -> purge -> persist` loop, repeatedly clearing runtime data and flooding the engine log.
