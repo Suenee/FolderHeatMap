@@ -24,6 +24,18 @@ Purpose: prove that Visits are recorded even when no FolderHeatMap custom column
 6. Inspect `logs\FolderHeatMap.log`. Each independent panel navigation should appear as `[NAV-TC] LEFT accepted ...` or `[NAV-TC] RIGHT accepted ...`.
 7. WDX diagnostic callbacks may appear separately as `[DIAG_TC]`; they must not be required for Visits to increase.
 
+## File write tracking test (1.28)
+
+Purpose: prove that writes to existing files update `Writes` and file heat without relying on a Total Commander refresh callback.
+
+1. Enter a test directory and choose an existing text/document file whose current `Writes` value is known.
+2. Open the file in an editor, change its content, save once, and keep Total Commander in the same directory.
+3. Verify `logs\FolderHeatMap.log` contains `[DIAG_FS] action=MODIFIED`, then `[FILE_WRITE] accepted` and `[FILE_WRITE] persisted` for that file.
+4. Refresh the Total Commander view if required for display only; verify `Writes` increased by one and file heat/color reacts.
+5. Save the same file again after more than one second and verify another write is counted.
+6. Perform an application save that produces several filesystem notifications close together. `[FILE_WRITE] coalesced` may appear, but one logical save must not inflate `Writes` several times.
+7. Confirm the parent directory `Visits` value did not increase merely because a child file was saved.
+
 ## One-second debounce test
 
 1. Keep a test directory selected and trigger rapid repeated navigation/Enter actions within the same whole second.
