@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.25'
-$Revision = '1.25-deploy-lock-fix'
+$Version = '1.27'
+$Revision = '1.27-tc-deploy-guard'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -100,17 +100,34 @@ function Move-RootLogsIntoLogsDirectory {
         Info ("[LOGS] Moved $($_.Name) -> logs\$([IO.Path]::GetFileName($destination))")
     }
 }
+function Stop-TotalCommanderForDeploy {
+    param([string]$Reason = 'deployment')
+    $names = @('TOTALCMD64','TOTALCMD')
+    if (-not (Is-ProcessRunning $names)) { return }
+    $running = @(Get-Process -Name $names -ErrorAction SilentlyContinue)
+    $pids = ($running | ForEach-Object { $_.Id }) -join ','
+    Warn ("Total Commander is running during $Reason (PID(s): $pids); stopping it before live WDX replacement.")
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ((Is-ProcessRunning $names) -and [DateTime]::UtcNow -lt $deadline) {
+        Get-Process -Name $names -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 250
+    }
+    if (Is-ProcessRunning $names) { Fail 'DEPLOY' 'Total Commander keeps running/restarting and still owns the live plugin. Deployment cannot safely continue.' }
+}
 function Copy-FileWithRetry {
     param(
         [Parameter(Mandatory=$true)][string]$Source,
         [Parameter(Mandatory=$true)][string]$Destination,
         [string]$Phase = 'DEPLOY',
         [int]$Attempts = 30,
-        [int]$DelayMs = 1000
+        [int]$DelayMs = 1000,
+        [switch]$GuardTotalCommander
     )
     $parent = Split-Path -Parent $Destination
     if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        if ($GuardTotalCommander) { Stop-TotalCommanderForDeploy -Reason ("deployment attempt $attempt") }
         try {
             Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
             if ($attempt -gt 1) { Info ("[DEPLOY] Copy succeeded after $attempt attempts: $Destination") }
@@ -232,7 +249,7 @@ try {
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.25 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.27 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
     $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe')
     foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
@@ -246,9 +263,13 @@ try {
     Info ("[DIST] Package staging ready: $package")
 
     $FailPhase = 'DEPLOY'; Info '[7/7] Deploying staged package to Total Commander installation...'
+    Stop-TotalCommanderForDeploy -Reason 'pre-deploy guard'
     $dist = Join-Path $Repo 'dist'
     New-Item -ItemType Directory -Path $dist -Force | Out-Null
-    foreach ($f in $artifacts) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' }
+    foreach ($f in $artifacts) {
+        $guardTc = ($f -eq 'FolderHeatMap.wdx64')
+        Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' -GuardTotalCommander:$guardTc
+    }
     foreach ($f in @('configure.cmd','README.md','TESTING.md')) { if (Test-Path (Join-Path $package $f)) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' } }
 
     if ($tc.Plugin) {
@@ -256,14 +277,19 @@ try {
         $distPlugin = [IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
         if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) {
             $pluginDir = Split-Path -Parent $pluginFull
-            Copy-FileWithRetry -Source (Join-Path $package 'FolderHeatMap.wdx64') -Destination $pluginFull -Phase 'DEPLOY'
+            Copy-FileWithRetry -Source (Join-Path $package 'FolderHeatMap.wdx64') -Destination $pluginFull -Phase 'DEPLOY' -GuardTotalCommander
             Copy-FileWithRetry -Source (Join-Path $package 'FolderHeatMapEngine.exe') -Destination (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Phase 'DEPLOY'
             Info ("[TC] Updated WDX and engine in: $pluginDir")
         } else {
             Info '[TC] Registered plugin points to dist; staged deployment updated the live WDX there.'
         }
     }
-    if ($tcWasRunning -and $tc.Exe) { Start-Process -FilePath $tc.Exe | Out-Null }
+
+    Stop-TotalCommanderForDeploy -Reason 'post-deploy verification'
+    if ($tcWasRunning -and $tc.Exe) {
+        Info '[TC] Restarting Total Commander after successful deployment.'
+        Start-Process -FilePath $tc.Exe | Out-Null
+    }
 
     Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green
     Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $LogsDir\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
