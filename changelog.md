@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.28 - 27.08.2026
+
+- Added live file-write tracking for existing files. The filesystem watcher now subscribes to `FILE_NOTIFY_CHANGE_LAST_WRITE` and `FILE_NOTIFY_CHANGE_SIZE` in addition to name/creation changes.
+- `FILE_ACTION_MODIFIED` events for files are forwarded into the engine activity pipeline and persisted through the existing `ObserveFileWrite()` database path.
+- Coalesced repeated modification notifications for the same file within one second so one application save does not inflate `Writes` because Windows emitted several filesystem notifications.
+- File write updates refresh both the file cache entry and its parent directory heat contribution without incrementing the parent directory `Visits` counter.
+- Kept deletion/rename lifecycle handling isolated; file-write tracking is injected by a separate guarded CMake stage so the proven delete lifecycle remains unchanged.
+- Added `[FILE_WRITE] accepted`, `[FILE_WRITE] coalesced`, and `[FILE_WRITE] persisted` diagnostics.
+- Version updated to 1.28 (`1.28-file-write-tracking`).
+
 ## 1.27 - 27.08.2026
 
 - Confirmed with `tasklist /m FolderHeatMap.wdx64` that a restarted `TOTALCMD64.EXE` process was the persistent owner of the live `dist\FolderHeatMap.wdx64` lock during deployment.
