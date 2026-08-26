@@ -115,14 +115,6 @@ int ReadRamValue(const wchar_t* fileName, int fieldIndex, void* fieldValue) {
     return type;
 }
 
-void PublishNavigation(const wchar_t* path) {
-    if (!g_shared || !path || !*path) return;
-    const std::wstring normalized = fhm::runtime::NormalizePath(path);
-    wcsncpy_s(g_shared->currentDirectory, normalized.c_str(), _TRUNCATE);
-    MemoryBarrier();
-    InterlockedIncrement(&g_shared->navigationSeq);
-}
-
 void PublishStateEvent(int state, const wchar_t* path) {
     if (!g_shared) return;
     InterlockedExchange(&g_shared->stateCode, state);
@@ -140,8 +132,7 @@ void CloseRuntime() {
     if (g_shared && g_clientRegistered) {
         InterlockedDecrement(&g_shared->clientCount);
         g_clientRegistered = false;
-        // 1.22: WDX is a display client only. Unloading a content-column view must
-        // never terminate the independent engine/navigation monitor.
+        // WDX is a display client only. Its lifetime must not own the engine.
     }
     if (g_shared) { UnmapViewOfFile(g_shared); g_shared = nullptr; }
     if (g_mapping) { CloseHandle(g_mapping); g_mapping = nullptr; }
@@ -160,6 +151,7 @@ extern "C" __declspec(dllexport) void __stdcall ContentSetDefaultParams(ContentD
         InterlockedExchange(&g_shared->shutdownRequested, 0);
         g_clientRegistered = true;
     }
+    // Backup launcher only: normal 1.22 lifetime comes from start_engine.ps1.
     LaunchEngine(dps);
 }
 
@@ -187,10 +179,8 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fi
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
-    // Kept in 1.22 as a diagnostic/reference channel. The engine's independent
-    // Total Commander monitor is authoritative for visits.
+    // Diagnostic/reference channel only. It never creates a visit in 1.22.
     PublishStateEvent(state, path);
-    if (state == contst_readnewdir) PublishNavigation(path);
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformation(int state, char* path) {
