@@ -75,7 +75,8 @@ function Resolve-TC {
     $tcIni = $env:COMMANDER_INI
     $keys = @('HKCU:\Software\Ghisler\Total Commander','HKLM:\Software\Ghisler\Total Commander','HKLM:\Software\Wow6432Node\Ghisler\Total Commander')
     if (-not $tcPath) { foreach ($k in $keys) { $v = Get-RegValue $k 'InstallDir'; if ($v) { $tcPath = $v; break } } }
-    if (-not $tcIni) { foreach ($k in $keys) { $v = Get-RegValue $k 'IniFileName'; if ($v) { $tcIni = $v; break } } }
+    if (-not $tcIni) { foreach ($k in $keys) { $v = Get-RegValue $k 'IniFileName'; if ($v) { $tcIni = $v; break } }
+    }
     $tcExe = $null
     if ($tcPath) { foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { $p = Join-Path $tcPath $name; if (Test-Path $p) { $tcExe = $p; break } } }
     $plugin = $null
@@ -93,6 +94,20 @@ function Move-RootLogsIntoLogsDirectory {
         }
         Move-Item -LiteralPath $_.FullName -Destination $destination -Force
         Info ("[LOGS] Moved $($_.Name) -> logs\$([IO.Path]::GetFileName($destination))")
+    }
+}
+function Reset-BootstrapFilesToRemote {
+    foreach ($f in @('upgrade.cmd','upgrade.ps1')) {
+        & git diff --quiet -- "$f"
+        $dirty = ($LASTEXITCODE -ne 0)
+        if (-not $dirty) {
+            & git diff --cached --quiet -- "$f"
+            $dirty = ($LASTEXITCODE -ne 0)
+        }
+        if ($dirty) {
+            Warn "$f changed during/bootstrap before verification; restoring exact origin/devel version."
+            Run-Native -Phase 'SELF-UPDATE' -Exe 'git.exe' -ArgumentList @('restore','--source=origin/devel','--staged','--worktree','--',$f) | Out-Null
+        }
     }
 }
 
@@ -126,13 +141,14 @@ try {
     }
 
     Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('pull','--ff-only','origin','devel') | Out-Null
+    Reset-BootstrapFilesToRemote
 
     $head = (& git rev-parse HEAD 2>$null).Trim()
     $remoteHead = (& git rev-parse origin/devel 2>$null).Trim()
     if (-not $head -or -not $remoteHead -or $head -ne $remoteHead) { Fail $FailPhase 'Local devel HEAD is not identical to origin/devel after update.' }
     foreach ($f in @('upgrade.cmd','upgrade.ps1')) {
         & git diff --quiet -- "$f"
-        if ($LASTEXITCODE -ne 0) { Fail $FailPhase "$f has local working-tree changes after update." }
+        if ($LASTEXITCODE -ne 0) { Fail $FailPhase "$f has local working-tree changes after self-repair." }
         $headBlob = (& git rev-parse ("HEAD:$f") 2>$null).Trim()
         $remoteBlob = (& git rev-parse ("origin/devel:$f") 2>$null).Trim()
         if (-not $headBlob -or -not $remoteBlob -or $headBlob -ne $remoteBlob) { Fail $FailPhase "$f in HEAD is not identical to origin/devel after update." }
@@ -176,18 +192,9 @@ try {
             foreach ($name in @('TOTALCMD64','TOTALCMD')) { Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
         }
     }
-
-    # 1.22 engine is intentionally persistent and no longer dies when WDX unloads.
-    # Allow an old pre-1.22 engine a short graceful window, then stop the engine as
-    # a normal upgrade action. Durable DB writes are already committed; runtime
-    # cache is derivative and safely rebuildable.
-    $deadline = [DateTime]::UtcNow.AddSeconds(2)
-    while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
-    if (Is-ProcessRunning @('FolderHeatMapEngine')) {
-        Info '[ENGINE] Stopping persistent FolderHeatMapEngine for upgrade.'
-        Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force
-        Start-Sleep -Milliseconds 250
-    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    if (Is-ProcessRunning @('FolderHeatMapEngine')) { Warn 'FolderHeatMapEngine did not finish graceful shutdown within 30 seconds; forcing it to stop.'; Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force }
 
     Move-RootLogsIntoLogsDirectory
 
@@ -211,39 +218,15 @@ try {
     foreach ($f in $artifacts) { Copy-Item (Join-Path "$build\Release" $f) (Join-Path $dist $f) -Force }
     foreach ($f in @('configure.cmd','README.md','TESTING.md')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item (Join-Path $Repo $f) (Join-Path $dist $f) -Force } }
 
-    $FailPhase = 'DEPLOY'; Info '[7/7] Deploying to Total Commander and starting independent engine...'
+    $FailPhase = 'DEPLOY'; Info '[7/7] Deploying to Total Commander...'
     if ($tc.Plugin) {
         $pluginFull = [IO.Path]::GetFullPath($tc.Plugin); $distPlugin = [IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
-        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) {
-            $pluginDir = Split-Path -Parent $pluginFull
-            Copy-Item $distPlugin $pluginFull -Force
-            Copy-Item (Join-Path $dist 'FolderHeatMapEngine.exe') (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Force
-            Info ("[TC] Updated WDX and engine in: $pluginDir")
-        } else {
-            Info '[TC] Registered plugin already points to dist; engine is beside the WDX.'
-        }
+        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) { $pluginDir = Split-Path -Parent $pluginFull; Copy-Item $distPlugin $pluginFull -Force; Copy-Item (Join-Path $dist 'FolderHeatMapEngine.exe') (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Force; Info ("[TC] Updated WDX and engine in: $pluginDir") } else { Info '[TC] Registered plugin already points to dist; engine is beside the WDX.' }
     }
-
-    $engineLauncher = Join-Path $Repo 'start_engine.ps1'
-    if (-not (Test-Path -LiteralPath $engineLauncher)) { Fail $FailPhase 'start_engine.ps1 is missing.' }
-    $savedPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        & powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $engineLauncher -Install 2>&1 | ForEach-Object { Info ([string]$_) }
-        $engineRc = $LASTEXITCODE
-    } finally { $ErrorActionPreference = $savedPreference }
-    if ($engineRc -ne 0) { Fail $FailPhase 'Independent FolderHeatMap engine could not be registered/started.' }
-    Info '[ENGINE] Independent engine started; HKCU startup registration installed.'
-
     if ($tcWasRunning -and $tc.Exe) { Start-Process -FilePath $tc.Exe | Out-Null }
 
     Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green
-    Info ("WDX:         $dist\FolderHeatMap.wdx64")
-    Info ("Engine:      $dist\FolderHeatMapEngine.exe")
-    Info ("Config:      $dist\FolderHeatMapConfig.exe")
-    Info ("Engine log:  $LogsDir\FolderHeatMap.log")
-    Info ("Upgrade log: $Log")
-    Write-Line '' Gray
+    Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $LogsDir\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
     if ($HadWarning) { Write-Line 'STATUS: WARNING - phase=COMPLETE' Yellow } else { Write-Line 'STATUS: SUCCESS - phase=COMPLETE' Green }
     exit 0
 }
