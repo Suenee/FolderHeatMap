@@ -143,6 +143,7 @@ This section is a mandatory pre-flight checklist when creating or modifying an u
 - **Assuming a process stopped immediately:** wait for a defined graceful-shutdown interval before deployment.
 - **Graceful shutdown timeout hides data-flush risk:** if the application persists cache/database state on exit, timeout + forced kill must be a visible warning.
 - **Building into live `dist`:** `POST_BUILD` copy can fail because the old executable/plugin is still locked by the host, antivirus, indexer, or scanner. Build only to the build tree; deploy later.
+- **Using live `dist` as the DIST package:** if Total Commander is registered directly against `dist\FolderHeatMap.wdx64`, preparing `dist` is already a live deployment and can fail before the DEPLOY phase with a sharing violation. Symptom: build succeeds, then DIST fails with `file is being used by another process`. Prevention: stage packages in an isolated build-tree directory, verify them there, and only then copy into the live destination during DEPLOY with bounded retry and explicit lock diagnostics.
 - **Host process still owns plugin DLL/WDX:** stopping only the worker may not release the plugin. Identify all file owners/host processes required by the project.
 - **Partial deployment:** never begin replacing live artifacts before all required build outputs have been verified.
 
