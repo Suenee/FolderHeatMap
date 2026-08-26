@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.23 - 26.08.2026
+
+- Fixed the self-update bootstrap loop that could report `upgrade.cmd has local working-tree changes after self-repair` after a successful pull.
+- Removed bootstrap working-tree repair/verification for `upgrade.cmd`; the launcher is no longer treated as a byte-identical runtime artifact after repository mutation.
+- The authoritative upgrader remains the temporary `upgrade.ps1` extracted from `origin/devel` before execution, matching the documented upgrade protocol.
+- Self-update verification now relies on `HEAD == origin/devel` plus Git blob identity for `upgrade.ps1`, avoiding CRLF/LF false positives on Windows working-tree files.
+- Kept `.gitattributes` CRLF rules for Windows scripts unchanged.
+- Version updated to 1.23 (`1.23-bootstrap-protocol-fix`).
+
 ## 1.22 - 26.08.2026
 
 - Added an independent native Win32 Total Commander navigation monitor in `FolderHeatMapEngine.exe`.
