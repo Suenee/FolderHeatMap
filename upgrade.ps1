@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.24'
-$Revision = '1.24-bootstrap-sync-fix'
+$Version = '1.25'
+$Revision = '1.25-deploy-lock-fix'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -100,6 +100,30 @@ function Move-RootLogsIntoLogsDirectory {
         Info ("[LOGS] Moved $($_.Name) -> logs\$([IO.Path]::GetFileName($destination))")
     }
 }
+function Copy-FileWithRetry {
+    param(
+        [Parameter(Mandatory=$true)][string]$Source,
+        [Parameter(Mandatory=$true)][string]$Destination,
+        [string]$Phase = 'DEPLOY',
+        [int]$Attempts = 30,
+        [int]$DelayMs = 1000
+    )
+    $parent = Split-Path -Parent $Destination
+    if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            if ($attempt -gt 1) { Info ("[DEPLOY] Copy succeeded after $attempt attempts: $Destination") }
+            return
+        }
+        catch {
+            if ($attempt -ge $Attempts) { Fail $Phase ("Could not replace '$Destination' after $Attempts attempts. The target is still locked or unavailable. Last error: $($_.Exception.Message)") }
+            if ($attempt -eq 1) { Warn ("Deployment target is temporarily locked; retrying for up to $([int](($Attempts * $DelayMs) / 1000)) seconds: $Destination") }
+            elseif (($attempt % 5) -eq 0) { Info ("[DEPLOY] Still waiting for target lock release ($attempt/$Attempts): $Destination") }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
 
 try {
     Set-Location $Repo
@@ -121,9 +145,6 @@ try {
     $currentBranch = (& git branch --show-current).Trim()
     if ($currentBranch -ne 'devel') { Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('switch','devel') | Out-Null }
 
-    # Preserve user tracked changes, but never treat the bootstrap files as user state.
-    # They are authoritative from origin/devel and may look dirty solely because of
-    # Windows line-ending materialization.
     & git diff --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'
     $userTrackedDirty = ($LASTEXITCODE -ne 0)
     & git diff --cached --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'
@@ -133,10 +154,6 @@ try {
         Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-m','FolderHeatMap automatic pre-upgrade stash') | Out-Null
     }
 
-    # The temporary runner is already executing from origin/devel. Synchronize the
-    # tracked installation tree deterministically to that same commit. This reset is
-    # safe here because non-bootstrap tracked edits were stashed above and untracked
-    # runtime data is intentionally untouched.
     Info '[BOOTSTRAP] Synchronizing tracked tree to origin/devel.'
     Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('reset','--hard','origin/devel') | Out-Null
 
@@ -184,11 +201,21 @@ try {
         if (Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) {
             Warn 'Normal Total Commander close timed out; forcing process termination.'
             foreach ($name in @('TOTALCMD64','TOTALCMD')) { Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
+            $deadline = [DateTime]::UtcNow.AddSeconds(5)
+            while ((Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+            if (Is-ProcessRunning @('TOTALCMD64','TOTALCMD')) { Fail $FailPhase 'Total Commander is still running after forced shutdown; deployment would be unsafe.' }
         }
     }
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
-    if (Is-ProcessRunning @('FolderHeatMapEngine')) { Warn 'FolderHeatMapEngine did not finish graceful shutdown within 30 seconds; forcing it to stop.'; Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force }
+    if (Is-ProcessRunning @('FolderHeatMapEngine')) {
+        Warn 'FolderHeatMapEngine did not finish graceful shutdown within 30 seconds; forcing it to stop.'
+        Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+        if (Is-ProcessRunning @('FolderHeatMapEngine')) { Fail $FailPhase 'FolderHeatMapEngine is still running after forced shutdown; deployment would be unsafe.' }
+    }
+    Start-Sleep -Milliseconds 500
 
     Move-RootLogsIntoLogsDirectory
 
@@ -205,17 +232,36 @@ try {
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.24 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.25 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
-    $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
-    $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
-    foreach ($f in $artifacts) { Copy-Item (Join-Path "$build\Release" $f) (Join-Path $dist $f) -Force }
-    foreach ($f in @('configure.cmd','README.md','TESTING.md')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item (Join-Path $Repo $f) (Join-Path $dist $f) -Force } }
+    $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe')
+    foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
 
-    $FailPhase = 'DEPLOY'; Info '[7/7] Deploying to Total Commander...'
+    $FailPhase = 'DIST'; Info '[6/7] Preparing isolated package staging...'
+    $package = Join-Path $build 'package'
+    if (Test-Path $package) { Remove-Item $package -Recurse -Force }
+    New-Item -ItemType Directory -Path $package -Force | Out-Null
+    foreach ($f in $artifacts) { Copy-Item -LiteralPath (Join-Path "$build\Release" $f) -Destination (Join-Path $package $f) -Force }
+    foreach ($f in @('configure.cmd','README.md','TESTING.md')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item -LiteralPath (Join-Path $Repo $f) -Destination (Join-Path $package $f) -Force } }
+    Info ("[DIST] Package staging ready: $package")
+
+    $FailPhase = 'DEPLOY'; Info '[7/7] Deploying staged package to Total Commander installation...'
+    $dist = Join-Path $Repo 'dist'
+    New-Item -ItemType Directory -Path $dist -Force | Out-Null
+    foreach ($f in $artifacts) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' }
+    foreach ($f in @('configure.cmd','README.md','TESTING.md')) { if (Test-Path (Join-Path $package $f)) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' } }
+
     if ($tc.Plugin) {
-        $pluginFull = [IO.Path]::GetFullPath($tc.Plugin); $distPlugin = [IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
-        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) { $pluginDir = Split-Path -Parent $pluginFull; Copy-Item $distPlugin $pluginFull -Force; Copy-Item (Join-Path $dist 'FolderHeatMapEngine.exe') (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Force; Info ("[TC] Updated WDX and engine in: $pluginDir") } else { Info '[TC] Registered plugin already points to dist; engine is beside the WDX.' }
+        $pluginFull = [IO.Path]::GetFullPath($tc.Plugin)
+        $distPlugin = [IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
+        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) {
+            $pluginDir = Split-Path -Parent $pluginFull
+            Copy-FileWithRetry -Source (Join-Path $package 'FolderHeatMap.wdx64') -Destination $pluginFull -Phase 'DEPLOY'
+            Copy-FileWithRetry -Source (Join-Path $package 'FolderHeatMapEngine.exe') -Destination (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Phase 'DEPLOY'
+            Info ("[TC] Updated WDX and engine in: $pluginDir")
+        } else {
+            Info '[TC] Registered plugin points to dist; staged deployment updated the live WDX there.'
+        }
     }
     if ($tcWasRunning -and $tc.Exe) { Start-Process -FilePath $tc.Exe | Out-Null }
 
