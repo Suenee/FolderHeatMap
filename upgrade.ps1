@@ -11,8 +11,6 @@ $Log = Join-Path $LogsDir 'upgrade.log'
 $HadWarning = $false
 $FailPhase = 'UNKNOWN'
 
-# Keep native build output and the PowerShell capture pipeline on UTF-8. This
-# prevents Czech MSBuild messages from being decoded through a mismatched OEM code page.
 $Utf8 = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $Utf8
 $OutputEncoding = $Utf8
@@ -178,9 +176,18 @@ try {
             foreach ($name in @('TOTALCMD64','TOTALCMD')) { Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
         }
     }
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
-    while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
-    if (Is-ProcessRunning @('FolderHeatMapEngine')) { Warn 'FolderHeatMapEngine did not finish graceful shutdown within 30 seconds; forcing it to stop.'; Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force }
+
+    # 1.22 engine is intentionally persistent and no longer dies when WDX unloads.
+    # Allow an old pre-1.22 engine a short graceful window, then stop the engine as
+    # a normal upgrade action. Durable DB writes are already committed; runtime
+    # cache is derivative and safely rebuildable.
+    $deadline = [DateTime]::UtcNow.AddSeconds(2)
+    while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    if (Is-ProcessRunning @('FolderHeatMapEngine')) {
+        Info '[ENGINE] Stopping persistent FolderHeatMapEngine for upgrade.'
+        Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Milliseconds 250
+    }
 
     Move-RootLogsIntoLogsDirectory
 
@@ -204,15 +211,39 @@ try {
     foreach ($f in $artifacts) { Copy-Item (Join-Path "$build\Release" $f) (Join-Path $dist $f) -Force }
     foreach ($f in @('configure.cmd','README.md','TESTING.md')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item (Join-Path $Repo $f) (Join-Path $dist $f) -Force } }
 
-    $FailPhase = 'DEPLOY'; Info '[7/7] Deploying to Total Commander...'
+    $FailPhase = 'DEPLOY'; Info '[7/7] Deploying to Total Commander and starting independent engine...'
     if ($tc.Plugin) {
         $pluginFull = [IO.Path]::GetFullPath($tc.Plugin); $distPlugin = [IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
-        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) { $pluginDir = Split-Path -Parent $pluginFull; Copy-Item $distPlugin $pluginFull -Force; Copy-Item (Join-Path $dist 'FolderHeatMapEngine.exe') (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Force; Info ("[TC] Updated WDX and engine in: $pluginDir") } else { Info '[TC] Registered plugin already points to dist; engine is beside the WDX.' }
+        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) {
+            $pluginDir = Split-Path -Parent $pluginFull
+            Copy-Item $distPlugin $pluginFull -Force
+            Copy-Item (Join-Path $dist 'FolderHeatMapEngine.exe') (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Force
+            Info ("[TC] Updated WDX and engine in: $pluginDir")
+        } else {
+            Info '[TC] Registered plugin already points to dist; engine is beside the WDX.'
+        }
     }
+
+    $engineLauncher = Join-Path $Repo 'start_engine.ps1'
+    if (-not (Test-Path -LiteralPath $engineLauncher)) { Fail $FailPhase 'start_engine.ps1 is missing.' }
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $engineLauncher -Install 2>&1 | ForEach-Object { Info ([string]$_) }
+        $engineRc = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedPreference }
+    if ($engineRc -ne 0) { Fail $FailPhase 'Independent FolderHeatMap engine could not be registered/started.' }
+    Info '[ENGINE] Independent engine started; HKCU startup registration installed.'
+
     if ($tcWasRunning -and $tc.Exe) { Start-Process -FilePath $tc.Exe | Out-Null }
 
     Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green
-    Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $LogsDir\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
+    Info ("WDX:         $dist\FolderHeatMap.wdx64")
+    Info ("Engine:      $dist\FolderHeatMapEngine.exe")
+    Info ("Config:      $dist\FolderHeatMapConfig.exe")
+    Info ("Engine log:  $LogsDir\FolderHeatMap.log")
+    Info ("Upgrade log: $Log")
+    Write-Line '' Gray
     if ($HadWarning) { Write-Line 'STATUS: WARNING - phase=COMPLETE' Yellow } else { Write-Line 'STATUS: SUCCESS - phase=COMPLETE' Green }
     exit 0
 }
