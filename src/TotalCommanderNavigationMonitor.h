@@ -21,14 +21,12 @@ public:
         HWND tc = FindWindowW(L"TTOTAL_CMD", nullptr);
         if (!tc) {
             tcWindow_ = nullptr;
-            lastObserved_[0].clear();
-            lastObserved_[1].clear();
+            ResetPanelState();
             return;
         }
         if (tc != tcWindow_) {
             tcWindow_ = tc;
-            lastObserved_[0].clear();
-            lastObserved_[1].clear();
+            ResetPanelState();
         }
 
         // Total Commander WM_USER+50 control IDs: 9=leftpath, 10=rightpath.
@@ -37,6 +35,13 @@ public:
     }
 
 private:
+    void ResetPanelState() {
+        lastObserved_[0].clear();
+        lastObserved_[1].clear();
+        initialized_[0] = false;
+        initialized_[1] = false;
+    }
+
     static std::wstring ReadControlText(HWND tc, WPARAM selector) {
         DWORD_PTR result = 0;
         if (!SendMessageTimeoutW(tc, WM_USER + 50, selector, 0,
@@ -87,6 +92,14 @@ private:
         std::wstring path = NormalizePanelPath(ReadControlText(tcWindow_, selector));
         if (path.empty()) return;
 
+        // The first successful read after engine/TC startup is only a baseline.
+        // Starting FolderHeatMap must not fabricate visits for already-open panels.
+        if (!initialized_[panel]) {
+            lastObserved_[panel] = std::move(path);
+            initialized_[panel] = true;
+            return;
+        }
+
         // Sampling the same panel path is not a navigation. A later return to the
         // path after visiting something else is observed as a change and accepted.
         if (path == lastObserved_[panel]) return;
@@ -105,6 +118,7 @@ private:
     Callback callback_;
     HWND tcWindow_ = nullptr;
     std::array<std::wstring, 2> lastObserved_{};
+    std::array<bool, 2> initialized_{false, false};
     std::unordered_map<std::wstring, std::int64_t> lastAcceptedSecond_;
 };
 
