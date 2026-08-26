@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.23'
-$Revision = '1.23-bootstrap-protocol-fix'
+$Version = '1.24'
+$Revision = '1.24-bootstrap-sync-fix'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -121,25 +121,29 @@ try {
     $currentBranch = (& git branch --show-current).Trim()
     if ($currentBranch -ne 'devel') { Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('switch','devel') | Out-Null }
 
-    & git diff --quiet --ignore-submodules --
-    $trackedDirty = ($LASTEXITCODE -ne 0)
-    & git diff --cached --quiet --ignore-submodules --
-    if ($LASTEXITCODE -ne 0) { $trackedDirty = $true }
-    if ($trackedDirty) {
-        Warn 'Local tracked changes detected; stashing tracked files before update.'
-        Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-m','FolderHeatMap automatic pre-upgrade stash') | Out-Null
+    # Preserve user tracked changes, but never treat the bootstrap files as user state.
+    # They are authoritative from origin/devel and may look dirty solely because of
+    # Windows line-ending materialization.
+    & git diff --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'
+    $userTrackedDirty = ($LASTEXITCODE -ne 0)
+    & git diff --cached --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'
+    if ($LASTEXITCODE -ne 0) { $userTrackedDirty = $true }
+    if ($userTrackedDirty) {
+        Warn 'Local tracked changes outside bootstrap files detected; stashing them before update.'
+        Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-m','FolderHeatMap automatic pre-upgrade stash','--','.',' :(exclude)upgrade.cmd',' :(exclude)upgrade.ps1') | Out-Null
     }
 
-    Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('pull','--ff-only','origin','devel') | Out-Null
+    # The temporary runner is already executing from origin/devel. Synchronize the
+    # tracked installation tree deterministically to that same commit. This reset is
+    # safe here because non-bootstrap tracked edits were stashed above and untracked
+    # runtime data is intentionally untouched.
+    Info '[BOOTSTRAP] Synchronizing tracked tree to origin/devel.'
+    Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('reset','--hard','origin/devel') | Out-Null
 
     $head = (& git rev-parse HEAD 2>$null).Trim()
     $remoteHead = (& git rev-parse origin/devel 2>$null).Trim()
-    if (-not $head -or -not $remoteHead -or $head -ne $remoteHead) { Fail $FailPhase 'Local devel HEAD is not identical to origin/devel after update.' }
+    if (-not $head -or -not $remoteHead -or $head -ne $remoteHead) { Fail $FailPhase 'Local devel HEAD is not identical to origin/devel after synchronization.' }
 
-    # The launcher already executed the authoritative runner extracted from origin/devel.
-    # Do not compare or repair working-tree bootstrap files here: .gitattributes may
-    # legitimately materialize CRLF while Git blobs use LF. HEAD equality and Git's
-    # own repository state are the authoritative synchronization checks.
     $runnerHeadBlob = (& git rev-parse 'HEAD:upgrade.ps1' 2>$null).Trim()
     $runnerRemoteBlob = (& git rev-parse 'origin/devel:upgrade.ps1' 2>$null).Trim()
     if (-not $runnerHeadBlob -or -not $runnerRemoteBlob -or $runnerHeadBlob -ne $runnerRemoteBlob) { Fail $FailPhase 'upgrade.ps1 in HEAD is not identical to origin/devel.' }
@@ -201,7 +205,7 @@ try {
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.23 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.24 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
     $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
     $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
