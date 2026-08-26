@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.22-independent-navigation"
+set "UPGRADE_REV=1.23-bootstrap-protocol-fix"
 set "REPO_DIR=%~dp0"
 if "!REPO_DIR:~-1!"=="\" set "REPO_DIR=!REPO_DIR:~0,-1!"
 cd /d "!REPO_DIR!"
