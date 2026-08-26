@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cwctype>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -20,50 +21,79 @@ public:
         HWND tc = FindWindowW(L"TTOTAL_CMD", nullptr);
         if (!tc) {
             tcWindow_ = nullptr;
-            lastObserved_.fill({});
+            lastObserved_[0].clear();
+            lastObserved_[1].clear();
             return;
         }
         if (tc != tcWindow_) {
             tcWindow_ = tc;
-            lastObserved_.fill({});
+            lastObserved_[0].clear();
+            lastObserved_[1].clear();
         }
 
-        PollPanel(0, 1); // documented TC left path control
-        PollPanel(1, 2); // documented TC right path control
+        // Total Commander WM_USER+50 control IDs: 9=leftpath, 10=rightpath.
+        PollPanel(0, 9);
+        PollPanel(1, 10);
     }
 
 private:
-    static std::wstring ReadPanelPath(HWND tc, WPARAM selector) {
-        // Total Commander exposes the left/right path controls through WM_USER+50.
-        // SendMessageTimeout avoids letting an unresponsive TC block the engine.
+    static std::wstring ReadControlText(HWND tc, WPARAM selector) {
         DWORD_PTR result = 0;
         if (!SendMessageTimeoutW(tc, WM_USER + 50, selector, 0,
                                  SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &result) || !result)
             return {};
-        HWND pathWindow = reinterpret_cast<HWND>(result);
-        if (!IsWindow(pathWindow)) return {};
-        const int length = GetWindowTextLengthW(pathWindow);
+        HWND control = reinterpret_cast<HWND>(result);
+        if (!IsWindow(control)) return {};
+        const int length = GetWindowTextLengthW(control);
         if (length <= 0 || length >= 32767) return {};
-        std::wstring path(static_cast<std::size_t>(length + 1), L'\0');
-        const int copied = GetWindowTextW(pathWindow, path.data(), length + 1);
+        std::wstring text(static_cast<std::size_t>(length + 1), L'\0');
+        const int copied = GetWindowTextW(control, text.data(), length + 1);
         if (copied <= 0) return {};
-        path.resize(static_cast<std::size_t>(copied));
+        text.resize(static_cast<std::size_t>(copied));
+        return text;
+    }
+
+    static bool IsDirectoryPath(const std::wstring& path) {
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
+
+    static std::wstring NormalizePanelPath(std::wstring path) {
+        if (path.empty()) return {};
+        for (auto& ch : path) if (ch == L'/') ch = L'\\';
+        while (path.size() > 3 && path.back() == L'\\') path.pop_back();
+
+        // Path controls may append a display filter (for example C:\Dir\*.*).
+        // Prefer the text unchanged when it is already a real directory; only
+        // strip the final component when the full text is not a directory.
+        if (!IsDirectoryPath(path)) {
+            const auto slash = path.find_last_of(L'\\');
+            if (slash != std::wstring::npos) {
+                std::wstring parent;
+                if (slash == 2 && path.size() >= 3 && path[1] == L':') parent = path.substr(0, 3);
+                else parent = path.substr(0, slash);
+                if (IsDirectoryPath(parent)) path = std::move(parent);
+                else return {};
+            } else {
+                return {};
+            }
+        }
+
+        for (auto& ch : path) ch = static_cast<wchar_t>(std::towlower(ch));
         return path;
     }
 
     void PollPanel(int panel, WPARAM selector) {
-        std::wstring path = ReadPanelPath(tcWindow_, selector);
+        std::wstring path = NormalizePanelPath(ReadControlText(tcWindow_, selector));
         if (path.empty()) return;
-        for (auto& ch : path) if (ch == L'/') ch = L'\\';
-        while (path.size() > 3 && path.back() == L'\\') path.pop_back();
 
-        // A path change is a navigation. Re-reading an unchanged panel is not.
-        if (_wcsicmp(path.c_str(), lastObserved_[panel].c_str()) == 0) return;
+        // Sampling the same panel path is not a navigation. A later return to the
+        // path after visiting something else is observed as a change and accepted.
+        if (path == lastObserved_[panel]) return;
         lastObserved_[panel] = path;
 
-        // One accepted occurrence of the same path per whole second protects
-        // against rapid panel oscillation / repeated Enter without hiding a
-        // genuine later revisit.
+        // Maximum one accepted occurrence of a path per whole second protects
+        // against rapid repeated Enter or technical oscillation.
         const auto second = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         auto& last = lastAcceptedSecond_[path];
