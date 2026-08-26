@@ -138,9 +138,10 @@ void PublishStateEvent(int state, const wchar_t* path) {
 
 void CloseRuntime() {
     if (g_shared && g_clientRegistered) {
-        const LONG clients = InterlockedDecrement(&g_shared->clientCount);
+        InterlockedDecrement(&g_shared->clientCount);
         g_clientRegistered = false;
-        if (clients <= 0) InterlockedExchange(&g_shared->shutdownRequested, 1);
+        // 1.22: WDX is a display client only. Unloading a content-column view must
+        // never terminate the independent engine/navigation monitor.
     }
     if (g_shared) { UnmapViewOfFile(g_shared); g_shared = nullptr; }
     if (g_mapping) { CloseHandle(g_mapping); g_mapping = nullptr; }
@@ -186,6 +187,8 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fi
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
+    // Kept in 1.22 as a diagnostic/reference channel. The engine's independent
+    // Total Commander monitor is authoritative for visits.
     PublishStateEvent(state, path);
     if (state == contst_readnewdir) PublishNavigation(path);
 }
