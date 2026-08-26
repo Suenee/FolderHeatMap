@@ -1,4 +1,4 @@
-# FolderHeatMap 1.11 guarded engine generator.
+# FolderHeatMap guarded engine generator.
 # EngineApp.cpp stays as the verified source baseline. This generator patches a
 # build-only copy and aborts configuration if any expected anchor changed.
 
@@ -11,7 +11,7 @@ file(READ "${INPUT}" ENGINE)
 function(fhm_replace_once OLD NEW LABEL)
     string(FIND "${ENGINE}" "${OLD}" POS)
     if(POS EQUAL -1)
-        message(FATAL_ERROR "1.11 engine patch anchor not found: ${LABEL}")
+        message(FATAL_ERROR "engine patch anchor not found: ${LABEL}")
     endif()
     string(REPLACE "${OLD}" "${NEW}" PATCHED "${ENGINE}")
     set(ENGINE "${PATCHED}" PARENT_SCOPE)
@@ -28,8 +28,9 @@ fhm_replace_once([=[std::atomic<bool> g_stopping{false};]=]
 [=[std::atomic<bool> g_stopping{false};
 bool g_runtimeCacheDirty = false;
 std::chrono::steady_clock::time_point g_lastRuntimeCacheSave = std::chrono::steady_clock::now();
-constexpr auto kRuntimeCacheFlushDelay = std::chrono::seconds(5);]=]
-"runtime dirty batching state")
+constexpr auto kRuntimeCacheFlushDelay = std::chrono::seconds(5);
+std::unordered_map<std::wstring, std::int64_t> g_lastAcceptedNavigationSecond;]=]
+"runtime dirty batching and navigation debounce state")
 
 fhm_replace_once([=[ULONGLONG FileTimeTicks(const FILETIME& time) {
     ULARGE_INTEGER v{};
@@ -226,14 +227,19 @@ fhm_replace_once([=[    std::wstring previous;
 [=[    std::wstring previous;
     {
         std::scoped_lock lock(g_stateMutex);
-        if (g_currentDirectory == next) {
-            g_log.WritePath("FAST", "duplicate navigation suppressed", next);
+        const auto nowSecond = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        const auto last = g_lastAcceptedNavigationSecond.find(next);
+        if (last != g_lastAcceptedNavigationSecond.end() && last->second == nowSecond) {
+            g_log.WritePath("NAV", "debounced same path within second", next);
             return;
         }
         previous = g_currentDirectory;
         g_currentDirectory = next;
+        g_lastAcceptedNavigationSecond[next] = nowSecond;
+        g_log.WritePath("NAV", "accepted", next);
     }]=]
-"duplicate navigation suppression")
+"one accepted navigation per path per second")
 
 fhm_replace_once([=[void ProcessSlowTask(const std::wstring& directory) {
     g_log.WritePath("SLOW", "persist", directory);
@@ -296,8 +302,6 @@ fhm_replace_once([=[void ProcessSlowTask(const std::wstring& directory) {
 
     Batch refreshed = BuildBatch(directory);
     StoreReady(directory, refreshed);
-    // Do not schedule the same predictions a second time from SLOW. FAST already
-    // queued them from the navigation batch.
     {
         std::scoped_lock lock(g_slowMutex);
         g_slowPending.erase(directory);
@@ -341,4 +345,4 @@ fhm_replace_once([=[g_log.Write("ENGINE", "FolderHeatMap 1.07 engine starting");
 get_filename_component(OUT_DIR "${OUTPUT}" DIRECTORY)
 file(MAKE_DIRECTORY "${OUT_DIR}")
 file(WRITE "${OUTPUT}" "${ENGINE}")
-message(STATUS "Generated optimized FolderHeatMap 1.11 engine source: ${OUTPUT}")
+message(STATUS "Generated optimized FolderHeatMap engine source: ${OUTPUT}")
