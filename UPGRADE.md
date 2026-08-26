@@ -30,7 +30,7 @@ Always prefer the updater stored on the target Git branch over the local runner.
 
 Verify remote and branch, fetch, check local tracked changes, update the intended branch, then verify `HEAD == origin/<branch>`.
 
-Local tracked changes must never be silently destroyed. Use either a strict abort policy or an explicitly reported managed stash policy. Do not stash untracked runtime data by default. Do not use `git reset --hard` unless the checkout is deliberately disposable and user-data boundaries are proven safe.
+Local tracked changes must never be silently destroyed. Use either a strict abort policy or an explicitly reported managed stash policy. Do not stash untracked runtime data by default. Do not use `git reset --hard` unless the checkout is deliberately disposable and user-data boundaries are proven safe. A controlled upgrader may use it only after all non-bootstrap tracked edits have been preserved and when runtime/user data is known to be untracked or external; log that synchronization explicitly.
 
 Use Git semantics for verification, not raw working-tree byte hashes. CRLF working-tree files can differ byte-for-byte from Git blobs while still being clean.
 
@@ -123,6 +123,7 @@ This section is a mandatory pre-flight checklist when creating or modifying an u
 
 - **Raw hash comparison of working files against Git blobs:** CRLF vs LF produces a false mismatch even though Git considers the file clean. Prevention: use Git diff/blob semantics and `HEAD == origin/<branch>`.
 - **Updater changes itself during `stash`, `pull`, `checkout`, or `reset`:** never assume the source file currently executing is immutable. The launcher must not depend on rereading itself after repository mutation.
+- **Managed stash reports success but bootstrap remains dirty:** on Windows, line-ending materialization can leave `upgrade.cmd` looking locally modified even after a successful tracked-file stash, causing the following pull/merge to abort with `local changes ... would be overwritten`. Prevention: treat bootstrap files as authoritative remote state rather than user data; preserve real tracked edits separately, then synchronize the tracked installation tree deterministically to the fetched target commit while leaving untracked runtime data untouched.
 - **Stashing untracked runtime files:** `git stash -u` can unexpectedly capture local configuration/log/state. Prevention: stash tracked files only unless untracked handling is explicitly designed.
 - **`git clean -fd` deleting useful local data:** never use it broadly unless the repository is a proven disposable installation tree. Prefer explicit generated-path cleanup.
 - **Wrong branch silently built:** branch selection must be explicit; verify the final `HEAD` against `origin/<target>` before build.
