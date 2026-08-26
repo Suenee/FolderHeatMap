@@ -2,6 +2,7 @@
 
 ## 1.26 - 27.08.2026
 
+- Restored the complete `CMakeLists.txt` build graph after an accidental version-only replacement left the file with only `cmake_minimum_required()` and `project()`, causing CMake configuration to succeed without generating `FolderHeatMap.vcxproj` and MSBuild to fail with `MSB1009`.
 - Fixed the runtime engine banner, which was still reporting the historical `1.20 canonical lifecycle engine` baseline even in newer binaries.
 - Confirmed from runtime diagnostics that the uploaded engine was not actually 1.20: it already contained the independent `[NAV-TC]` monitor introduced in 1.22; only the startup version string was stale.
 - The final TC navigation injection stage now requires the expected 1.20 baseline banner and replaces it with `FolderHeatMap 1.26 engine starting (independent TC navigation)`, making a stale build detectable during CMake configuration instead of silently shipping a misleading banner.
