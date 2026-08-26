@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.19 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.20 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -19,16 +19,16 @@ if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_
     message(FATAL_ERROR "Could not generate the guarded FolderHeatMap 1.11 engine source.")
 endif()
 
-# 1.19 keeps the safe 1.18 delete lifecycle and adds a canonical native Win32
-# identity primitive plus non-destructive diagnostics. Identity mismatch remains
-# diagnostic-only until the canonical tuple is proven stable by tests.
+# 1.20 keeps watcher-confirmed delete handling, uses the canonical native Win32
+# File ID in SLOW lifecycle reconciliation for external delete/recreate and
+# same-volume move detection, and safely removes obsolete tracked volume-root IDs.
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectDeletionDiagnostics.cmake" RESULT_VARIABLE FHM_DIAG_INJECT_RESULT)
 if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap safe deletion lifecycle.")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectCanonicalIdentityDiagnostics.cmake" RESULT_VARIABLE FHM_IDENTITY_DIAG_RESULT)
 if(NOT FHM_IDENTITY_DIAG_RESULT EQUAL 0)
-    message(FATAL_ERROR "Could not inject FolderHeatMap 1.19 canonical identity diagnostics.")
+    message(FATAL_ERROR "Could not inject FolderHeatMap 1.20 canonical identity diagnostics.")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/CoalesceDeleteQueue.cmake" RESULT_VARIABLE FHM_DELETE_COALESCE_RESULT)
 if(NOT FHM_DELETE_COALESCE_RESULT EQUAL 0)
@@ -43,8 +43,6 @@ add_library(FolderHeatMap SHARED src/FolderHeatMapCounterOnly.cpp)
 target_include_directories(FolderHeatMap PRIVATE src)
 target_compile_features(FolderHeatMap PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMap PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-# Total Commander x64 content plugins use the .wdx64 extension. CMake otherwise
-# emits a normal .dll, which makes upgrade.ps1 correctly reject the package.
 set_target_properties(FolderHeatMap PROPERTIES PREFIX "" SUFFIX ".wdx64")
 
 add_executable(FolderHeatMapEngine "${FHM_ENGINE_GENERATED_CPP}" src/DiagnosticWatcher.cpp src/FolderIdentity.cpp src/Database.cpp src/DatabaseBaseline.cpp src/ResetDatabase.cpp src/RuntimeCacheDatabase.cpp src/LifecycleDatabase.cpp src/TrackedLookupDatabase.cpp src/LifecycleBatchDatabase.cpp src/Lifecycle.cpp src/Settings.cpp vendor/sqlite/sqlite3.c)
