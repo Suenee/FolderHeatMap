@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.22 - 26.08.2026
+
+- Added an independent native Win32 Total Commander navigation monitor in `FolderHeatMapEngine.exe`.
+- The engine now reads the left and right Total Commander panel paths through `WM_USER+50` and `GetWindowTextW`, so visit counting no longer depends on FolderHeatMap WDX columns being visible.
+- Panel paths are sampled every 100 ms with `SendMessageTimeoutW` protection, avoiding any filesystem scan in the navigation sensor itself.
+- Left and right panels are tracked independently; only a real path change creates a navigation candidate.
+- Kept the one-visit-per-path-per-whole-second debounce to suppress rapid repeated Enter/technical duplicates without hiding later real revisits.
+- Added `[NAV-TC] LEFT/RIGHT accepted ...` diagnostics. The WDX `ContentSendStateInformation` path remains temporarily as a diagnostic/reference channel for A/B verification.
+- WDX unloading no longer requests engine shutdown. WDX is now treated as a display/cache client rather than the owner of engine lifetime.
+- Added `start_engine.ps1` and automatic HKCU startup registration so the engine can run independently even when Total Commander never loads the FolderHeatMap content plugin view.
+- `upgrade.cmd` now installs/starts the independent engine after a successful upgrade and keeps bootstrap failures under `logs/upgrade.log`.
+- Upgrader console output is switched to UTF-8 to prevent Czech MSBuild text from being decoded through a mismatched console code page.
+- Kept the 1.20 canonical filesystem lifecycle, watcher-delete handling, root-volume safety barrier and centralized `logs/` layout unchanged.
+- Version updated to 1.22 (`1.22-independent-tc-navigation`).
+
 ## 1.21 - 26.08.2026
 
 - Replaced permanent same-path navigation suppression with a per-path one-second debounce.
@@ -64,7 +79,7 @@
 
 ## 1.15 - 20.08.2026
 
-- Replaced the previous mixed batch/PowerShell upgrade logging chain with a PowerShell-only runner (`upgrade.ps1`); `upgrade.cmd` is now only a minimal launcher.
+- Replaced the previous mixed batch/PowerShell bootstrap argument passing with environment-only transport (`FHM_UPGRADE_INTERNAL`, `FHM_UPGRADE_STAGE`, `FHM_UPGRADE_REPO`, `FHM_UPGRADE_SCRIPT`).
 - Added single-run `upgrade.log` diagnostics with gray informational output, yellow warnings, red errors and a final colored status line.
 - Added self-update validation against `origin/devel` before build/deployment.
 - Added robust Total Commander/engine shutdown handling and dependency/build diagnostics.
