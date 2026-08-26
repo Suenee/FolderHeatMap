@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.20'
-$Revision = '1.20-canonical-lifecycle'
+$Version = '1.21'
+$Revision = '1.21-navigation-debounce'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -190,7 +190,7 @@ try {
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.20 canonical lifecycle and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.21 navigation debounce and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
     $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
     $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
