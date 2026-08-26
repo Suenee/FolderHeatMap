@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.25 - 27.08.2026
+
+- Separated package staging from the live `dist` deployment so the DIST phase never overwrites a loaded Total Commander plugin.
+- New artifacts are staged under `build/package` and verified before any live files are replaced.
+- Live deployment now retries locked targets for up to 30 seconds and reports lock progress in `logs/upgrade.log`.
+- After forced shutdown, the upgrader now verifies that Total Commander and `FolderHeatMapEngine.exe` actually exited before deployment continues.
+- A persistent file lock now fails in `DEPLOY`, not `DIST`, with the exact target path and last Windows error.
+- Version updated to 1.25 (`1.25-deploy-lock-fix`).
+
 ## 1.24 - 26.08.2026
 
 - Fixed the remaining self-update failure where `git stash` could report success while `upgrade.cmd` still appeared locally modified because of Windows line-ending materialization.
