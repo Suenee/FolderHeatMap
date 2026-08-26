@@ -21,12 +21,14 @@ fhm_replace_once([=[#include "Settings.h"]=]
 fhm_replace_once([=[    InterlockedExchange(&g_shared->shutdownRequested, 0);
     std::thread fast(FastWorker);
     std::thread slow(SlowWorker);
+    std::thread diagnostics(fhm::RunDeletionDiagnostics, g_shared, &g_log, &g_stopping, &HandleObservedRemoval);
 
     LONG seenSettings = InterlockedCompareExchange(&g_shared->settingsSeq, 0, 0);
     while (true) {]=]
 [=[    InterlockedExchange(&g_shared->shutdownRequested, 0);
     std::thread fast(FastWorker);
     std::thread slow(SlowWorker);
+    std::thread diagnostics(fhm::RunDeletionDiagnostics, g_shared, &g_log, &g_stopping, &HandleObservedRemoval);
 
     fhm::TotalCommanderNavigationMonitor tcNavigation([&](int panel, const std::wstring& rawPath) {
         const auto path = fhm::runtime::NormalizePath(rawPath);
