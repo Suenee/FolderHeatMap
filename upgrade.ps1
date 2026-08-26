@@ -129,8 +129,8 @@ try {
     & git diff --cached --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'
     if ($LASTEXITCODE -ne 0) { $userTrackedDirty = $true }
     if ($userTrackedDirty) {
-        Warn 'Local tracked changes outside bootstrap files detected; stashing them before update.'
-        Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-m','FolderHeatMap automatic pre-upgrade stash','--','.',' :(exclude)upgrade.cmd',' :(exclude)upgrade.ps1') | Out-Null
+        Warn 'Local tracked changes outside bootstrap files detected; stashing tracked files before update.'
+        Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-m','FolderHeatMap automatic pre-upgrade stash') | Out-Null
     }
 
     # The temporary runner is already executing from origin/devel. Synchronize the
