@@ -47,7 +47,7 @@ bool LoadSettings(const std::wstring& iniPath, Settings& s) {
     s.pathDecay = std::clamp(GetPrivateProfileIntW(L"Heat", L"PathDecayPercent", 50, iniPath.c_str()), 0u, 100u) / 100.0;
     s.fileHeatEnabled = GetPrivateProfileIntW(L"Heat", L"FileHeatEnabled", 1, iniPath.c_str()) != 0;
     s.fileContribution = std::clamp(GetPrivateProfileIntW(L"Heat", L"FileContributionPercent", 50, iniPath.c_str()), 0u, 100u) / 100.0;
-    s.repeatVisitCooldownSeconds = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Heat", L"RepeatVisitCooldownSeconds", 90, iniPath.c_str())), 0, 600);
+    s.repeatVisitCooldownSeconds = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Heat", L"RepeatVisitCooldownSeconds", 1, iniPath.c_str())), 0, 600);
     s.sessionResetHours = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Heat", L"SessionResetHours", 8, iniPath.c_str())), 1, 24);
     s.smoothColors = GetPrivateProfileIntW(L"Colors", L"Smooth", 1, iniPath.c_str()) != 0;
     s.stepsPerLevel = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"Colors", L"StepsPerLevel", 4, iniPath.c_str())), 1, 16);
