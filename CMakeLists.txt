@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.20 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.21 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -16,19 +16,18 @@ set(FHM_ENGINE_GENERATED_CPP "${FHM_ENGINE_GENERATED_DIR}/EngineApp.1.11.cpp")
 file(MAKE_DIRECTORY "${FHM_ENGINE_GENERATED_DIR}")
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${CMAKE_SOURCE_DIR}/src/EngineApp.cpp" "-DOUTPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/GenerateOptimizedEngine.cmake" RESULT_VARIABLE FHM_ENGINE_GENERATE_RESULT)
 if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_CPP}")
-    message(FATAL_ERROR "Could not generate the guarded FolderHeatMap 1.11 engine source.")
+    message(FATAL_ERROR "Could not generate the guarded FolderHeatMap engine source.")
 endif()
 
-# 1.20 keeps watcher-confirmed delete handling, uses the canonical native Win32
-# File ID in SLOW lifecycle reconciliation for external delete/recreate and
-# same-volume move detection, and safely removes obsolete tracked volume-root IDs.
+# 1.21 keeps the canonical lifecycle from 1.20 and accepts repeated visits to
+# the same directory, with a one-second per-path debounce for accidental/technical repeats.
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectDeletionDiagnostics.cmake" RESULT_VARIABLE FHM_DIAG_INJECT_RESULT)
 if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap safe deletion lifecycle.")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectCanonicalIdentityDiagnostics.cmake" RESULT_VARIABLE FHM_IDENTITY_DIAG_RESULT)
 if(NOT FHM_IDENTITY_DIAG_RESULT EQUAL 0)
-    message(FATAL_ERROR "Could not inject FolderHeatMap 1.20 canonical identity diagnostics.")
+    message(FATAL_ERROR "Could not inject FolderHeatMap canonical identity diagnostics.")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/CoalesceDeleteQueue.cmake" RESULT_VARIABLE FHM_DELETE_COALESCE_RESULT)
 if(NOT FHM_DELETE_COALESCE_RESULT EQUAL 0)
