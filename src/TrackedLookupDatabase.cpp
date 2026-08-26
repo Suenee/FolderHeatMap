@@ -30,4 +30,20 @@ std::optional<TrackedObject> Database::GetTrackedObjectAtPath(const std::wstring
     return result;
 }
 
+bool Database::DeleteTrackedIdentityOnlyAtPath(const std::wstring& volumeId,
+                                               const std::wstring& relativePath) {
+    std::scoped_lock lock(mutex_);
+    if (db_ == nullptr) return false;
+
+    sqlite3_stmt* st = nullptr;
+    static constexpr const char* sql =
+        "DELETE FROM tracked_objects WHERE volume_id=?1 AND relative_path=?2;";
+    if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text16(st, 1, volumeId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text16(st, 2, relativePath.c_str(), -1, SQLITE_TRANSIENT);
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 } // namespace fhm
