@@ -12,7 +12,7 @@ struct Settings {
     double pathDecay = 0.50;
     bool fileHeatEnabled = true;
     double fileContribution = 0.50;
-    int repeatVisitCooldownSeconds = 90;
+    int repeatVisitCooldownSeconds = 1;
     int sessionResetHours = 8;
     bool smoothColors = true;
     int stepsPerLevel = 4;
