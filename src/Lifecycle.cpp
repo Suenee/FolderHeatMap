@@ -99,6 +99,13 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
     const auto directoryIdentity = ResolveFolderIdentity(directory);
     if (!directoryIdentity || directoryIdentity->volumeId.starts_with(L"unc:")) return result;
 
+    // Pre-1.19 builds could leave a tracked-object row for the volume root with
+    // a non-canonical File ID. The root itself is never a child observation and
+    // does not need a tracked-object row. Remove only that identity row here;
+    // folder history, heat and file activity remain untouched.
+    if (directoryIdentity->relativePath.empty())
+        database.DeleteTrackedIdentityOnlyAtPath(directoryIdentity->volumeId, L"");
+
     const auto previous = database.GetTrackedChildren(directoryIdentity->volumeId,
                                                        directoryIdentity->relativePath);
     std::unordered_set<std::wstring> observedIds;
