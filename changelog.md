@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.24 - 26.08.2026
+
+- Fixed the remaining self-update failure where `git stash` could report success while `upgrade.cmd` still appeared locally modified because of Windows line-ending materialization.
+- Bootstrap files `upgrade.cmd` and `upgrade.ps1` are no longer treated as user state during local-change detection.
+- Real tracked edits outside the bootstrap files are preserved through the managed pre-upgrade stash.
+- After preservation, the tracked installation tree is synchronized deterministically to `origin/devel`; untracked runtime data remains untouched.
+- Kept the authoritative temporary `origin/devel:upgrade.ps1` runner model and post-sync `HEAD == origin/devel` verification.
+- Version updated to 1.24 (`1.24-bootstrap-sync-fix`).
+
 ## 1.23 - 26.08.2026
 
 - Fixed the self-update bootstrap loop that could report `upgrade.cmd has local working-tree changes after self-repair` after a successful pull.
