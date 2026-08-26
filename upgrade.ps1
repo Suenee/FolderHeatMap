@@ -1,11 +1,13 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.19'
-$Revision = '1.19-canonical-filesystem-identity'
+$Version = '1.20'
+$Revision = '1.20-canonical-lifecycle'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
-$Log = Join-Path $Repo 'upgrade.log'
+$LogsDir = Join-Path $Repo 'logs'
+New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
+$Log = Join-Path $LogsDir 'upgrade.log'
 $HadWarning = $false
 $FailPhase = 'UNKNOWN'
 
@@ -76,6 +78,18 @@ function Resolve-TC {
     $settings = if ($tcIni) { Join-Path (Split-Path -Parent $tcIni) 'FolderHeatMap.ini' } else { $null }
     [pscustomobject]@{ Path=$tcPath; Ini=$tcIni; Exe=$tcExe; Plugin=$plugin; Settings=$settings }
 }
+function Move-RootLogsIntoLogsDirectory {
+    Get-ChildItem -LiteralPath $Repo -Filter '*.log' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $destination = Join-Path $LogsDir $_.Name
+        if (Test-Path -LiteralPath $destination) {
+            $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmssfff')
+            $base = [IO.Path]::GetFileNameWithoutExtension($_.Name)
+            $destination = Join-Path $LogsDir ("$base-$stamp.log")
+        }
+        Move-Item -LiteralPath $_.FullName -Destination $destination -Force
+        Info ("[LOGS] Moved $($_.Name) -> logs\$([IO.Path]::GetFileName($destination))")
+    }
+}
 
 try {
     Set-Location $Repo
@@ -127,7 +141,7 @@ try {
     if ($tc.Ini) { Info ("[TC] Configuration:   $($tc.Ini)") }
     if ($tc.Plugin) { Info ("[TC] Registered plugin: $($tc.Plugin)") }
     if ($tc.Settings) { Info ("[FHM] Settings:       $($tc.Settings)") }
-    Info ("[FHM] Engine log:     $Repo\FolderHeatMap.log")
+    Info ("[FHM] Engine log:     $LogsDir\FolderHeatMap.log")
     Info ("[FHM] Upgrade log:    $Log")
 
     $cmake = Resolve-CMake
@@ -161,6 +175,8 @@ try {
     while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
     if (Is-ProcessRunning @('FolderHeatMapEngine')) { Warn 'FolderHeatMapEngine did not finish graceful shutdown within 30 seconds; forcing it to stop.'; Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force }
 
+    Move-RootLogsIntoLogsDirectory
+
     $FailPhase = 'CONFIGURATION'; Info '[2/7] Configuring repository-local logging path...'
     if (-not $tc.Settings) { Fail $FailPhase 'FolderHeatMap settings path could not be resolved.' }
     $helper = Join-Path $Repo 'configure_logging_path.ps1'; if (-not (Test-Path $helper)) { Fail $FailPhase 'configure_logging_path.ps1 is missing.' }
@@ -170,11 +186,11 @@ try {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -SettingsIni $tc.Settings -RepositoryRoot $Repo 2>&1 | ForEach-Object { Info ([string]$_) }
         $helperRc = $LASTEXITCODE
     } finally { $ErrorActionPreference = $savedPreference }
-    if ($helperRc -ne 0) { Fail $FailPhase 'Could not configure FolderHeatMap.log in the repository root.' }
+    if ($helperRc -ne 0) { Fail $FailPhase 'Could not configure FolderHeatMap.log in the repository logs directory.' }
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.19 canonical identity diagnostics and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.20 canonical lifecycle and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
     $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
     $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
@@ -189,7 +205,7 @@ try {
     if ($tcWasRunning -and $tc.Exe) { Start-Process -FilePath $tc.Exe | Out-Null }
 
     Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green
-    Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $Repo\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
+    Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $LogsDir\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
     if ($HadWarning) { Write-Line 'STATUS: WARNING - phase=COMPLETE' Yellow } else { Write-Line 'STATUS: SUCCESS - phase=COMPLETE' Green }
     exit 0
 }
