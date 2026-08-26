@@ -31,8 +31,6 @@ if ($Install) {
     New-Item -Path $runKey -Force | Out-Null
     $launcher = $MyInvocation.MyCommand.Path
     $command = 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $launcher + '"'
-    # Store normal Windows quoting; PowerShell's single-quoted string above keeps
-    # the quote characters as part of the registry command line.
     $command = $command.Replace('\"', '"')
     New-ItemProperty -Path $runKey -Name 'FolderHeatMapEngine' -PropertyType String -Value $command -Force | Out-Null
 }
@@ -50,5 +48,7 @@ $db = Join-Path $settingsDir 'FolderHeatMap.db'
 
 $arguments = '--db "' + $db + '" --settings "' + $settings + '"'
 $arguments = $arguments.Replace('\"', '"')
-Start-Process -FilePath $Engine -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+$process = Start-Process -FilePath $Engine -ArgumentList $arguments -WindowStyle Hidden -PassThru
+Start-Sleep -Milliseconds 300
+if ($process.HasExited) { exit 3 }
 exit 0
