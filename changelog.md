@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.27 - 27.08.2026
+
+- Confirmed with `tasklist /m FolderHeatMap.wdx64` that a restarted `TOTALCMD64.EXE` process was the persistent owner of the live `dist\FolderHeatMap.wdx64` lock during deployment.
+- Added a pre-deploy Total Commander guard that rechecks all `TOTALCMD64`/`TOTALCMD` processes immediately before the first live artifact replacement.
+- If Total Commander appears again during WDX copy retries, the upgrader now records its PID, force-stops it, waits for process exit, and retries the copy instead of merely waiting on the lock.
+- Total Commander is restarted only after the complete deployment has succeeded; a final guard runs before that restart.
+- Updated build/runtime version identification to 1.27 (`1.27-tc-deploy-guard`).
+
 ## 1.26 - 27.08.2026
 
 - Restored the complete `CMakeLists.txt` build graph after an accidental version-only replacement left the file with only `cmake_minimum_required()` and `project()`, causing CMake configuration to succeed without generating `FolderHeatMap.vcxproj` and MSBuild to fail with `MSB1009`.
