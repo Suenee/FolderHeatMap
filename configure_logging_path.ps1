@@ -35,6 +35,14 @@ public static class FolderHeatMapIniNative {
 if (-not [FolderHeatMapIniNative]::WritePrivateProfileString('Logging', 'Path', $logPath, $settingsFull)) {
     throw "Could not write [Logging] Path to $settingsFull"
 }
+
+# 1.22 navigation acceptance is defined at whole-second precision. Keep Heat's
+# effective-visit cooldown aligned with the same rule so a valid revisit in a
+# later second is not discarded by an obsolete 90-second legacy setting.
+if (-not [FolderHeatMapIniNative]::WritePrivateProfileString('Heat', 'RepeatVisitCooldownSeconds', '1', $settingsFull)) {
+    throw "Could not write [Heat] RepeatVisitCooldownSeconds=1 to $settingsFull"
+}
+
 [FolderHeatMapIniNative]::WritePrivateProfileString($null, $null, $null, $settingsFull) | Out-Null
 
 # Migrate historical runtime logs into the permanent repository-local log directory.
@@ -56,3 +64,4 @@ foreach ($legacyLog in $legacyLogs) {
 }
 
 Write-Host "FolderHeatMap log path: $logPath"
+Write-Host "FolderHeatMap repeat visit cooldown: 1 second"
