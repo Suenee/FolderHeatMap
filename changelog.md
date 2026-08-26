@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.20 - 26.08.2026
+
+- Promoted the canonical native Win32 File ID from diagnostic validation into the authoritative SLOW lifecycle reconciliation path for same-volume move/rename and external delete/recreate detection.
+- Confirmed lifecycle semantics remain: same volume + same File ID preserves history across rename/move; same path + different File ID is a new filesystem object and stale history is removed before the new observation is stored.
+- Added safe cleanup of obsolete pre-1.19 tracked-object rows for volume roots. Only the stale `tracked_objects` identity row is removed; root heat/history and file activity are never reset by this migration.
+- Kept watcher-confirmed `REMOVED` as the immediate fast delete signal with tombstone + prioritized SLOW subtree cleanup.
+- Kept the hard drive-root tombstone/purge barrier and 10 MiB per-run engine-log safety cap.
+- Centralized runtime logs under repository-local `logs/`: `logs/FolderHeatMap.log`, `logs/upgrade.log`, and migrated root-level `*.log` files.
+- Added explicit `logs/` Git ignore protection; runtime logs remain outside version control.
+- Upgrade metadata and build version updated to 1.20 (`1.20-canonical-lifecycle`).
+
 ## 1.19 - 25.08.2026
 
 - Reworked filesystem identity around one canonical native Win32 primitive: `CreateFileW` + `GetFileInformationByHandleEx(FileIdInfo)` using `FILE_ID_INFO`.
