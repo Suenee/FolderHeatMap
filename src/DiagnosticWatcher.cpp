@@ -66,11 +66,14 @@ std::string SlowState(runtime::SharedState* shared) {
 } // namespace
 
 void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
-                            std::atomic<bool>* stopping, RemovalCallback onRemoved) {
+                            std::atomic<bool>* stopping, RemovalCallback onRemoved,
+                            ModificationCallback onModified) {
     if (!shared || !log || !stopping) return;
 
     using Clock = std::chrono::steady_clock;
     std::unordered_map<std::wstring, Clock::time_point> removed;
+    std::unordered_map<std::wstring, Clock::time_point> modified;
+    constexpr auto kModifyCoalesce = std::chrono::seconds(1);
     LONG seenState = InterlockedCompareExchange(&shared->stateEventSeq, 0, 0);
     std::wstring watched;
     HANDLE directory = INVALID_HANDLE_VALUE;
@@ -112,12 +115,13 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
         ov.hEvent = eventHandle;
         readPending = ReadDirectoryChangesW(directory, buffer.data(), static_cast<DWORD>(buffer.size()), FALSE,
                                             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-                                            FILE_NOTIFY_CHANGE_CREATION,
+                                            FILE_NOTIFY_CHANGE_CREATION | FILE_NOTIFY_CHANGE_LAST_WRITE |
+                                            FILE_NOTIFY_CHANGE_SIZE,
                                             &ignored, &ov, nullptr) != FALSE;
         if (!readPending) log->WritePath("DIAG", "WATCH_READ_FAILED", watched);
     };
 
-    log->Write("DIAG", "delete diagnostics active; lifecycle removal callback enabled");
+    log->Write("DIAG", "filesystem diagnostics active; lifecycle removal and file modification callbacks enabled");
 
     while (!stopping->load()) {
         wchar_t currentBuf[runtime::kDirectoryChars]{};
@@ -147,7 +151,9 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
             auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buffer.data() + offset);
             const std::wstring name(info->FileName, info->FileNameLength / sizeof(wchar_t));
             const std::wstring full = runtime::NormalizePath(Join(watched, name));
-            const bool existsNow = GetFileAttributesW(full.c_str()) != INVALID_FILE_ATTRIBUTES;
+            const DWORD attrs = GetFileAttributesW(full.c_str());
+            const bool existsNow = attrs != INVALID_FILE_ATTRIBUTES;
+            const bool isDirectory = existsNow && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
             const auto now = Clock::now();
 
             std::string timing = "timing=";
@@ -161,11 +167,20 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
 
             if (info->Action == FILE_ACTION_REMOVED) {
                 removed[full] = now;
+                modified.erase(full);
                 if (onRemoved) onRemoved(full);
             } else if (info->Action == FILE_ACTION_RENAMED_OLD_NAME) {
-                // A rename on the same volume must preserve history, so it is
-                // diagnostic only. ReconcileDirectoryLifecycle pairs it by ID.
                 removed[full] = now;
+                modified.erase(full);
+            } else if (info->Action == FILE_ACTION_MODIFIED && existsNow && !isDirectory) {
+                const auto it = modified.find(full);
+                if (it == modified.end() || now - it->second >= kModifyCoalesce) {
+                    modified[full] = now;
+                    log->WritePath("FILE_WRITE", "accepted", full);
+                    if (onModified) onModified(full);
+                } else {
+                    log->WritePath("FILE_WRITE", "coalesced", full);
+                }
             } else if (info->Action == FILE_ACTION_ADDED || info->Action == FILE_ACTION_RENAMED_NEW_NAME) {
                 const auto it = removed.find(full);
                 if (it != removed.end()) {
@@ -184,7 +199,7 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
 
     closeWatch();
     if (eventHandle) CloseHandle(eventHandle);
-    log->Write("DIAG", "delete diagnostics stopped");
+    log->Write("DIAG", "filesystem diagnostics stopped");
 }
 
 } // namespace fhm
