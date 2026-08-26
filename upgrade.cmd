@@ -39,19 +39,11 @@ if errorlevel 1 (
 
 rem IMPORTANT: this entire final block is parsed by CMD before PowerShell starts.
 rem upgrade.ps1 may update upgrade.cmd on disk while it runs; the already-parsed
-rem commands therefore cannot accidentally continue in newly replaced launcher code.
+rem EXIT command therefore cannot accidentally continue in newly replaced file.
 (
     set "FHM_UPGRADE_REPO=!REPO_DIR!"
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!RUNNER_TEMP!"
     set "UPGRADE_RC=!ERRORLEVEL!"
     del /q "!RUNNER_TEMP!" >nul 2>nul
-    if "!UPGRADE_RC!"=="0" (
-        if exist "!REPO_DIR!\start_engine.ps1" (
-            powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "!REPO_DIR!\start_engine.ps1" -Install
-            if errorlevel 1 (
-                powershell.exe -NoProfile -Command "Write-Host 'WARNING: FolderHeatMap engine autostart could not be installed/started.' -ForegroundColor Yellow"
-            )
-        )
-    )
     exit /b !UPGRADE_RC!
 )
