@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.21 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.22 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -19,8 +19,6 @@ if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_
     message(FATAL_ERROR "Could not generate the guarded FolderHeatMap engine source.")
 endif()
 
-# 1.21 keeps the canonical lifecycle from 1.20 and accepts repeated visits to
-# the same directory, with a one-second per-path debounce for accidental/technical repeats.
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectDeletionDiagnostics.cmake" RESULT_VARIABLE FHM_DIAG_INJECT_RESULT)
 if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap safe deletion lifecycle.")
@@ -36,6 +34,10 @@ endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/ProtectSameVolumeMoves.cmake" RESULT_VARIABLE FHM_MOVE_GUARD_RESULT)
 if(NOT FHM_MOVE_GUARD_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap same-volume move protection.")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectTcNavigationMonitor.cmake" RESULT_VARIABLE FHM_TC_NAV_RESULT)
+if(NOT FHM_TC_NAV_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not inject FolderHeatMap independent Total Commander navigation monitor.")
 endif()
 
 add_library(FolderHeatMap SHARED src/FolderHeatMapCounterOnly.cpp)
