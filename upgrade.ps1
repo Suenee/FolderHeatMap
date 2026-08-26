@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.21'
-$Revision = '1.21-navigation-debounce'
+$Version = '1.22'
+$Revision = '1.22-independent-tc-navigation'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -11,10 +11,17 @@ $Log = Join-Path $LogsDir 'upgrade.log'
 $HadWarning = $false
 $FailPhase = 'UNKNOWN'
 
-[IO.File]::WriteAllText($Log, '', [Text.UTF8Encoding]::new($false))
+# Keep native build output and the PowerShell capture pipeline on UTF-8. This
+# prevents Czech MSBuild messages from being decoded through a mismatched OEM code page.
+$Utf8 = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $Utf8
+$OutputEncoding = $Utf8
+try { & chcp.com 65001 *> $null } catch { }
+
+[IO.File]::WriteAllText($Log, '', $Utf8)
 
 function Write-Line([string]$Text, [ConsoleColor]$Color = [ConsoleColor]::Gray) {
-    [IO.File]::AppendAllText($Log, $Text + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    [IO.File]::AppendAllText($Log, $Text + [Environment]::NewLine, $Utf8)
     Write-Host $Text -ForegroundColor $Color
 }
 function Info([string]$Text) { Write-Line $Text Gray }
@@ -190,7 +197,7 @@ try {
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.21 navigation debounce and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.22 independent TC navigation and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
     $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
     $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
