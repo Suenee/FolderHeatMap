@@ -100,6 +100,7 @@ public:
 
     std::vector<TrackedObject> GetTrackedChildren(const std::wstring& volumeId, const std::wstring& parentRelativePath);
     std::optional<TrackedObject> GetTrackedObjectAtPath(const std::wstring& volumeId, const std::wstring& relativePath);
+    bool DeleteTrackedIdentityOnlyAtPath(const std::wstring& volumeId, const std::wstring& relativePath);
     bool ApplyTrackedLifecycleBatch(const std::wstring& volumeId,
                                     const std::vector<TrackedObservation>& observations,
                                     const std::vector<TrackedAction>& explicitActions,
