@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.22'
-$Revision = '1.22-independent-tc-navigation'
+$Version = '1.23'
+$Revision = '1.23-bootstrap-protocol-fix'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -75,7 +75,11 @@ function Resolve-TC {
     $tcIni = $env:COMMANDER_INI
     $keys = @('HKCU:\Software\Ghisler\Total Commander','HKLM:\Software\Ghisler\Total Commander','HKLM:\Software\Wow6432Node\Ghisler\Total Commander')
     if (-not $tcPath) { foreach ($k in $keys) { $v = Get-RegValue $k 'InstallDir'; if ($v) { $tcPath = $v; break } } }
-    if (-not $tcIni) { foreach ($k in $keys) { $v = Get-RegValue $k 'IniFileName'; if ($v) { $tcIni = $v; break } }
+    if (-not $tcIni) {
+        foreach ($k in $keys) {
+            $v = Get-RegValue $k 'IniFileName'
+            if ($v) { $tcIni = $v; break }
+        }
     }
     $tcExe = $null
     if ($tcPath) { foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { $p = Join-Path $tcPath $name; if (Test-Path $p) { $tcExe = $p; break } } }
@@ -96,20 +100,6 @@ function Move-RootLogsIntoLogsDirectory {
         Info ("[LOGS] Moved $($_.Name) -> logs\$([IO.Path]::GetFileName($destination))")
     }
 }
-function Reset-BootstrapFilesToRemote {
-    foreach ($f in @('upgrade.cmd','upgrade.ps1')) {
-        & git diff --quiet -- "$f"
-        $dirty = ($LASTEXITCODE -ne 0)
-        if (-not $dirty) {
-            & git diff --cached --quiet -- "$f"
-            $dirty = ($LASTEXITCODE -ne 0)
-        }
-        if ($dirty) {
-            Warn "$f changed during/bootstrap before verification; restoring exact origin/devel version."
-            Run-Native -Phase 'SELF-UPDATE' -Exe 'git.exe' -ArgumentList @('restore','--source=origin/devel','--staged','--worktree','--',$f) | Out-Null
-        }
-    }
-}
 
 try {
     Set-Location $Repo
@@ -122,7 +112,7 @@ try {
     $commit = (& git rev-parse HEAD 2>$null)
     Info ("Branch:     $branch")
     Info ("Commit:     $commit")
-    Info 'Runner:     PowerShell-only; upgrade.cmd is launcher only'
+    Info 'Runner:     temporary origin/devel upgrade.ps1; upgrade.cmd is launcher only'
     Info '============================================================'
 
     $FailPhase = 'SELF-UPDATE'
@@ -141,19 +131,19 @@ try {
     }
 
     Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('pull','--ff-only','origin','devel') | Out-Null
-    Reset-BootstrapFilesToRemote
 
     $head = (& git rev-parse HEAD 2>$null).Trim()
     $remoteHead = (& git rev-parse origin/devel 2>$null).Trim()
     if (-not $head -or -not $remoteHead -or $head -ne $remoteHead) { Fail $FailPhase 'Local devel HEAD is not identical to origin/devel after update.' }
-    foreach ($f in @('upgrade.cmd','upgrade.ps1')) {
-        & git diff --quiet -- "$f"
-        if ($LASTEXITCODE -ne 0) { Fail $FailPhase "$f has local working-tree changes after self-repair." }
-        $headBlob = (& git rev-parse ("HEAD:$f") 2>$null).Trim()
-        $remoteBlob = (& git rev-parse ("origin/devel:$f") 2>$null).Trim()
-        if (-not $headBlob -or -not $remoteBlob -or $headBlob -ne $remoteBlob) { Fail $FailPhase "$f in HEAD is not identical to origin/devel after update." }
-    }
-    Info '[BOOTSTRAP] repository launcher and runner verified current.'
+
+    # The launcher already executed the authoritative runner extracted from origin/devel.
+    # Do not compare or repair working-tree bootstrap files here: .gitattributes may
+    # legitimately materialize CRLF while Git blobs use LF. HEAD equality and Git's
+    # own repository state are the authoritative synchronization checks.
+    $runnerHeadBlob = (& git rev-parse 'HEAD:upgrade.ps1' 2>$null).Trim()
+    $runnerRemoteBlob = (& git rev-parse 'origin/devel:upgrade.ps1' 2>$null).Trim()
+    if (-not $runnerHeadBlob -or -not $runnerRemoteBlob -or $runnerHeadBlob -ne $runnerRemoteBlob) { Fail $FailPhase 'upgrade.ps1 in HEAD is not identical to origin/devel.' }
+    Info '[BOOTSTRAP] authoritative temporary runner verified against origin/devel.'
     $buildCommit = (& git rev-parse HEAD).Trim()
     Info ("[GIT] Build commit: $buildCommit")
 
@@ -211,7 +201,7 @@ try {
 
     $FailPhase = 'BUILD'; Info '[3/7] Preparing build...'; $build = Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64') | Out-Null
-    Info '[5/7] Building FolderHeatMap 1.22 independent TC navigation and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
+    Info '[5/7] Building FolderHeatMap 1.23 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset') | Out-Null
 
     $artifacts = @('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
     $FailPhase = 'DIST'; Info '[6/7] Preparing dist package...'; $dist = Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force | Out-Null
