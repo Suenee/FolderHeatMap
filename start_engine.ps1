@@ -31,6 +31,9 @@ if ($Install) {
     New-Item -Path $runKey -Force | Out-Null
     $launcher = $MyInvocation.MyCommand.Path
     $command = 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $launcher + '"'
+    # Store normal Windows quoting; PowerShell's single-quoted string above keeps
+    # the quote characters as part of the registry command line.
+    $command = $command.Replace('\"', '"')
     New-ItemProperty -Path $runKey -Name 'FolderHeatMapEngine' -PropertyType String -Value $command -Force | Out-Null
 }
 
@@ -45,5 +48,7 @@ if ([string]::IsNullOrWhiteSpace($settingsDir)) { $settingsDir = Join-Path $env:
 $settings = Join-Path $settingsDir 'FolderHeatMap.ini'
 $db = Join-Path $settingsDir 'FolderHeatMap.db'
 
-Start-Process -FilePath $Engine -ArgumentList @('--db', ('"' + $db + '"'), '--settings', ('"' + $settings + '"')) -WindowStyle Hidden | Out-Null
+$arguments = '--db "' + $db + '" --settings "' + $settings + '"'
+$arguments = $arguments.Replace('\"', '"')
+Start-Process -FilePath $Engine -ArgumentList $arguments -WindowStyle Hidden | Out-Null
 exit 0
