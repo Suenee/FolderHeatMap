@@ -1,82 +1,102 @@
-# FolderHeatMap - WDX test
+# FolderHeatMap test protocol
 
 Target: Total Commander 11.58 x64 on Windows 10+.
 
-This build stores folder activity persistently in an embedded SQLite database and adds a graphical configuration utility.
+FolderHeatMap stores activity persistently in SQLite. Since 1.22, `FolderHeatMapEngine.exe` is an independent background process: it observes Total Commander panel navigation directly through native Win32 controls, while the WDX plugin is primarily a cache/display client.
 
 ## Upgrade and build
 
-1. Pull the latest `devel` branch.
-2. Run `upgrade.cmd`.
-3. The script builds `dist\FolderHeatMap.wdx64` and `dist\FolderHeatMapConfig.exe`.
-4. If Total Commander was running, the upgrade script closes it for deployment and starts it again afterwards.
+1. Run `upgrade.cmd` from the repository root.
+2. Verify the final line is `STATUS: SUCCESS - phase=COMPLETE` (or an explicitly understood warning).
+3. The script builds `dist\FolderHeatMap.wdx64`, `dist\FolderHeatMapEngine.exe`, `dist\FolderHeatMapConfig.exe` and `dist\FolderHeatMapReset.exe`.
+4. The upgrader registers `start_engine.ps1` under the current user's Windows startup and starts the independent engine immediately.
+5. All runtime/upgrade logs remain under `logs\` and are ignored by Git.
+
+## Independent navigation test (1.22)
+
+Purpose: prove that Visits are recorded even when no FolderHeatMap custom columns are visible.
+
+1. Start Total Commander in a normal view which does **not** display Heat/Visits/Writes.
+2. Choose a test directory and note its Visits value before the test (you may briefly enable the FolderHeatMap view to read it, then return to the normal view).
+3. With FolderHeatMap columns hidden, enter the test directory, leave it, wait at least one whole second, and repeat this at least four times.
+4. Re-enable the FolderHeatMap columns only after all visits are complete.
+5. Verify that Visits increased by the accepted visits performed while the columns were hidden.
+6. Inspect `logs\FolderHeatMap.log`. Each independent panel navigation should appear as `[NAV-TC] LEFT accepted ...` or `[NAV-TC] RIGHT accepted ...`.
+7. WDX diagnostic callbacks may appear separately as `[DIAG_TC]`; they must not be required for Visits to increase.
+
+## One-second debounce test
+
+1. Keep a test directory selected and trigger rapid repeated navigation/Enter actions within the same whole second.
+2. Verify that the same path is counted at most once for that second.
+3. Repeat the same visit in a later second and verify that it is counted again.
+4. Normal revisits such as `A -> B -> A` must continue to count when they occur in different seconds.
+
+## Two-panel test
+
+1. Put different directories in the left and right Total Commander panels.
+2. Navigate independently in the left panel, then in the right panel.
+3. Verify that `[NAV-TC] LEFT` and `[NAV-TC] RIGHT` log entries correspond to the correct sides.
+4. Changing one panel must not create a false visit for the unchanged panel.
+
+## Engine lifetime test
+
+1. Confirm `FolderHeatMapEngine.exe` is running.
+2. Switch Total Commander from a FolderHeatMap custom-column view to a normal view.
+3. Confirm the engine remains running.
+4. Close Total Commander completely and confirm the engine may remain sleeping in the background.
+5. Start Total Commander again without selecting a FolderHeatMap view and perform the independent navigation test again.
+6. After a Windows sign-out/sign-in or reboot, verify that the engine starts automatically from the current-user startup registration.
 
 ## Configuration GUI
 
 Run `configure.cmd` from the repository root.
 
-The GUI currently controls:
-
-- automatic or manual cooling,
-- manual cooling half-life in days,
-- whether heat propagates from hot descendants to their parent path,
-- path propagation decay percentage per tree level,
-- color anchors 1-7,
-- smooth color transitions and the number of intermediate steps.
-
-Heat level 0 never receives a FolderHeatMap color override. Total Commander keeps its normal color for it.
-
-The current WDX interface has no standard callback for opening a content-plugin configuration dialog from Total Commander's WDX plugin list, so the graphical settings utility is a companion executable. `configure.cmd` is the one-click launcher.
-
-## Custom columns
-
-The FolderHeatMap view can use these fields:
-
-- Heat
-- Visits
-- Last Visit
-- Heat Level
-- Heat Color Step (technical field used by generated Total Commander color rules)
-
-Fields are intentionally returned only for directories.
+The GUI controls cooling, path heat contribution, file contribution where enabled, and Total Commander color mapping. Heat level 0 never receives a FolderHeatMap color override; Total Commander keeps its normal color.
 
 ## Color-map test
 
 1. Run `configure.cmd`.
 2. Keep the default 1-7 colors for the first test.
-3. Keep `Smooth transitions` enabled and `4` intermediate steps per level.
-4. Click `Použít a aktualizovat TC`.
-5. The utility writes FolderHeatMap saved searches and color filters into the active `wincmd.ini` while preserving existing non-FolderHeatMap color filters.
-6. If Total Commander is running, the utility restarts it so the new color rules are loaded.
-7. Return to a directory containing folders with different Heat values.
-8. Verify that unused/zero-heat folders keep their original Total Commander color and hotter folders move through the configured color gradient.
+3. Keep smooth transitions enabled.
+4. Apply the settings and refresh/restart Total Commander as requested by the configurator.
+5. Return to a directory containing folders with different Heat values.
+6. Verify that unused/zero-heat folders keep their original Total Commander color and hotter folders move through the configured gradient.
 
 ## Path heat test
 
-1. Enable `Zohlednit horké podadresáře` and set path decay to 50%.
-2. Make a deep child folder hot by visiting it several times, preferably by jumping directly to it.
-3. Return to its parent, grandparent, and higher levels.
-4. Verify that `Visits` only reflects direct visits, while `Heat` on the ancestors receives a progressively weaker inherited contribution.
-5. Disable path heat in the GUI and verify that the ancestors return to their direct-only Heat values.
-
-## Cooling test
-
-Manual mode: set a chosen half-life in days and verify that the calculation uses that value.
-
-Automatic mode: FolderHeatMap records active days. Until at least 7 active days have been observed it uses a 30-day bootstrap half-life. After that it adapts the effective half-life to the user's observed activity frequency, clamped between 7 and 180 calendar days.
+1. Enable descendant/path heat and choose a path-decay value.
+2. Make a deep child folder hot by visiting it several times.
+3. Return to its parent, grandparent and higher levels.
+4. Verify that Visits reflects direct visits while Heat on ancestors can receive progressively weaker inherited contribution.
+5. Disable path heat and verify ancestors return to direct-only Heat.
 
 ## Persistence test
 
-1. Navigate through several directories in the FolderHeatMap custom-columns view.
-2. Revisit one directory several times and note its `Visits` value.
-3. Close all Total Commander windows.
-4. Start Total Commander again and return to the same parent directory.
-5. Verify that the previous `Visits`, `Last Visit` and heat history are still present.
-6. Enter the directory once more and verify that `Visits` continues from the stored value instead of starting from zero.
+1. Navigate through several directories and revisit one directory several times.
+2. Note its Visits value.
+3. Close Total Commander.
+4. Start Total Commander again.
+5. Verify that Visits/Heat persist and continue from the stored value.
 
-## Removable-drive identity test
+## Canonical identity: rename/move test
 
-1. Visit a directory on a removable local volume and note its `Visits` value.
-2. Disconnect and reconnect the same volume under a different drive letter if possible.
-3. Open the same relative path.
-4. Verify that the old history is found. Local folder identity is based on volume GUID plus relative path, not the drive letter.
+1. Create and visit a test directory several times.
+2. Rename it on the same volume.
+3. Verify that the renamed directory keeps the same history.
+4. The canonical Volume Serial + 128-bit File ID should remain the same in diagnostics.
+
+## Canonical identity: external delete/recreate test
+
+1. Create and heat a test directory.
+2. Delete it outside Total Commander (for example from a command prompt).
+3. Recreate the same path as a new directory.
+4. Navigate so SLOW lifecycle reconciliation observes it.
+5. Verify the recreated filesystem object starts cold and does not inherit the deleted object's history.
+
+## Delete watcher test
+
+1. Create and heat a test directory.
+2. Delete it through Total Commander.
+3. Verify an immediate watcher `REMOVED`/tombstone path appears in the log.
+4. Recreate the same directory name and verify it starts cold.
+5. Drive roots such as `D:\` must never be tombstoned or recursively purged.
