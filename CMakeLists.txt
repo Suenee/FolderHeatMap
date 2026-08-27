@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.34 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.35 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -18,7 +18,6 @@ execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${CMAKE_SOURCE_DIR}/src/Engi
 if(NOT FHM_ENGINE_GENERATE_RESULT EQUAL 0 OR NOT EXISTS "${FHM_ENGINE_GENERATED_CPP}")
     message(FATAL_ERROR "Could not generate the guarded FolderHeatMap engine source.")
 endif()
-
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectDeletionDiagnostics.cmake" RESULT_VARIABLE FHM_DIAG_INJECT_RESULT)
 if(NOT FHM_DIAG_INJECT_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap safe deletion lifecycle.")
