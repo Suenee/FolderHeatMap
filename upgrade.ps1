@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.33'
-$Revision = '1.33-delete-recreate-tests'
+$Version = '1.34'
+$Revision = '1.34-lifecycle-stress-tests'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -157,18 +157,18 @@ try {
 
     $FailPhase='BUILD'; Info '[3/7] Preparing build...'; $build=Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64')|Out-Null
-    Info '[5/7] Building FolderHeatMap 1.33 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset')|Out-Null
+    Info '[5/7] Building FolderHeatMap 1.34 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset')|Out-Null
     $artifacts=@('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
 
     $FailPhase='DIST'; Info '[6/7] Preparing isolated package staging...'; $package=Join-Path $build 'package'; if (Test-Path $package) { Remove-Item $package -Recurse -Force }; New-Item -ItemType Directory -Path $package -Force|Out-Null
     foreach ($f in $artifacts) { Copy-Item -LiteralPath (Join-Path "$build\Release" $f) -Destination (Join-Path $package $f) -Force }
-    foreach ($f in @('configure.cmd','README.md','TESTING.md','test.cmd','test.ps1')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item -LiteralPath (Join-Path $Repo $f) -Destination (Join-Path $package $f) -Force } }
+    foreach ($f in @('configure.cmd','README.md','TESTING.md','test.cmd','test.ps1','test_stress.ps1')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item -LiteralPath (Join-Path $Repo $f) -Destination (Join-Path $package $f) -Force } }
     Info ("[DIST] Package staging ready: $package")
 
     $FailPhase='DEPLOY'; Info '[7/7] Deploying staged package to Total Commander installation...'; Stop-TotalCommanderForDeploy -Reason 'pre-deploy guard'; Stop-EngineForDeploy -Reason 'pre-deploy guard'
     $dist=Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force|Out-Null
     foreach ($f in $artifacts) { $guardTc=($f -eq 'FolderHeatMap.wdx64'); $guardEngine=($f -eq 'FolderHeatMapEngine.exe'); Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' -GuardTotalCommander:$guardTc -GuardEngine:$guardEngine }
-    foreach ($f in @('configure.cmd','README.md','TESTING.md','test.cmd','test.ps1')) { if (Test-Path (Join-Path $package $f)) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' } }
+    foreach ($f in @('configure.cmd','README.md','TESTING.md','test.cmd','test.ps1','test_stress.ps1')) { if (Test-Path (Join-Path $package $f)) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' } }
 
     if ($tc.Plugin) {
         $pluginFull=[IO.Path]::GetFullPath($tc.Plugin); $distPlugin=[IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
