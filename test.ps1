@@ -8,6 +8,7 @@ $LogPath = Join-Path $LogDir ("test-$RunId.log")
 $PassCount = 0
 $ErrorCount = 0
 $WarningCount = 0
+$CleanupItems = @()
 $Repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
 $EngineLog = Join-Path $Repo 'logs\FolderHeatMap.log'
@@ -45,17 +46,14 @@ function Clean-Workspace {
     Assert-ExactWorkspace
     if (-not (Test-Path -LiteralPath $Workspace)) {
         New-Item -ItemType Directory -Path $Workspace -Force | Out-Null
+        $script:CleanupItems = @()
         return
     }
     $items = @(Get-ChildItem -LiteralPath $Workspace -Force -ErrorAction SilentlyContinue)
-    if ($items.Count -gt 0) {
-        Info ("[WORKSPACE] Existing items before cleanup: " + (($items | ForEach-Object Name) -join ', '))
-        foreach ($item in $items) {
-            [void](Assert-InWorkspace $item.FullName)
-            Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
-        }
-    } else {
-        Info '[WORKSPACE] Workspace is already empty.'
+    $script:CleanupItems = @($items | ForEach-Object { $_.Name })
+    foreach ($item in $items) {
+        [void](Assert-InWorkspace $item.FullName)
+        Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
     }
 }
 
@@ -134,8 +132,9 @@ public static class FhmNative {
         const uint FILE_READ_ATTRIBUTES = 0x80;
         const uint SHARE = 1 | 2 | 4;
         const uint OPEN_EXISTING = 3;
+        const uint FILE_ATTRIBUTE_NORMAL = 0x80;
         const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
-        using (SafeFileHandle h = CreateFileW(path, FILE_READ_ATTRIBUTES, SHARE, IntPtr.Zero, OPEN_EXISTING, directory ? FILE_FLAG_BACKUP_SEMANTICS : 0, IntPtr.Zero)) {
+        using (SafeFileHandle h = CreateFileW(path, FILE_READ_ATTRIBUTES, SHARE, IntPtr.Zero, OPEN_EXISTING, directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL, IntPtr.Zero)) {
             if (h.IsInvalid) return null;
             FILE_ID_INFO info;
             if (!GetFileInformationByHandleEx(h, 18, out info, (uint)Marshal.SizeOf(typeof(FILE_ID_INFO)))) return null;
@@ -231,6 +230,11 @@ function Get-EngineLogTail([long]$StartLength) {
 function Wait-EngineLog([long]$StartLength,[string]$Pattern,[int]$TimeoutMs=10000) {
     Wait-Until { $tail = Get-EngineLogTail $StartLength; if ($tail -match $Pattern) { return $tail }; return $null } $TimeoutMs 250
 }
+function Log-EngineTrace([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return }
+    $lines = @($Text -split "`r?`n" | Where-Object { $_ -match '(?i)D:\\Temp\\FHM|\[LIFECYCLE\]|\[FILE_WRITE\]|\[DIAG_FS\]|\[NAV-TC\]' } | Select-Object -Last 80)
+    foreach ($line in $lines) { if ($line) { Info ("[ENGINE-TRACE] $line") } }
+}
 
 try {
     Assert-ExactWorkspace
@@ -250,7 +254,13 @@ try {
 
     TestHeader 'Prerequisites and clean workspace'
     Pass 'Safety barrier locked to D:\Temp\FHM.'
-    Pass 'Previous workspace contents removed.'
+    if ($CleanupItems.Count -gt 0) {
+        Info ("[WORKSPACE] Previous content found: " + ($CleanupItems -join ', '))
+        Pass ("Removed $($CleanupItems.Count) previous workspace item(s).")
+    } else {
+        Info '[WORKSPACE] No previous content found.'
+        Pass 'Workspace started clean.'
+    }
 
     $tc = Resolve-TC
     if (-not $tc.Exe -or -not (Test-Path -LiteralPath $tc.Exe)) { throw 'Total Commander executable was not found.' }
@@ -278,6 +288,7 @@ try {
     Ensure-TC $tc.Exe $src
 
     TestHeader 'Directory navigation heat preparation'
+    $navLogStart = if (Test-Path -LiteralPath $EngineLog) { (Get-Item -LiteralPath $EngineLog).Length } else { 0 }
     for ($i=1; $i -le 4; $i++) {
         Navigate-TC $tc.Exe $hotDir
         Start-Sleep -Milliseconds 1100
@@ -292,12 +303,16 @@ try {
         ErrorResult 'Directory Visits did not reach the expected value after TC navigation.'
         $folderBefore = Get-FolderState $database $hotDir
     }
+    $navTail = Get-EngineLogTail $navLogStart
+    if ($navTail -match ([regex]::Escape('NAV-TC') + '.*' + [regex]::Escape($hotDir))) { Pass 'Engine log confirms independent TC navigation for HOT_DIR.' } else { ErrorResult 'Engine log does not contain the expected NAV-TC entry for HOT_DIR.' }
+    Log-EngineTrace $navTail
     $dirIdBefore = [FhmNative]::FileIdentity($hotDir,$true)
     if ($dirIdBefore) { Pass ("Directory File ID acquired: $dirIdBefore") } else { ErrorResult 'Could not acquire directory Volume Serial + File ID.' }
 
     TestHeader 'File write heat preparation'
     Navigate-TC $tc.Exe $src
     Start-Sleep -Milliseconds 500
+    $writeLogStart = if (Test-Path -LiteralPath $EngineLog) { (Get-Item -LiteralPath $EngineLog).Length } else { 0 }
     $fileInitial = Get-FileState $database $file
     $initialWrites = if ($fileInitial) { [long]$fileInitial.write_events } else { 0 }
     for ($i=1; $i -le 3; $i++) {
@@ -312,6 +327,9 @@ try {
         ErrorResult ("File Writes did not increase by three logical writes. Initial=$initialWrites")
         $fileBefore = Get-FileState $database $file
     }
+    $writeTail = Get-EngineLogTail $writeLogStart
+    if ($writeTail -match ([regex]::Escape('FILE_WRITE') + '.*' + [regex]::Escape($file))) { Pass 'Engine log confirms file-write tracking for hot_file.txt.' } else { ErrorResult 'Engine log does not contain expected FILE_WRITE diagnostics for hot_file.txt.' }
+    Log-EngineTrace $writeTail
     $fileIdBefore = [FhmNative]::FileIdentity($file,$false)
     if ($fileIdBefore) { Pass ("File File ID acquired: $fileIdBefore") } else { ErrorResult 'Could not acquire file Volume Serial + File ID.' }
 
@@ -332,7 +350,8 @@ try {
     }
     if (Get-FolderState $database $hotDir) { ErrorResult 'Old directory DB path still has active history after MOVE.' } else { Pass 'Old directory DB path no longer has active history.' }
     $moveLog = Wait-EngineLog $logStart ([regex]::Escape('move_migrated old') + '.*' + [regex]::Escape($hotDir)) 12000
-    if ($moveLog) { Pass 'Lifecycle log confirms directory move_migrated old/new handling.' } else { ErrorResult 'Lifecycle log did not confirm directory move_migrated handling.' }
+    if ($moveLog) { Pass 'Lifecycle log confirms directory move_migrated old/new handling.'; Log-EngineTrace $moveLog }
+    else { ErrorResult 'Lifecycle log did not confirm directory move_migrated handling.'; Log-EngineTrace (Get-EngineLogTail $logStart) }
 
     TestHeader 'Same-volume file MOVE SRC -> DST'
     Navigate-TC $tc.Exe $src
@@ -351,7 +370,8 @@ try {
     }
     if (Get-FileState $database $file) { ErrorResult 'Old file DB path still has active history after MOVE.' } else { Pass 'Old file DB path no longer has active history.' }
     $moveLog = Wait-EngineLog $logStart ([regex]::Escape('move_migrated old') + '.*' + [regex]::Escape($file)) 12000
-    if ($moveLog) { Pass 'Lifecycle log confirms file move_migrated old/new handling.' } else { ErrorResult 'Lifecycle log did not confirm file move_migrated handling.' }
+    if ($moveLog) { Pass 'Lifecycle log confirms file move_migrated old/new handling.'; Log-EngineTrace $moveLog }
+    else { ErrorResult 'Lifecycle log did not confirm file move_migrated handling.'; Log-EngineTrace (Get-EngineLogTail $logStart) }
 
     TestHeader 'MOVE back DST -> SRC'
     Navigate-TC $tc.Exe $dst
