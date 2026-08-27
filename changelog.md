@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.35 - 28.08.2026
+
+- Fixed the stress-stage startup failure where the baseline test left Total Commander inside `D:\Temp\FHM\SRC`, causing Windows to reject workspace cleanup because the directory was still in use.
+- The stress runner now navigates Total Commander to the fixed release path `D:\Temp` before cleaning `D:\Temp\FHM`, waits for panel/watcher handoff, and reports a dedicated PASS when the workspace has been released.
+- Added bounded retry handling for transiently locked workspace items during stress cleanup while keeping all destructive operations strictly inside `D:\Temp\FHM\`.
+- Fixed the stress summary output so `Write-LogLine 'RESULT: PASS'` and `Write-LogLine 'RESULT: ERROR'` are valid runtime calls instead of being concatenated into a nonexistent command name.
+- Kept the existing baseline and lifecycle stress scenarios unchanged after the corrected handoff.
+- Updated build/runtime/upgrader metadata to 1.35 and included `STRESS_TESTING.md` in staged/deployed documentation.
+- Version updated to 1.35 (`1.35-stress-workspace-release`).
+
 ## 1.34 - 28.08.2026
 
 - Added `test_stress.ps1`, a second-stage lifecycle stress regression suite that runs after the proven baseline tests.
