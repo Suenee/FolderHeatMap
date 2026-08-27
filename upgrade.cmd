@@ -37,6 +37,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem IMPORTANT: this entire final block is parsed by CMD before PowerShell starts.
+rem upgrade.ps1 may update upgrade.cmd on disk while it runs; the already-parsed
+rem EXIT command therefore cannot accidentally continue in newly replaced file.
 (
     set "FHM_UPGRADE_REPO=!REPO_DIR!"
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!RUNNER_TEMP!"
