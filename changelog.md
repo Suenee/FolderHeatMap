@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.31 - 28.08.2026
+
+- Added `test.cmd` and `test.ps1` as a repeatable automated regression suite for FolderHeatMap same-volume MOVE behavior.
+- Standardized the exclusive test workspace to `D:\Temp\FHM\`; each run logs and then removes all previous workspace contents before creating a clean test tree, while destructive filesystem operations outside that tree are prohibited by a hard safety check.
+- Added real Total Commander navigation driving through `/O /L=...` so automated directory heating exercises the independent TC navigation monitor rather than synthesizing Visits directly in the database.
+- Added real file-write preparation with spacing beyond the one-second coalescing window.
+- Added native Windows `Volume Serial + FILE_ID_128` capture before/after moves and round trips.
+- Added direct read-only SQLite verification through the Windows `winsqlite3.dll` API, including directory Visits/usage fields and file Writes/activity fields before and after migration.
+- Added assertions that old source database paths no longer retain active history and that `[LIFECYCLE] move_migrated old/new` diagnostics are emitted.
+- Console test results are reported continuously as green `[PASS]`, red `[ERROR]`, yellow warnings, with detailed per-run diagnostics retained under `D:\Temp\FHM\logs\`.
+- Test data are intentionally preserved after a run for diagnosis and automatically cleared at the beginning of the next run.
+- Version updated to 1.31 (`1.31-automated-move-tests`).
+
 ## 1.30 - 27.08.2026
 
 - Fixed deployment failures where `FolderHeatMapEngine.exe` restarted after the initial STOP-RUNTIME phase and then locked its own live executable in `dist`.
