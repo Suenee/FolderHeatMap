@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$TestVersion = '1.31'
+$TestVersion = '1.32'
 $Workspace = 'D:\Temp\FHM'
 $RunId = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
 $LogDir = Join-Path $Workspace 'logs'
@@ -346,7 +346,7 @@ try {
     if ($folderBefore -and $folderAfter -and (State-Signature $folderBefore $folderFields) -eq (State-Signature $folderAfter $folderFields)) {
         Pass ("Directory history preserved: " + (State-Signature $folderAfter $folderFields))
     } else {
-        ErrorResult ("Directory history mismatch after MOVE. before=[" + (State-Signature $folderBefore $folderFields) + "] after=[" + (State-Signature $folderAfter $folderFields) + ']")
+        ErrorResult ("Directory history mismatch after MOVE. before=[" + (State-Signature $folderBefore $folderFields) + "] after=[" + (State-Signature $folderAfter $folderFields) + "]")
     }
     if (Get-FolderState $database $hotDir) { ErrorResult 'Old directory DB path still has active history after MOVE.' } else { Pass 'Old directory DB path no longer has active history.' }
     $moveLog = Wait-EngineLog $logStart ([regex]::Escape('move_migrated old') + '.*' + [regex]::Escape($hotDir)) 12000
@@ -366,7 +366,7 @@ try {
     if ($fileBefore -and $fileAfter -and (State-Signature $fileBefore $fileFields) -eq (State-Signature $fileAfter $fileFields)) {
         Pass ("File history preserved: " + (State-Signature $fileAfter $fileFields))
     } else {
-        ErrorResult ("File history mismatch after MOVE. before=[" + (State-Signature $fileBefore $fileFields) + "] after=[" + (State-Signature $fileAfter $fileFields) + ']")
+        ErrorResult ("File history mismatch after MOVE. before=[" + (State-Signature $fileBefore $fileFields) + "] after=[" + (State-Signature $fileAfter $fileFields) + "]")
     }
     if (Get-FileState $database $file) { ErrorResult 'Old file DB path still has active history after MOVE.' } else { Pass 'Old file DB path no longer has active history.' }
     $moveLog = Wait-EngineLog $logStart ([regex]::Escape('move_migrated old') + '.*' + [regex]::Escape($file)) 12000
