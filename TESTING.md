@@ -90,12 +90,35 @@ The GUI controls cooling, path heat contribution, file contribution where enable
 4. Start Total Commander again.
 5. Verify that Visits/Heat persist and continue from the stored value.
 
-## Canonical identity: rename/move test
+## Canonical identity: rename test
 
 1. Create and visit a test directory several times.
 2. Rename it on the same volume.
-3. Verify that the renamed directory keeps the same history.
-4. The canonical Volume Serial + 128-bit File ID should remain the same in diagnostics.
+3. Verify that the renamed directory keeps the same Visits/Heat history.
+4. Repeat with a file that already has several Writes; rename it and verify Writes/Heat are preserved.
+5. The canonical Volume Serial + 128-bit File ID must remain the same before and after the rename.
+
+## Identity-first same-volume move test (1.29)
+
+Purpose: verify that a source-side `REMOVED` event cannot destroy history before the same File ID is reconciled at its destination.
+
+1. Create `D:\FHM_MOVE_SOURCE` and `D:\FHM_MOVE_TARGET`.
+2. Create `D:\FHM_MOVE_SOURCE\HOT_DIR`, visit it repeatedly, and note its Visits/Heat.
+3. Create `D:\FHM_MOVE_SOURCE\hot_file.txt`, save it repeatedly with more than one second between logical writes, and note its Writes/Heat.
+4. Move `HOT_DIR` to `D:\FHM_MOVE_TARGET\HOT_DIR` without changing volume.
+5. Move `hot_file.txt` to `D:\FHM_MOVE_TARGET\hot_file.txt` without changing volume.
+6. Verify directory Visits/Heat and file Writes/Heat are preserved at the destination.
+7. Verify the log contains `[LIFECYCLE] move_migrated old` and `[LIFECYCLE] move_migrated new` for the moved objects, or an equivalent SLOW lifecycle move action.
+8. Verify the Volume Serial and File ID are identical before and after each move.
+9. Verify the old source paths no longer retain visible history/cache entries.
+
+## Move race stress test (1.29)
+
+1. Heat a directory containing several heated files.
+2. Move the entire directory between two parent directories on the same volume several times in quick succession.
+3. Refresh Total Commander after the moves.
+4. Verify the directory and descendant file histories remain attached to the same filesystem objects rather than resetting or duplicating.
+5. The log must not contain `purge_subtree completed` for an object that is simultaneously resolved under a new same-volume path with the same File ID.
 
 ## Canonical identity: external delete/recreate test
 
@@ -104,6 +127,7 @@ The GUI controls cooling, path heat contribution, file contribution where enable
 3. Recreate the same path as a new directory.
 4. Navigate so SLOW lifecycle reconciliation observes it.
 5. Verify the recreated filesystem object starts cold and does not inherit the deleted object's history.
+6. Repeat with a file that has non-zero Writes; a newly created file at the same path with a different File ID must start with new history.
 
 ## Delete watcher test
 
@@ -112,3 +136,4 @@ The GUI controls cooling, path heat contribution, file contribution where enable
 3. Verify an immediate watcher `REMOVED`/tombstone path appears in the log.
 4. Recreate the same directory name and verify it starts cold.
 5. Drive roots such as `D:\` must never be tombstoned or recursively purged.
+6. A move to `$Recycle.Bin` is intentionally treated as deletion and must not preserve the object's active history as a normal move.
