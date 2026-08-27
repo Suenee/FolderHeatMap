@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.32-test-parser-preflight"
+set "UPGRADE_REV=1.33-delete-recreate-tests"
 set "REPO_DIR=%~dp0"
 if "!REPO_DIR:~-1!"=="\" set "REPO_DIR=!REPO_DIR:~0,-1!"
 cd /d "!REPO_DIR!"
@@ -37,9 +37,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem IMPORTANT: this entire final block is parsed by CMD before PowerShell starts.
-rem upgrade.ps1 may update upgrade.cmd on disk while it runs; the already-parsed
-rem EXIT command therefore cannot accidentally continue in newly replaced file.
 (
     set "FHM_UPGRADE_REPO=!REPO_DIR!"
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!RUNNER_TEMP!"
