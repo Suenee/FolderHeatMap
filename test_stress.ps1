@@ -1,13 +1,13 @@
 $ErrorActionPreference = 'Stop'
 
-$TestVersion = '1.34'
+$TestVersion = '1.35'
 $Workspace = 'D:\Temp\FHM'
+$ReleasePath = 'D:\Temp'
 $RunId = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
 $LogDir = Join-Path $Workspace 'logs'
 $LogPath = Join-Path $LogDir ("stress-$RunId.log")
 $Repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
-$EngineLog = Join-Path $Repo 'logs\FolderHeatMap.log'
 $PassCount = 0
 $ErrorCount = 0
 $WarningCount = 0
@@ -38,14 +38,6 @@ function Assert-InWorkspace([string]$Path) {
     if (-not $full.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw "Safety barrier: path outside D:\Temp\FHM: $full" }
     return $full
 }
-function Clean-Workspace {
-    Assert-ExactWorkspace
-    if (-not (Test-Path -LiteralPath $Workspace)) { New-Item -ItemType Directory -Path $Workspace -Force | Out-Null; return }
-    foreach ($item in @(Get-ChildItem -LiteralPath $Workspace -Force -ErrorAction SilentlyContinue)) {
-        [void](Assert-InWorkspace $item.FullName)
-        Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
-    }
-}
 function Get-RegValue([string]$Path,[string]$Name) { try { return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name } catch { return $null } }
 function Resolve-TC {
     $tcPath=$env:COMMANDER_PATH; $tcIni=$env:COMMANDER_INI
@@ -55,6 +47,26 @@ function Resolve-TC {
     $exe=$null
     if ($tcPath) { foreach($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')){$candidate=Join-Path $tcPath $name;if(Test-Path -LiteralPath $candidate){$exe=$candidate;break}} }
     [pscustomobject]@{Exe=$exe;Ini=$tcIni}
+}
+function Release-TCWorkspace([string]$TcExe) {
+    if (-not (Test-Path -LiteralPath $ReleasePath)) { New-Item -ItemType Directory -Path $ReleasePath -Force | Out-Null }
+    Info ("[TC] Releasing test workspace -> $ReleasePath")
+    $p=Start-Process -FilePath $TcExe -ArgumentList @('/O',('/L="{0}"' -f $ReleasePath)) -PassThru
+    if($p){$p.WaitForExit(5000)|Out-Null}
+    Start-Sleep -Milliseconds 1500
+}
+function Clean-Workspace {
+    Assert-ExactWorkspace
+    if (-not (Test-Path -LiteralPath $Workspace)) { New-Item -ItemType Directory -Path $Workspace -Force | Out-Null; return }
+    foreach ($item in @(Get-ChildItem -LiteralPath $Workspace -Force -ErrorAction SilentlyContinue)) {
+        [void](Assert-InWorkspace $item.FullName)
+        $removed=$false
+        for($attempt=1;$attempt -le 20;$attempt++) {
+            try { Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop; $removed=$true; break }
+            catch { if($attempt -eq 20){throw}; Start-Sleep -Milliseconds 250 }
+        }
+        if(-not $removed){throw "Could not clean workspace item: $($item.FullName)"}
+    }
 }
 
 $nativeSource=@'
@@ -102,43 +114,57 @@ function Heat-File([string]$Path,[int]$Writes=3) { for($i=1;$i -le $Writes;$i++)
 function Same-State($A,$B,[string[]]$Fields) { return ($A -and $B -and (State-Signature $A $Fields) -eq (State-Signature $B $Fields)) }
 
 try {
-    Assert-ExactWorkspace; Clean-Workspace; New-Item -ItemType Directory -Path $LogDir -Force|Out-Null; [IO.File]::WriteAllText($LogPath,'',$Utf8)
+    Assert-ExactWorkspace
+    $tc=Resolve-TC
+    if(-not $tc.Exe){throw 'Total Commander executable not found.'}
+    Release-TCWorkspace $tc.Exe
+    Pass 'Workspace released by Total Commander.'
+    Clean-Workspace
+    New-Item -ItemType Directory -Path $LogDir -Force|Out-Null
+    [IO.File]::WriteAllText($LogPath,'',$Utf8)
     Info '============================================================'; Info 'FolderHeatMap lifecycle stress regression tests'; Info("Test version: $TestVersion"); Info('Started:      '+[DateTime]::Now.ToString('dd.MM.yyyy HH:mm:ss.fff')); Info("Workspace:    $Workspace"); Info '============================================================'
-    $tc=Resolve-TC; if(-not $tc.Exe){throw'Total Commander executable not found.'}; $database=Join-Path (Split-Path -Parent $tc.Ini) 'FolderHeatMap.db'; if(-not(Test-Path -LiteralPath $database)){throw"FolderHeatMap database not found: $database"}; if(-not(Get-Process -Name 'FolderHeatMapEngine' -ErrorAction SilentlyContinue)){throw'FolderHeatMapEngine is not running.'}; Pass'Prerequisites available.'
+    $database=Join-Path (Split-Path -Parent $tc.Ini) 'FolderHeatMap.db'; if(-not(Test-Path -LiteralPath $database)){throw "FolderHeatMap database not found: $database"}; if(-not(Get-Process -Name 'FolderHeatMapEngine' -ErrorAction SilentlyContinue)){throw 'FolderHeatMapEngine is not running.'}; Pass 'Prerequisites available.'
     $folderFields=@('visits','last_visit','heat_visits','recent_visits','active_days','first_active_day','last_active_day','last_effective_visit'); $fileFields=@('write_events','last_write','active_days','first_active_day','last_active_day')
-
     $src=Join-Path $Workspace 'STRESS_SRC'; $dst=Join-Path $Workspace 'STRESS_DST'; New-Item -ItemType Directory -Path $src,$dst -Force|Out-Null
 
     TestHeader 'Rapid same-volume MOVE stress'
-    $rapidDir=Join-Path $src 'RAPID_DIR'; New-Item -ItemType Directory -Path $rapidDir|Out-Null; Heat-Directory $tc.Exe $src $rapidDir 3; $rapidState=Wait-Until{Get-FolderState $database $rapidDir}; $rapidId=[FhmStressNative]::FileIdentity($rapidDir,$true)
-    $rapidCurrent=$rapidDir
+    $rapidDir=Join-Path $src 'RAPID_DIR'; New-Item -ItemType Directory -Path $rapidDir|Out-Null; Heat-Directory $tc.Exe $src $rapidDir 3; $rapidState=Wait-Until{Get-FolderState $database $rapidDir}; $rapidId=[FhmStressNative]::FileIdentity($rapidDir,$true); $rapidCurrent=$rapidDir
     for($i=1;$i -le 6;$i++){ $target=if($rapidCurrent.StartsWith($src,[StringComparison]::OrdinalIgnoreCase)){Join-Path $dst 'RAPID_DIR'}else{Join-Path $src 'RAPID_DIR'}; Move-Item -LiteralPath (Assert-InWorkspace $rapidCurrent) -Destination (Assert-InWorkspace $target) -Force; Start-Sleep -Milliseconds 450; $rapidCurrent=$target }
-    $rapidAfter=Wait-Until{Get-FolderState $database $rapidCurrent}; $rapidIdAfter=[FhmStressNative]::FileIdentity($rapidCurrent,$true); if($rapidId -eq $rapidIdAfter -and (Same-State $rapidState $rapidAfter $folderFields)){Pass'Rapid directory moves preserved identity and history.'}else{ErrorResult'Rapid directory moves changed identity or history.'}
+    $rapidAfter=Wait-Until{Get-FolderState $database $rapidCurrent}; if($rapidId -eq [FhmStressNative]::FileIdentity($rapidCurrent,$true) -and (Same-State $rapidState $rapidAfter $folderFields)){Pass 'Rapid directory moves preserved identity and history.'}else{ErrorResult 'Rapid directory moves changed identity or history.'}
 
     TestHeader 'Directory and file RENAME'
-    $renameDir=Join-Path $src 'RENAME_DIR'; New-Item -ItemType Directory -Path $renameDir|Out-Null; Heat-Directory $tc.Exe $src $renameDir 3; $renameDirState=Wait-Until{Get-FolderState $database $renameDir}; $renameDirId=[FhmStressNative]::FileIdentity($renameDir,$true); $renameDirNew=Join-Path $src 'RENAMED_DIR'; Move-Item -LiteralPath (Assert-InWorkspace $renameDir) -Destination (Assert-InWorkspace $renameDirNew) -Force; $renameDirAfter=Wait-Until{Get-FolderState $database $renameDirNew}; if($renameDirId -eq [FhmStressNative]::FileIdentity($renameDirNew,$true) -and (Same-State $renameDirState $renameDirAfter $folderFields) -and -not (Get-FolderState $database $renameDir)){Pass'Directory rename preserved identity/history and removed old DB path.'}else{ErrorResult'Directory rename regression detected.'}
-    Navigate-TC $tc.Exe $src; $renameFile=Join-Path $src 'rename_file.txt'; [IO.File]::WriteAllText((Assert-InWorkspace $renameFile),'rename-test',$Utf8); Heat-File $renameFile 3; $renameFileState=Wait-Until{Get-FileState $database $renameFile}; $renameFileId=[FhmStressNative]::FileIdentity($renameFile,$false); $renameFileNew=Join-Path $src 'renamed_file.txt'; Move-Item -LiteralPath (Assert-InWorkspace $renameFile) -Destination (Assert-InWorkspace $renameFileNew) -Force; $renameFileAfter=Wait-Until{Get-FileState $database $renameFileNew}; if($renameFileId -eq [FhmStressNative]::FileIdentity($renameFileNew,$false) -and (Same-State $renameFileState $renameFileAfter $fileFields) -and -not (Get-FileState $database $renameFile)){Pass'File rename preserved identity/history and removed old DB path.'}else{ErrorResult'File rename regression detected.'}
+    $renameDir=Join-Path $src 'RENAME_DIR'; New-Item -ItemType Directory -Path $renameDir|Out-Null; Heat-Directory $tc.Exe $src $renameDir 3; $renameDirState=Wait-Until{Get-FolderState $database $renameDir}; $renameDirId=[FhmStressNative]::FileIdentity($renameDir,$true); $renameDirNew=Join-Path $src 'RENAMED_DIR'; Move-Item -LiteralPath (Assert-InWorkspace $renameDir) -Destination (Assert-InWorkspace $renameDirNew) -Force; $renameDirAfter=Wait-Until{Get-FolderState $database $renameDirNew}; if($renameDirId -eq [FhmStressNative]::FileIdentity($renameDirNew,$true) -and (Same-State $renameDirState $renameDirAfter $folderFields) -and -not (Get-FolderState $database $renameDir)){Pass 'Directory rename preserved identity/history and removed old DB path.'}else{ErrorResult 'Directory rename regression detected.'}
+    Navigate-TC $tc.Exe $src; $renameFile=Join-Path $src 'rename_file.txt'; [IO.File]::WriteAllText((Assert-InWorkspace $renameFile),'rename-test',$Utf8); Heat-File $renameFile 3; $renameFileState=Wait-Until{Get-FileState $database $renameFile}; $renameFileId=[FhmStressNative]::FileIdentity($renameFile,$false); $renameFileNew=Join-Path $src 'renamed_file.txt'; Move-Item -LiteralPath (Assert-InWorkspace $renameFile) -Destination (Assert-InWorkspace $renameFileNew) -Force; $renameFileAfter=Wait-Until{Get-FileState $database $renameFileNew}; if($renameFileId -eq [FhmStressNative]::FileIdentity($renameFileNew,$false) -and (Same-State $renameFileState $renameFileAfter $fileFields) -and -not (Get-FileState $database $renameFile)){Pass 'File rename preserved identity/history and removed old DB path.'}else{ErrorResult 'File rename regression detected.'}
 
     TestHeader 'Delete populated subtree and recreate cold'
-    $tree=Join-Path $src 'HOT_TREE'; $a=Join-Path $tree 'A'; $b=Join-Path $a 'B'; $c=Join-Path $b 'C'; New-Item -ItemType Directory -Path $c -Force|Out-Null; $treeFile=Join-Path $c 'child.txt'; [IO.File]::WriteAllText((Assert-InWorkspace $treeFile),'tree',$Utf8); Heat-Directory $tc.Exe $b $c 3; Navigate-TC $tc.Exe $c; Heat-File $treeFile 3; $oldC=Wait-Until{Get-FolderState $database $c}; $oldChild=Wait-Until{Get-FileState $database $treeFile}; $oldCId=[FhmStressNative]::FileIdentity($c,$true); $oldChildId=[FhmStressNative]::FileIdentity($treeFile,$false); Navigate-TC $tc.Exe $src; Remove-Item -LiteralPath (Assert-InWorkspace $tree) -Recurse -Force; $subtreeGone=Wait-Until{if(-not (Get-FolderState $database $c) -and -not (Get-FileState $database $treeFile)){return$true}}; if($subtreeGone){Pass'Populated subtree history was purged recursively.'}else{ErrorResult'Populated subtree left stale DB history.'}; New-Item -ItemType Directory -Path $c -Force|Out-Null; [IO.File]::WriteAllText((Assert-InWorkspace $treeFile),'new-tree',$Utf8); if($oldCId -ne [FhmStressNative]::FileIdentity($c,$true) -and $oldChildId -ne [FhmStressNative]::FileIdentity($treeFile,$false)){Pass'Recreated subtree objects have new identities.'}else{ErrorResult'Recreated subtree reused an old identity unexpectedly.'}
+    $tree=Join-Path $src 'HOT_TREE'; $c=Join-Path (Join-Path (Join-Path $tree 'A') 'B') 'C'; New-Item -ItemType Directory -Path $c -Force|Out-Null; $treeFile=Join-Path $c 'child.txt'; [IO.File]::WriteAllText((Assert-InWorkspace $treeFile),'tree',$Utf8); Heat-Directory $tc.Exe (Split-Path -Parent $c) $c 3; Navigate-TC $tc.Exe $c; Heat-File $treeFile 3; $oldCId=[FhmStressNative]::FileIdentity($c,$true); $oldChildId=[FhmStressNative]::FileIdentity($treeFile,$false); Navigate-TC $tc.Exe $src; Remove-Item -LiteralPath (Assert-InWorkspace $tree) -Recurse -Force; $subtreeGone=Wait-Until{if(-not (Get-FolderState $database $c) -and -not (Get-FileState $database $treeFile)){return $true}}; if($subtreeGone){Pass 'Populated subtree history was purged recursively.'}else{ErrorResult 'Populated subtree left stale DB history.'}; New-Item -ItemType Directory -Path $c -Force|Out-Null; [IO.File]::WriteAllText((Assert-InWorkspace $treeFile),'new-tree',$Utf8); if($oldCId -ne [FhmStressNative]::FileIdentity($c,$true) -and $oldChildId -ne [FhmStressNative]::FileIdentity($treeFile,$false)){Pass 'Recreated subtree objects have new identities.'}else{ErrorResult 'Recreated subtree reused an old identity unexpectedly.'}
 
     TestHeader 'Immediate DELETE -> RECREATE race'
-    $race=Join-Path $src 'RACE_DIR'; New-Item -ItemType Directory -Path $race|Out-Null; Heat-Directory $tc.Exe $src $race 3; $raceOld=Wait-Until{Get-FolderState $database $race}; $raceOldId=[FhmStressNative]::FileIdentity($race,$true); Navigate-TC $tc.Exe $src; Remove-Item -LiteralPath (Assert-InWorkspace $race) -Recurse -Force; New-Item -ItemType Directory -Path (Assert-InWorkspace $race) -Force|Out-Null; $raceNewId=[FhmStressNative]::FileIdentity($race,$true); Navigate-TC $tc.Exe $race; Start-Sleep -Milliseconds 1500; $raceNew=Wait-Until{Get-FolderState $database $race}; if($raceOldId -ne $raceNewId -and $raceNew -and $raceNew.visits -lt $raceOld.visits){Pass'Immediate delete/recreate did not inherit old directory history.'}else{ErrorResult'Immediate delete/recreate race inherited stale history or identity.'}
+    $race=Join-Path $src 'RACE_DIR'; New-Item -ItemType Directory -Path $race|Out-Null; Heat-Directory $tc.Exe $src $race 3; $raceOld=Wait-Until{Get-FolderState $database $race}; $raceOldId=[FhmStressNative]::FileIdentity($race,$true); Navigate-TC $tc.Exe $src; Remove-Item -LiteralPath (Assert-InWorkspace $race) -Recurse -Force; New-Item -ItemType Directory -Path (Assert-InWorkspace $race) -Force|Out-Null; $raceNewId=[FhmStressNative]::FileIdentity($race,$true); Navigate-TC $tc.Exe $race; Start-Sleep -Milliseconds 1500; $raceNew=Wait-Until{Get-FolderState $database $race}; if($raceOldId -ne $raceNewId -and $raceNew -and $raceNew.visits -lt $raceOld.visits){Pass 'Immediate delete/recreate did not inherit old directory history.'}else{ErrorResult 'Immediate delete/recreate race inherited stale history or identity.'}
 
     TestHeader 'MOVE then immediate file write'
-    Navigate-TC $tc.Exe $src; $mw=Join-Path $src 'move_write.txt'; [IO.File]::WriteAllText((Assert-InWorkspace $mw),'move-write',$Utf8); Heat-File $mw 3; $mwBefore=Wait-Until{Get-FileState $database $mw}; $mwId=[FhmStressNative]::FileIdentity($mw,$false); $mwDst=Join-Path $dst 'move_write.txt'; Move-Item -LiteralPath (Assert-InWorkspace $mw) -Destination (Assert-InWorkspace $mwDst) -Force; [IO.File]::AppendAllText((Assert-InWorkspace $mwDst),"immediate`r`n",$Utf8); $mwAfter=Wait-Until{$s=Get-FileState $database $mwDst;if($s -and $s.write_events -ge ($mwBefore.write_events+1)){return$s}}15000 250; if($mwAfter -and $mwId -eq [FhmStressNative]::FileIdentity($mwDst,$false) -and $mwAfter.write_events -ge ($mwBefore.write_events+1)){Pass'MOVE plus immediate write preserved old history and added the new write.'}else{ErrorResult'MOVE plus immediate write lost identity/history or the new write.'}
+    Navigate-TC $tc.Exe $src; $mw=Join-Path $src 'move_write.txt'; [IO.File]::WriteAllText((Assert-InWorkspace $mw),'move-write',$Utf8); Heat-File $mw 3; $mwBefore=Wait-Until{Get-FileState $database $mw}; $mwId=[FhmStressNative]::FileIdentity($mw,$false); $mwDst=Join-Path $dst 'move_write.txt'; Move-Item -LiteralPath (Assert-InWorkspace $mw) -Destination (Assert-InWorkspace $mwDst) -Force; [IO.File]::AppendAllText((Assert-InWorkspace $mwDst),"immediate`r`n",$Utf8); $mwAfter=Wait-Until{$s=Get-FileState $database $mwDst;if($s -and $s.write_events -ge ($mwBefore.write_events+1)){return $s}}15000 250; if($mwAfter -and $mwId -eq [FhmStressNative]::FileIdentity($mwDst,$false) -and $mwAfter.write_events -ge ($mwBefore.write_events+1)){Pass 'MOVE plus immediate write preserved old history and added the new write.'}else{ErrorResult 'MOVE plus immediate write lost identity/history or the new write.'}
 
     TestHeader 'MOVE directory with heated descendants'
-    $parent=Join-Path $src 'PARENT_TREE'; $child=Join-Path $parent 'CHILD'; New-Item -ItemType Directory -Path $child -Force|Out-Null; $childFile=Join-Path $child 'child_hot.txt'; [IO.File]::WriteAllText((Assert-InWorkspace $childFile),'child',$Utf8); Heat-Directory $tc.Exe $parent $child 3; Navigate-TC $tc.Exe $child; Heat-File $childFile 3; $childState=Wait-Until{Get-FolderState $database $child}; $childFileState=Wait-Until{Get-FileState $database $childFile}; $childId=[FhmStressNative]::FileIdentity($child,$true); $childFileId=[FhmStressNative]::FileIdentity($childFile,$false); Navigate-TC $tc.Exe $src; $parentDst=Join-Path $dst 'PARENT_TREE'; Move-Item -LiteralPath (Assert-InWorkspace $parent) -Destination (Assert-InWorkspace $parentDst) -Force; $childDst=Join-Path $parentDst 'CHILD'; $childFileDst=Join-Path $childDst 'child_hot.txt'; $childAfter=Wait-Until{Get-FolderState $database $childDst}; $childFileAfter=Wait-Until{Get-FileState $database $childFileDst}; if($childId -eq [FhmStressNative]::FileIdentity($childDst,$true) -and $childFileId -eq [FhmStressNative]::FileIdentity($childFileDst,$false) -and (Same-State $childState $childAfter $folderFields) -and (Same-State $childFileState $childFileAfter $fileFields)){Pass'Moved directory preserved heated descendant identities and histories.'}else{ErrorResult'Moved directory lost descendant identity or history.'}
+    $parent=Join-Path $src 'PARENT_TREE'; $child=Join-Path $parent 'CHILD'; New-Item -ItemType Directory -Path $child -Force|Out-Null; $childFile=Join-Path $child 'child_hot.txt'; [IO.File]::WriteAllText((Assert-InWorkspace $childFile),'child',$Utf8); Heat-Directory $tc.Exe $parent $child 3; Navigate-TC $tc.Exe $child; Heat-File $childFile 3; $childState=Wait-Until{Get-FolderState $database $child}; $childFileState=Wait-Until{Get-FileState $database $childFile}; $childId=[FhmStressNative]::FileIdentity($child,$true); $childFileId=[FhmStressNative]::FileIdentity($childFile,$false); Navigate-TC $tc.Exe $src; $parentDst=Join-Path $dst 'PARENT_TREE'; Move-Item -LiteralPath (Assert-InWorkspace $parent) -Destination (Assert-InWorkspace $parentDst) -Force; $childDst=Join-Path $parentDst 'CHILD'; $childFileDst=Join-Path $childDst 'child_hot.txt'; $childAfter=Wait-Until{Get-FolderState $database $childDst}; $childFileAfter=Wait-Until{Get-FileState $database $childFileDst}; if($childId -eq [FhmStressNative]::FileIdentity($childDst,$true) -and $childFileId -eq [FhmStressNative]::FileIdentity($childFileDst,$false) -and (Same-State $childState $childAfter $folderFields) -and (Same-State $childFileState $childFileAfter $fileFields)){Pass 'Moved directory preserved heated descendant identities and histories.'}else{ErrorResult 'Moved directory lost descendant identity or history.'}
 
     TestHeader 'Engine restart persistence'
-    $persistDir=$childDst; $persistFile=$childFileDst; $persistDirState=Get-FolderState $database $persistDir; $persistFileState=Get-FileState $database $persistFile; $persistDirId=[FhmStressNative]::FileIdentity($persistDir,$true); $persistFileId=[FhmStressNative]::FileIdentity($persistFile,$false); Get-Process -Name 'FolderHeatMapEngine' -ErrorAction SilentlyContinue|Stop-Process -Force; $stopped=Wait-Until{if(-not (Get-Process -Name 'FolderHeatMapEngine' -ErrorAction SilentlyContinue)){return$true}}5000 200; $launcher=Join-Path $Repo 'start_engine.ps1'; if(-not $stopped -or -not (Test-Path -LiteralPath $launcher)){ErrorResult'Could not safely prepare engine restart test.'}else{Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcher)-WindowStyle Hidden|Out-Null; $started=Wait-Until{Get-Process -Name 'FolderHeatMapEngine' -ErrorAction SilentlyContinue}10000 250; if($started){Start-Sleep -Milliseconds 1500; $persistDirAfter=Get-FolderState $database $persistDir; $persistFileAfter=Get-FileState $database $persistFile; if((Same-State $persistDirState $persistDirAfter $folderFields) -and (Same-State $persistFileState $persistFileAfter $fileFields) -and $persistDirId -eq [FhmStressNative]::FileIdentity($persistDir,$true) -and $persistFileId -eq [FhmStressNative]::FileIdentity($persistFile,$false)){Pass'Engine restart preserved persistent histories and filesystem identities.'}else{ErrorResult'Engine restart persistence mismatch.'}}else{ErrorResult'FolderHeatMapEngine did not restart.'}}
+    $persistDirState=Get-FolderState $database $childDst; $persistFileState=Get-FileState $database $childFileDst; $persistDirId=[FhmStressNative]::FileIdentity($childDst,$true); $persistFileId=[FhmStressNative]::FileIdentity($childFileDst,$false); Get-Process -Name 'FolderHeatMapEngine' -ErrorAction SilentlyContinue|Stop-Process -Force; $stopped=Wait-Until{if(-not (Get-Process -Name 'FolderHeatMapEngine' -ErrorAction SilentlyContinue)){return $true}}5000 200; $launcher=Join-Path $Repo 'start_engine.ps1'; if(-not $stopped -or -not (Test-Path -LiteralPath $launcher)){ErrorResult 'Could not safely prepare engine restart test.'}else{Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcher)-WindowStyle Hidden|Out-Null; $started=Wait-Until{Get-Process -Name 'FolderHeatMapEngine' -ErrorAction SilentlyContinue}10000 250; if($started){Start-Sleep -Milliseconds 1500; if((Same-State $persistDirState (Get-FolderState $database $childDst) $folderFields) -and (Same-State $persistFileState (Get-FileState $database $childFileDst) $fileFields) -and $persistDirId -eq [FhmStressNative]::FileIdentity($childDst,$true) -and $persistFileId -eq [FhmStressNative]::FileIdentity($childFileDst,$false)){Pass 'Engine restart preserved persistent histories and filesystem identities.'}else{ErrorResult 'Engine restart persistence mismatch.'}}else{ErrorResult 'FolderHeatMapEngine did not restart.'}}
 
     TestHeader 'Workspace reuse safety'
-    $reuse=Join-Path $Workspace 'REUSE_SENTINEL'; New-Item -ItemType Directory -Path $reuse -Force|Out-Null; [IO.File]::WriteAllText((Assert-InWorkspace (Join-Path $reuse 'old.txt')),'old',$Utf8); if(Test-Path -LiteralPath $reuse){Pass'Workspace reuse fixture created for the next run cleanup check.'}else{ErrorResult'Could not create workspace reuse fixture.'}
+    $reuse=Join-Path $Workspace 'REUSE_SENTINEL'; New-Item -ItemType Directory -Path $reuse -Force|Out-Null; [IO.File]::WriteAllText((Assert-InWorkspace (Join-Path $reuse 'old.txt')),'old',$Utf8); if(Test-Path -LiteralPath $reuse){Pass 'Workspace reuse fixture created for the next run cleanup check.'}else{ErrorResult 'Could not create workspace reuse fixture.'}
 
-} catch { ErrorResult("Unhandled stress-test exception: $($_.Exception.Message)"); Info("[EXCEPTION] "+$_.ScriptStackTrace) }
+} catch { ErrorResult ("Unhandled stress-test exception: $($_.Exception.Message)"); Info ("[EXCEPTION] "+$_.ScriptStackTrace) }
 finally {
-    Write-LogLine ''; Write-LogLine '============================================================'; Write-LogLine 'FolderHeatMap lifecycle stress test summary'; Write-LogLine("PASS:    $PassCount") Green; Write-LogLine("ERROR:   $ErrorCount")$(if($ErrorCount -gt 0){[ConsoleColor]::Red}else{[ConsoleColor]::Green}); Write-LogLine("WARNING: $WarningCount")$(if($WarningCount -gt 0){[ConsoleColor]::Yellow}else{[ConsoleColor]::Gray}); if($ErrorCount -eq 0){Write-LogLine'RESULT: PASS' Green}else{Write-LogLine'RESULT: ERROR' Red}; Write-LogLine("Log: $LogPath") Gray; Write-LogLine '============================================================'
+    Write-LogLine ''
+    Write-LogLine '============================================================'
+    Write-LogLine 'FolderHeatMap lifecycle stress test summary'
+    Write-LogLine ("PASS:    $PassCount") Green
+    Write-LogLine ("ERROR:   $ErrorCount") $(if($ErrorCount -gt 0){[ConsoleColor]::Red}else{[ConsoleColor]::Green})
+    Write-LogLine ("WARNING: $WarningCount") $(if($WarningCount -gt 0){[ConsoleColor]::Yellow}else{[ConsoleColor]::Gray})
+    if($ErrorCount -eq 0){ Write-LogLine 'RESULT: PASS' Green } else { Write-LogLine 'RESULT: ERROR' Red }
+    Write-LogLine ("Log: $LogPath") Gray
+    Write-LogLine '============================================================'
 }
-if($ErrorCount -gt 0){exit 1};exit 0
+if($ErrorCount -gt 0){exit 1}
+exit 0
