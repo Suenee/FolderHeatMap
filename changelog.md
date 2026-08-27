@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.34 - 28.08.2026
+
+- Added `test_stress.ps1`, a second-stage lifecycle stress regression suite that runs after the proven baseline tests.
+- Added rapid repeated same-volume MOVE coverage to exercise watcher/SLOW race handling while preserving File ID and persistent history.
+- Added automated directory and file RENAME coverage, including old-path cleanup assertions.
+- Added populated-subtree DELETE coverage and same-path subtree recreation checks with new filesystem identities.
+- Added an immediate DELETE -> RECREATE race test to verify that a new object cannot inherit stale history while SLOW cleanup is still converging.
+- Added MOVE -> immediate write coverage to verify that migrated file history is retained and the first destination-side write is appended rather than lost or reset.
+- Added directory MOVE coverage with heated descendant directories and files, verifying descendant File IDs and Visits/Writes histories migrate with the subtree.
+- Added an engine restart persistence check that verifies persistent histories and filesystem identities survive a controlled `FolderHeatMapEngine.exe` restart.
+- Added a workspace reuse fixture for validating clean-start behavior on the following test run.
+- `test.cmd` now syntax-checks both PowerShell test files before either test stage begins and stops immediately on any parser error or baseline failure.
+- `upgrade.ps1` packages and deploys `test_stress.ps1` together with the existing test tools while retaining the proven self-update and deployment safeguards.
+- All destructive filesystem stress operations remain hard-limited to `D:\Temp\FHM\`.
+- Version updated to 1.34 (`1.34-lifecycle-stress-tests`).
+
 ## 1.33 - 28.08.2026
 
 - Restored the proven 1.32 `upgrade.ps1` and `upgrade.cmd` logic after an attempted 1.33 edit unintentionally simplified the established deployment/bootstrap safeguards.
@@ -160,7 +176,7 @@
 - Hotfixed the 1.17 lifecycle regression where a false identity mismatch on a healthy volume root could enter a destructive `identity_mismatch -> tombstone -> purge -> persist` loop, repeatedly clearing runtime data and flooding the engine log.
 - Changed filesystem identity mismatch handling to diagnostic-only. A mismatch is logged as `identity_mismatch_non_destructive` but cannot tombstone, purge, or reset history until File ID semantics are verified separately.
 - Added a hard safety barrier that refuses tombstone and subtree purge operations for drive roots such as `D:\`.
-- Kept confirmed watcher `REMOVED` events active as the authoritative fast-delete path, including immediate tombstone invalidation and prioritized SLOW subtree cleanup.
+- Kept confirmed watcher `REMOVED` events active as the authoritative fast delete signal, including immediate tombstone invalidation and prioritized SLOW subtree cleanup.
 - Kept same-volume move/rename protection and delete-queue coalescing from 1.17.
 - Added a 10 MiB per-run safety cap to `FolderHeatMap.log`; once reached, engine logging disables itself for the remainder of that run instead of growing without bound.
 - Version updated to 1.18 (`1.18-safe-lifecycle`).
