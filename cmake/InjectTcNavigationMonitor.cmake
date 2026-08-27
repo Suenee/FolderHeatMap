@@ -7,7 +7,7 @@ file(READ "${INPUT}" ENGINE)
 function(fhm_replace_once OLD NEW LABEL)
     string(FIND "${ENGINE}" "${OLD}" POS)
     if(POS EQUAL -1)
-        message(FATAL_ERROR "1.29 TC navigation monitor anchor not found: ${LABEL}")
+        message(FATAL_ERROR "1.30 TC navigation monitor anchor not found: ${LABEL}")
     endif()
     string(REPLACE "${OLD}" "${NEW}" PATCHED "${ENGINE}")
     set(ENGINE "${PATCHED}" PARENT_SCOPE)
@@ -51,15 +51,12 @@ fhm_replace_once([=[    InterlockedExchange(&g_shared->shutdownRequested, 0);
         }]=]
 "monitor startup and polling")
 
-# The canonical lifecycle injection currently leaves the startup banner at 1.20.
-# Make the final build stage authoritative so the runtime log identifies the
-# binary that was actually built/deployed, rather than the historical lifecycle baseline.
 string(FIND "${ENGINE}" "FolderHeatMap 1.20 canonical lifecycle engine starting" VERSION_POS)
 if(VERSION_POS EQUAL -1)
-    message(FATAL_ERROR "1.29 engine version banner anchor not found")
+    message(FATAL_ERROR "1.30 engine version banner anchor not found")
 endif()
 string(REPLACE "FolderHeatMap 1.20 canonical lifecycle engine starting"
-               "FolderHeatMap 1.29 engine starting (identity-first lifecycle + independent TC navigation + file writes)" ENGINE "${ENGINE}")
+               "FolderHeatMap 1.30 engine starting (identity-first lifecycle + independent TC navigation + file writes)" ENGINE "${ENGINE}")
 
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.29 independent Total Commander navigation monitor: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.30 independent Total Commander navigation monitor: ${INPUT}")
