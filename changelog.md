@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.30 - 27.08.2026
+
+- Fixed deployment failures where `FolderHeatMapEngine.exe` restarted after the initial STOP-RUNTIME phase and then locked its own live executable in `dist`.
+- Added an authoritative pre-deploy engine guard that checks for running `FolderHeatMapEngine` processes immediately before live artifact replacement, logs their PID(s), force-stops them, and verifies process exit.
+- Added per-copy engine guarding for every live `FolderHeatMapEngine.exe` replacement, including external plugin directories when the registered WDX is not using repository `dist` directly.
+- Added a post-deploy engine guard so the engine cannot race the final verification/restart sequence.
+- The engine is restarted explicitly only after the complete deployment succeeds; Total Commander is restarted afterward when it was running before upgrade.
+- Extended `Copy-FileWithRetry` with a dedicated engine guard, matching the existing Total Commander WDX lock protection.
+- Version updated to 1.30 (`1.30-engine-deploy-guard`).
+
 ## 1.29 - 27.08.2026
 
 - Fixed same-volume moves that could lose visible FolderHeatMap history when a watched object was removed from one parent before the destination parent was reconciled.
