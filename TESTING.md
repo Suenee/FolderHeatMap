@@ -4,9 +4,9 @@ Target: Total Commander 11.58 x64 on Windows 10+.
 
 FolderHeatMap stores activity persistently in SQLite. Since 1.22, `FolderHeatMapEngine.exe` is an independent background process: it observes Total Commander panel navigation directly through native Win32 controls, while the WDX plugin is primarily a cache/display client.
 
-## Automated MOVE regression test (1.31)
+## Automated MOVE regression test (1.32)
 
-Run `test.cmd` from the repository root. The launcher executes `test.ps1` and uses `D:\Temp\FHM\` as the exclusive test workspace.
+Run `test.cmd` from the repository root. Before `test.ps1` is executed, the launcher parses it with `System.Management.Automation.Language.Parser`. Syntax errors are printed in red with the exact line and column and the launcher exits before the test workspace is touched. If validation passes, the launcher executes `test.ps1` and uses `D:\Temp\FHM\` as the exclusive test workspace.
 
 The test runner deliberately removes all existing contents of `D:\Temp\FHM\` at startup so stale data from an interrupted previous run cannot affect the next run. It never writes, moves, renames, or deletes test filesystem objects outside that workspace. Any future test that needs a destructive filesystem operation elsewhere on `D:\` must stop and require explicit user approval before that operation is implemented or performed.
 
