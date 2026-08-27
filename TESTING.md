@@ -4,6 +4,31 @@ Target: Total Commander 11.58 x64 on Windows 10+.
 
 FolderHeatMap stores activity persistently in SQLite. Since 1.22, `FolderHeatMapEngine.exe` is an independent background process: it observes Total Commander panel navigation directly through native Win32 controls, while the WDX plugin is primarily a cache/display client.
 
+## Automated MOVE regression test (1.31)
+
+Run `test.cmd` from the repository root. The launcher executes `test.ps1` and uses `D:\Temp\FHM\` as the exclusive test workspace.
+
+The test runner deliberately removes all existing contents of `D:\Temp\FHM\` at startup so stale data from an interrupted previous run cannot affect the next run. It never writes, moves, renames, or deletes test filesystem objects outside that workspace. Any future test that needs a destructive filesystem operation elsewhere on `D:\` must stop and require explicit user approval before that operation is implemented or performed.
+
+The current automated suite:
+
+1. Verifies Total Commander, `FolderHeatMapEngine.exe`, and the persistent SQLite database are available.
+2. Creates `SRC`, `DST`, `HOT_DIR`, and `hot_file.txt` under `D:\Temp\FHM\`.
+3. Drives real Total Commander left-panel navigation through `/O /L=...` to create directory Visits through the independent TC navigation monitor.
+4. Performs three real filesystem writes while the source directory is watched and verifies the persistent `file_activity.write_events` counter.
+5. Captures native `Volume Serial + FILE_ID_128` identities before the move.
+6. Moves the directory and file from `SRC` to `DST` on the same `D:` volume using normal filesystem MOVE operations.
+7. Reads FolderHeatMap SQLite state through the Windows `winsqlite3.dll` API and verifies the complete relevant persistent history is attached to the destination path without changes.
+8. Verifies the old source path no longer retains active FolderHeatMap history.
+9. Verifies `[LIFECYCLE] move_migrated old/new` diagnostics in `logs\FolderHeatMap.log`.
+10. Moves both objects back from `DST` to `SRC` and verifies history and File IDs survive the round trip.
+
+Console output is intentionally compact: successful assertions are green `[PASS]`, failures are red `[ERROR]`, warnings are yellow, and test headings are cyan. A failure does not intentionally stop later independent assertions unless a prerequisite or unhandled exception makes continuation unsafe.
+
+Each run writes a detailed diagnostic log to `D:\Temp\FHM\logs\test-YYYYMMDD-HHMMSS.log`. Test data are kept after the run for diagnosis and are removed automatically at the beginning of the next run.
+
+The test runner treats database values as the authoritative automated assertion for Visits/Writes history. Visible WDX Heat/color remains a separate UI-level check because the displayed heat value is calculated from persistent activity and current cooling settings.
+
 ## Upgrade and build
 
 1. Run `upgrade.cmd` from the repository root.
