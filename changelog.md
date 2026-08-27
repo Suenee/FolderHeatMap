@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.32 - 28.08.2026
+
+- Fixed two malformed PowerShell string expressions in `test.ps1` that caused the automated regression runner to fail during parsing before any tests could start.
+- Bumped the automated test runner metadata to 1.32.
+- Added a syntax preflight to `test.cmd` using `System.Management.Automation.Language.Parser` so parser errors are reported in red with exact line/column information before the test workspace is touched.
+- The preflight now uses explicit token/error variables for the parser API and exits with code 2 when syntax validation fails.
+- Kept all existing test safety guarantees: the runner may only create, move, modify or delete content under `D:\Temp\FHM\`.
+- Version updated to 1.32 (`1.32-test-parser-preflight`).
+
 ## 1.31 - 28.08.2026
 
 - Added `test.cmd` and `test.ps1` as a repeatable automated regression suite for FolderHeatMap same-volume MOVE behavior.
