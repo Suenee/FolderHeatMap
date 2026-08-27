@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.29 - 27.08.2026
+
+- Fixed same-volume moves that could lose visible FolderHeatMap history when a watched object was removed from one parent before the destination parent was reconciled.
+- Changed watcher removal handling to identity-first semantics: `FILE_ACTION_REMOVED` is treated as a change hint, not immediate proof that the filesystem object was destroyed.
+- Before recursive purge, SLOW now resolves the previously tracked object by `Volume Serial + File ID` and retries briefly to cover source/destination notification races.
+- If the same object still exists elsewhere on the same volume, `MoveTrackedObject()` atomically migrates directory Visits/usage, descendant file activity, tracked identities, or file Writes to the new path.
+- Recycle-bin moves remain deletion semantics and are intentionally not migrated as normal moves.
+- If a move is detected but database migration fails, history is preserved instead of being destructively purged; destination-parent reconciliation is queued as a recovery path.
+- The same-volume move build stage now fails configuration when its expected lifecycle anchor is missing instead of silently skipping the protection.
+- Added `[LIFECYCLE] move_migrated old/new` and `move_migration FAILED old/new` diagnostics.
+- Version updated to 1.29 (`1.29-identity-first-moves`).
+
 ## 1.28 - 27.08.2026
 
 - Added live file-write tracking for existing files. The filesystem watcher now subscribes to `FILE_NOTIFY_CHANGE_LAST_WRITE` and `FILE_NOTIFY_CHANGE_SIZE` in addition to name/creation changes.
