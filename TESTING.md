@@ -4,7 +4,7 @@ Target: Total Commander 11.58 x64 on Windows 10+.
 
 FolderHeatMap stores activity persistently in SQLite. Since 1.22, `FolderHeatMapEngine.exe` is an independent background process: it observes Total Commander panel navigation directly through native Win32 controls, while the WDX plugin is primarily a cache/display client.
 
-## Automated MOVE regression test (1.32)
+## Automated lifecycle regression test (1.33)
 
 Run `test.cmd` from the repository root. Before `test.ps1` is executed, the launcher parses it with `System.Management.Automation.Language.Parser`. Syntax errors are printed in red with the exact line and column and the launcher exits before the test workspace is touched. If validation passes, the launcher executes `test.ps1` and uses `D:\Temp\FHM\` as the exclusive test workspace.
 
@@ -22,6 +22,8 @@ The current automated suite:
 8. Verifies the old source path no longer retains active FolderHeatMap history.
 9. Verifies `[LIFECYCLE] move_migrated old/new` diagnostics in `logs\FolderHeatMap.log`.
 10. Moves both objects back from `DST` to `SRC` and verifies history and File IDs survive the round trip.
+11. Deletes the heated directory, waits for the old persistent record to disappear, recreates the same path, verifies that the new directory has a different File ID, and confirms it starts with fresh Visits history.
+12. Deletes the heated file, waits for the old persistent record to disappear, recreates the same path, verifies that the new file has a different File ID, and confirms it starts with fresh Writes history.
 
 Console output is intentionally compact: successful assertions are green `[PASS]`, failures are red `[ERROR]`, warnings are yellow, and test headings are cyan. A failure does not intentionally stop later independent assertions unless a prerequisite or unhandled exception makes continuation unsafe.
 
