@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.33 - 28.08.2026
+
+- Restored the proven 1.32 `upgrade.ps1` and `upgrade.cmd` logic after an attempted 1.33 edit unintentionally simplified the established deployment/bootstrap safeguards.
+- Extended `test.ps1` with automated directory DELETE -> RECREATE coverage inside the exclusive `D:\Temp\FHM\` sandbox.
+- Extended `test.ps1` with automated file DELETE -> RECREATE coverage inside the same sandbox.
+- The new tests verify that deletion removes the old persistent history, recreation produces a different `Volume Serial + FILE_ID_128` identity, and the new object starts with fresh Visits/Writes rather than inheriting stale history.
+- Existing same-volume MOVE round-trip coverage remains unchanged and runs before the new delete/recreate assertions.
+- Kept the parser preflight in `test.cmd`, the hard sandbox path barrier, detailed per-run logs, and all proven upgrader self-update/deployment guards.
+- Version updated to 1.33 (`1.33-delete-recreate-tests`).
+
 ## 1.32 - 28.08.2026
 
 - Fixed two malformed PowerShell string expressions in `test.ps1` that caused the automated regression runner to fail during parsing before any tests could start.
