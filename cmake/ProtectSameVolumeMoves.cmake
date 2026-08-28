@@ -21,6 +21,7 @@ set(OLD [=[void ProcessDeleteTask(const std::wstring& path) {
 set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
     if (IsVolumeRoot(path)) { g_log.WritePath("LIFECYCLE", "ROOT_PURGE_BLOCKED", path); return; }
     const auto identity = DeletedPathIdentity(path);
+    std::wstring purgeObjectId;
 
     // Identity-first lifecycle: FILE_ACTION_REMOVED/RENAMED_OLD_NAME is only
     // a hint. The object may have moved elsewhere on the same volume, or a
@@ -29,6 +30,7 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
     if (identity) {
         const auto tracked = g_readDatabase.GetTrackedObjectAtPath(identity->volumeId, identity->relativePath);
         if (tracked && !tracked->objectId.empty()) {
+            purgeObjectId = tracked->objectId;
             std::optional<std::wstring> currentPath;
             for (int attempt = 0; attempt < 8 && !currentPath; ++attempt) {
                 currentPath = fhm::ResolveFilesystemPathByObjectId(*identity, tracked->objectId, tracked->isDirectory);
@@ -108,6 +110,15 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
         }
     }
 
+    // Diagnostic-only trace before the destructive recursive reset. This does
+    // not alter lifecycle decisions; it identifies which path deleted history.
+    if (identity) {
+        g_log.WriteWide("DB_DELETE_TRACE",
+            L"source=watcher_purge action=RESET_RECURSIVE object_id=" + purgeObjectId +
+            L" volume=" + identity->volumeId + L" relative=" + identity->relativePath +
+            L" path=" + path);
+    }
+
     // No same-volume object with the tracked File ID survived: this is a real
     // deletion (or a recycle-bin move, which is intentionally treated as one).
     const bool ok = identity && g_writeDatabase.ResetRecursiveActivity(*identity);
@@ -134,4 +145,4 @@ endif()
 
 string(REPLACE "${OLD}" "${NEW}" ENGINE "${ENGINE}")
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.41 rapid-move stale-task protection: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.44 destructive lifecycle tracing: ${INPUT}")
