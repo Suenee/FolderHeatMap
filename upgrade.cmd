@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.44-destructive-lifecycle-trace"
+set "UPGRADE_REV=1.45-diagnostic-version-summary"
 set "RUN_TEST=0"
 if /I "%~1"=="--test" (
     set "RUN_TEST=1"
