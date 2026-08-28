@@ -121,7 +121,7 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
         if (!readPending) log->WritePath("DIAG", "WATCH_READ_FAILED", watched);
     };
 
-    log->Write("DIAG", "filesystem diagnostics active; lifecycle removal and file modification callbacks enabled");
+    log->Write("DIAG", "filesystem diagnostics active; lifecycle removal, rename and file modification callbacks enabled");
 
     while (!stopping->load()) {
         wchar_t currentBuf[runtime::kDirectoryChars]{};
@@ -170,8 +170,13 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
                 modified.erase(full);
                 if (onRemoved) onRemoved(full);
             } else if (info->Action == FILE_ACTION_RENAMED_OLD_NAME) {
+                // A same-directory rename is a lifecycle move, not just a
+                // diagnostic event. Feed the old path into the same identity-
+                // first removal path used by cross-directory MOVE. The paired
+                // NEW_NAME already exists by the time SLOW resolves File ID.
                 removed[full] = now;
                 modified.erase(full);
+                if (onRemoved) onRemoved(full);
             } else if (info->Action == FILE_ACTION_MODIFIED && existsNow && !isDirectory) {
                 const auto it = modified.find(full);
                 if (it == modified.end() || now - it->second >= kModifyCoalesce) {
