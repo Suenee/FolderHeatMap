@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.37 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.38 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -72,7 +72,7 @@ target_compile_features(FolderHeatMapConfig PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMapConfig PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(FolderHeatMapConfig PRIVATE comdlg32 shell32 advapi32 comctl32)
 
-add_executable(FolderHeatMapReset WIN32 src/ResetApp.cpp src/ResetDatabase.cpp src/Database.cpp src/FolderIdentity.cpp vendor/sqlite/sqlite3.c)
+add_executable(FolderHeatMapReset WIN32 src/ResetApp.cpp src/ResetDatabase.cpp src/FolderIdentity.cpp vendor/sqlite/sqlite3.c)
 target_include_directories(FolderHeatMapReset PRIVATE src vendor/sqlite)
 target_compile_features(FolderHeatMapReset PRIVATE cxx_std_20)
 target_compile_definitions(FolderHeatMapReset PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
