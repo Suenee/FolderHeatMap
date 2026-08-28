@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$TestVersion = '1.37'
+$TestVersion = '1.44'
 $Workspace = 'D:\Temp\FHM'
 $ReleasePath = 'D:\Temp'
 $Repo = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -159,14 +159,20 @@ function Dump-State([string]$Label,[string]$Path,$State,[string]$FileId,[string[
     Info ("[DIAG] $Label file_id=$FileId")
     Info ("[DIAG] $Label state=" + (State-Signature $State $Fields))
 }
-function Dump-EngineTrace([string[]]$Patterns) {
+function Dump-EngineTrace([string[]]$Patterns,[int]$FromLine=0) {
     if (-not (Test-Path -LiteralPath $EngineLog)) { Warn "Engine log not found: $EngineLog"; return }
-    $lines = Get-Content -LiteralPath $EngineLog -ErrorAction SilentlyContinue
+    $lines = @(Get-Content -LiteralPath $EngineLog -ErrorAction SilentlyContinue)
+    if ($FromLine -gt 0 -and $FromLine -lt $lines.Count) { $lines = $lines[$FromLine..($lines.Count - 1)] }
+    elseif ($FromLine -ge $lines.Count) { $lines = @() }
     foreach ($line in $lines) {
         foreach ($pattern in $Patterns) {
             if ($line -like "*$pattern*") { Info ('[ENGINE] ' + $line); break }
         }
     }
+}
+function Engine-LineCount {
+    if (-not (Test-Path -LiteralPath $EngineLog)) { return 0 }
+    return @(Get-Content -LiteralPath $EngineLog -ErrorAction SilentlyContinue).Count
 }
 
 try {
@@ -203,6 +209,7 @@ try {
         Heat-Directory $tc.Exe $src $path 3
         $before = Wait-Until { Get-FolderState $database $path }
         $beforeId = [FhmLifecycleDiagNative]::FileIdentity($path,$true)
+        $traceStart = Engine-LineCount
         $current = $path
         for ($i=1; $i -le 6; $i++) {
             $target = if ($current.StartsWith($src,[StringComparison]::OrdinalIgnoreCase)) { Join-Path $dst $name } else { Join-Path $src $name }
@@ -219,6 +226,7 @@ try {
         Dump-State "$($case.Name) BEFORE" $path $before $beforeId $folderFields
         Dump-State "$($case.Name) AFTER" $current $after $afterId $folderFields
         Info ("[DIAG] old_db_path_present=" + [bool](Get-FolderState $database $path))
+        Dump-EngineTrace @($name,'DB_DELETE_TRACE') $traceStart
         if ($after -and $beforeId -eq $afterId) { Pass "$($case.Name) rapid MOVE converged to the original identity/history." }
         else { ErrorResult "$($case.Name) rapid MOVE did not converge within 10 seconds." }
     }
