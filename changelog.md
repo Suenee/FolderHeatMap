@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.46 - 29.08.2026
+
+- Fixed the confirmed rapid MOVE history-loss path identified by the 1.44/1.45 `[DB_DELETE_TRACE]` diagnostics: a queued watcher purge could become path-only after an earlier MOVE task migrated the tracked row away from the old path.
+- Watcher removal tasks now capture the canonical volume, File ID and object type when the removal is observed, and retain that identity until the queued delete task is resolved.
+- If the old tracked row is no longer present when the task executes but the captured File ID still exists anywhere on the same volume, the queued task is treated as stale MOVE evidence and is not allowed to call `ResetRecursiveActivity()`.
+- Preserved ordinary same-volume MOVE/RENAME migration, genuine DELETE/DELETE -> RECREATE semantics and recycle-bin deletion semantics.
+- Rolled back the speculative 1.41, 1.42 and 1.43 lifecycle behavior changes after diagnostics showed they did not address the actual destructive path: removed the path-exists stale-row workaround, the additional SLOW OpenFileById retry grace, and the same-path stale-snapshot exception.
+- Restored the proven 1.40 SLOW lifecycle decision model while retaining the later diagnostic File ID propagation and `[DB_DELETE_TRACE]` instrumentation.
+- Added `[LIFECYCLE] queued_identity_survived ...` diagnostics when a queued watcher delete is cancelled because its captured File ID is still alive.
+- Updated build/runtime/self-updating upgrader metadata to 1.46 (`1.46-queued-file-id-rapid-move`).
+
+## 1.45 - 29.08.2026
+
+- Added the lifecycle diagnostic test version to the final summary so copied or partial logs can be identified without their header.
+- Kept runtime lifecycle behavior unchanged; this release only improved test-result identification while retaining the 1.44 destructive lifecycle tracing.
+- Updated build/runtime/launcher metadata to 1.45 (`1.45-diagnostic-version-summary`).
+
 ## 1.44 - 28.08.2026
 
 - Added diagnostic-only tracing for every destructive runtime lifecycle path involved in the rapid MOVE investigation without changing MOVE/RENAME/DELETE behavior.
