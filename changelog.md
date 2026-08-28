@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.36 - 28.08.2026
+
+- Rewrote `test_stress.ps1` into normal, readable PowerShell without compressed command/operator formatting that could parse successfully but fail at runtime.
+- Fixed `Wait-Until` so successful conditions use the explicit runtime-safe form `return $value` instead of the invalid concatenated token `return$value`.
+- Expanded helper functions, loops, branches and test stages into explicit statements with normal spacing to remove the same class of latent runtime tokenization errors throughout the stress runner.
+- Preserved all 1.34/1.35 lifecycle stress scenarios and the Total Commander workspace-release safety handoff without changing FolderHeatMap runtime lifecycle behavior.
+- Added explicit prerequisite validation for the Total Commander INI before the stress suite derives the FolderHeatMap database path.
+- Kept destructive filesystem operations strictly limited to `D:\Temp\FHM\` and retained bounded cleanup retries.
+- Updated build, runtime banner and self-updating upgrade metadata to 1.36.
+- Version updated to 1.36 (`1.36-stress-runner-runtime-safety`).
+
 ## 1.35 - 28.08.2026
 
 - Fixed the stress-stage startup failure where the baseline test left Total Commander inside `D:\Temp\FHM\SRC`, causing Windows to reject workspace cleanup because the directory was still in use.
