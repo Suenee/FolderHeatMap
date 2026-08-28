@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.40-identity-first-move-rename"
+set "UPGRADE_REV=1.41-rapid-move-stale-task"
 set "RUN_TEST=0"
 if /I "%~1"=="--test" (
     set "RUN_TEST=1"
