@@ -45,6 +45,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem The launcher owns release metadata. Patch only the temporary runner copy so
+rem version output cannot drift from the self-updating launcher/project release.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p='!RUNNER_TEMP!'; $c=Get-Content -LiteralPath $p -Raw; $c=$c.Replace('$Version = ''1.46''','$Version = ''1.47''').Replace('$Revision = ''1.46-queued-file-id-rapid-move''','$Revision = ''1.47-rapid-move-roundtrip-memory''').Replace('Building FolderHeatMap 1.46 and tools...','Building FolderHeatMap 1.47 and tools...'); [IO.File]::WriteAllText($p,$c,[Text.UTF8Encoding]::new($false))"
+if errorlevel 1 (
+    del /q "!RUNNER_TEMP!" >nul 2>nul
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: Could not synchronize temporary upgrade runner metadata.' -ForegroundColor Red"
+    exit /b 1
+)
+
 rem IMPORTANT: this entire final block is parsed by CMD before PowerShell starts.
 rem upgrade.ps1 may update upgrade.cmd on disk while it runs; the already-parsed
 rem EXIT command therefore cannot accidentally continue in newly replaced file.
