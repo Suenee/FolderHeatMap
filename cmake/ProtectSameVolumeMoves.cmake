@@ -4,6 +4,91 @@ endif()
 
 file(READ "${INPUT}" ENGINE)
 
+function(fhm_move_replace_once OLD NEW LABEL)
+    string(FIND "${ENGINE}" "${OLD}" POS)
+    if(POS EQUAL -1)
+        message(FATAL_ERROR "1.46 rapid MOVE identity anchor not found: ${LABEL}")
+    endif()
+    string(REPLACE "${OLD}" "${NEW}" PATCHED "${ENGINE}")
+    set(ENGINE "${PATCHED}" PARENT_SCOPE)
+endfunction()
+
+# A delete task must retain the identity that caused it to be queued. Looking
+# the object up only later by its old path is unsafe because an earlier MOVE
+# task may already have migrated tracked_objects away from that path.
+fhm_move_replace_once([=[std::unordered_set<std::wstring> g_deletePending;
+std::unordered_set<std::wstring> g_tombstones;]=]
+[=[std::unordered_set<std::wstring> g_deletePending;
+std::unordered_set<std::wstring> g_tombstones;
+
+struct DeleteIdentityHint {
+    std::wstring volumeId;
+    std::wstring relativePath;
+    std::wstring objectId;
+    bool isDirectory = false;
+};
+std::unordered_map<std::wstring, DeleteIdentityHint> g_deleteIdentityHints;]=]
+"queued delete identity state")
+
+fhm_move_replace_once([=[void HandleObservedRemoval(const std::wstring& path);
+
+bool g_runtimeCacheDirty]=]
+[=[void HandleObservedRemoval(const std::wstring& path);
+std::optional<fhm::FolderIdentity> DeletedPathIdentity(const std::wstring& deletedPath);
+
+bool g_runtimeCacheDirty]=]
+"deleted path identity forward declaration")
+
+fhm_move_replace_once([=[    if (IsVolumeRoot(key)) {
+        g_log.WritePath("LIFECYCLE", "ROOT_DELETE_BLOCKED", key);
+        return;
+    }
+
+    bool newlyQueued = false;]=]
+[=[    if (IsVolumeRoot(key)) {
+        g_log.WritePath("LIFECYCLE", "ROOT_DELETE_BLOCKED", key);
+        return;
+    }
+
+    std::optional<DeleteIdentityHint> identityHint;
+    if (const auto identity = DeletedPathIdentity(key)) {
+        const auto tracked = g_readDatabase.GetTrackedObjectAtPath(identity->volumeId, identity->relativePath);
+        if (tracked && !tracked->objectId.empty()) {
+            DeleteIdentityHint hint;
+            hint.volumeId = identity->volumeId;
+            hint.relativePath = identity->relativePath;
+            hint.objectId = tracked->objectId;
+            hint.isDirectory = tracked->isDirectory;
+            identityHint = std::move(hint);
+        }
+    }
+
+    bool newlyQueued = false;]=]
+"capture File ID when removal is observed")
+
+fhm_move_replace_once([=[        g_tombstones.insert(key);
+        if (g_deletePending.insert(key).second) { g_deleteQueue.push_back(key); newlyQueued = true; }]=]
+[=[        g_tombstones.insert(key);
+        if (identityHint) g_deleteIdentityHints[key] = *identityHint;
+        if (g_deletePending.insert(key).second) { g_deleteQueue.push_back(key); newlyQueued = true; }]=]
+"store queued File ID")
+
+# CoalesceDeleteQueue runs before this stage. If a higher branch supersedes a
+# queued child, discard the child identity snapshot together with its task.
+string(FIND "${ENGINE}" "coveredDescendants" HAS_COALESCING)
+if(NOT HAS_COALESCING EQUAL -1)
+    fhm_move_replace_once([=[        for (const auto& descendant : coveredDescendants) {
+            g_deletePending.erase(descendant);
+            g_deleteQueue.erase(std::remove(g_deleteQueue.begin(), g_deleteQueue.end(), descendant), g_deleteQueue.end());
+        }]=]
+[=[        for (const auto& descendant : coveredDescendants) {
+            g_deletePending.erase(descendant);
+            g_deleteIdentityHints.erase(descendant);
+            g_deleteQueue.erase(std::remove(g_deleteQueue.begin(), g_deleteQueue.end(), descendant), g_deleteQueue.end());
+        }]=]
+"coalesced delete identity cleanup")
+endif()
+
 set(OLD [=[void ProcessDeleteTask(const std::wstring& path) {
     if (IsVolumeRoot(path)) { g_log.WritePath("LIFECYCLE", "ROOT_PURGE_BLOCKED", path); return; }
     const auto identity = DeletedPathIdentity(path);
@@ -21,15 +106,23 @@ set(OLD [=[void ProcessDeleteTask(const std::wstring& path) {
 set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
     if (IsVolumeRoot(path)) { g_log.WritePath("LIFECYCLE", "ROOT_PURGE_BLOCKED", path); return; }
     const auto identity = DeletedPathIdentity(path);
-    std::wstring purgeObjectId;
 
-    // Identity-first lifecycle: FILE_ACTION_REMOVED/RENAMED_OLD_NAME is only
-    // a hint. The object may have moved elsewhere on the same volume, or a
-    // queued removal may have become stale because a rapid round trip already
-    // brought the same File ID back to this exact path.
+    std::optional<DeleteIdentityHint> queuedHint;
+    {
+        std::scoped_lock lock(g_deleteMutex);
+        const auto it = g_deleteIdentityHints.find(path);
+        if (it != g_deleteIdentityHints.end()) queuedHint = it->second;
+    }
+
+    std::wstring purgeObjectId = queuedHint ? queuedHint->objectId : L"";
+    bool hadTrackedAtOldPath = false;
+
+    // Normal same-volume MOVE handling: when the old tracked row is still at
+    // this path, resolve that exact File ID and migrate its stored history.
     if (identity) {
         const auto tracked = g_readDatabase.GetTrackedObjectAtPath(identity->volumeId, identity->relativePath);
         if (tracked && !tracked->objectId.empty()) {
+            hadTrackedAtOldPath = true;
             purgeObjectId = tracked->objectId;
             std::optional<std::wstring> currentPath;
             for (int attempt = 0; attempt < 8 && !currentPath; ++attempt) {
@@ -55,6 +148,7 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                             std::scoped_lock lock(g_deleteMutex);
                             g_deletePending.erase(path);
                             g_tombstones.erase(path);
+                            g_deleteIdentityHints.erase(path);
                         }
                         g_log.WritePath("LIFECYCLE", "stale_removal_same_identity", path);
                         const auto parent = ExistingParent(path);
@@ -70,6 +164,7 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                         std::scoped_lock lock(g_deleteMutex);
                         g_deletePending.erase(path);
                         g_tombstones.erase(path);
+                        g_deleteIdentityHints.erase(path);
                     }
 
                     if (moved) {
@@ -87,31 +182,51 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                     return;
                 }
             }
-        } else {
-            // A previous task in a rapid MOVE chain can already have migrated
-            // tracked_objects away from this path. If the path exists again,
-            // this queued removal is stale and must not destructively reset
-            // history merely because its old tracking row has moved. Release
-            // the tombstone and let canonical SLOW reconciliation compare the
-            // current File ID. That reconciliation still owns different-ID
-            // DELETE -> RECREATE semantics.
-            const DWORD attrs = GetFileAttributesW(path.c_str());
-            if (attrs != INVALID_FILE_ATTRIBUTES) {
+        }
+    }
+
+    // Rapid MOVE fix: the old path may no longer have a tracked row because an
+    // earlier queued MOVE already migrated it. Use the File ID captured at the
+    // moment this removal was observed. If that exact object still exists
+    // anywhere on the same volume, this queued task is stale and must never
+    // erase history just because its old pathname is temporarily absent.
+    if (!hadTrackedAtOldPath && identity && queuedHint && !queuedHint->objectId.empty() &&
+        queuedHint->volumeId == identity->volumeId) {
+        std::optional<std::wstring> currentPath;
+        for (int attempt = 0; attempt < 8 && !currentPath; ++attempt) {
+            currentPath = fhm::ResolveFilesystemPathByObjectId(*identity, queuedHint->objectId, queuedHint->isDirectory);
+            if (!currentPath && attempt != 7) Sleep(150);
+        }
+        if (currentPath) {
+            const auto normalizedCurrent = fhm::runtime::NormalizePath(*currentPath);
+            const auto currentIdentity = fhm::ResolveFolderIdentity(normalizedCurrent);
+            bool recycle = false;
+            if (currentIdentity) {
+                std::wstring relative = currentIdentity->relativePath;
+                std::transform(relative.begin(), relative.end(), relative.begin(), [](wchar_t c) {
+                    return static_cast<wchar_t>(std::towlower(c));
+                });
+                recycle = relative == L"$recycle.bin" || relative.starts_with(L"$recycle.bin\\");
+            }
+            if (currentIdentity && currentIdentity->volumeId == identity->volumeId && !recycle) {
                 {
                     std::scoped_lock lock(g_deleteMutex);
                     g_deletePending.erase(path);
                     g_tombstones.erase(path);
+                    g_deleteIdentityHints.erase(path);
                 }
-                g_log.WritePath("LIFECYCLE", "stale_removal_tracking_moved", path);
-                const auto parent = ExistingParent(path);
-                if (!parent.empty()) QueueSlow(parent);
+                g_log.WriteWide("LIFECYCLE",
+                    L"queued_identity_survived object_id=" + queuedHint->objectId +
+                    L" old=" + path + L" current=" + normalizedCurrent);
+                const auto oldParent = ExistingParent(path);
+                const auto newParent = ExistingParent(normalizedCurrent);
+                if (!oldParent.empty()) QueueSlow(oldParent);
+                if (!newParent.empty()) QueueSlow(newParent);
                 return;
             }
         }
     }
 
-    // Diagnostic-only trace before the destructive recursive reset. This does
-    // not alter lifecycle decisions; it identifies which path deleted history.
     if (identity) {
         g_log.WriteWide("DB_DELETE_TRACE",
             L"source=watcher_purge action=RESET_RECURSIVE object_id=" + purgeObjectId +
@@ -119,12 +234,15 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
             L" path=" + path);
     }
 
-    // No same-volume object with the tracked File ID survived: this is a real
-    // deletion (or a recycle-bin move, which is intentionally treated as one).
+    // Only a File ID that no longer survives on the volume may reach the
+    // destructive reset path. Recycle-bin moves intentionally keep DELETE
+    // semantics.
     const bool ok = identity && g_writeDatabase.ResetRecursiveActivity(*identity);
     if (ok) {
         std::scoped_lock lock(g_deleteMutex);
-        g_deletePending.erase(path); g_tombstones.erase(path);
+        g_deletePending.erase(path);
+        g_tombstones.erase(path);
+        g_deleteIdentityHints.erase(path);
     }
     if (ok) {
         g_log.WritePath("LIFECYCLE", "purge_subtree completed", path);
@@ -132,17 +250,11 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
     } else g_log.WritePath("LIFECYCLE", "purge_subtree FAILED", path);
 }]=])
 
-string(FIND "${ENGINE}" "move_migrated old" ALREADY_POS)
-if(NOT ALREADY_POS EQUAL -1)
-    message(STATUS "FolderHeatMap identity-first same-volume move handling already present: ${INPUT}")
-    return()
-endif()
-
 string(FIND "${ENGINE}" "${OLD}" POS)
 if(POS EQUAL -1)
-    message(FATAL_ERROR "FolderHeatMap identity-first move anchor not found: ${INPUT}")
+    message(FATAL_ERROR "FolderHeatMap 1.46 identity-first move anchor not found: ${INPUT}")
 endif()
 
 string(REPLACE "${OLD}" "${NEW}" ENGINE "${ENGINE}")
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.44 destructive lifecycle tracing: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.46 queued File ID rapid-MOVE protection: ${INPUT}")
