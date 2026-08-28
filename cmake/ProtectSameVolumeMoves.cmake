@@ -49,9 +49,6 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
 
                 if (currentIdentity && currentIdentity->volumeId == identity->volumeId && !recycle) {
                     if (_wcsicmp(normalizedCurrent.c_str(), path.c_str()) == 0) {
-                        // The exact tracked File ID is alive again at the old
-                        // path. This is a stale removal task from a rapid move
-                        // round trip, not a deletion. Never purge its history.
                         {
                             std::scoped_lock lock(g_deleteMutex);
                             g_deletePending.erase(path);
@@ -77,9 +74,6 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                         g_log.WritePath("LIFECYCLE", "move_migrated old", path);
                         g_log.WritePath("LIFECYCLE", "move_migrated new", normalizedCurrent);
                     } else {
-                        // Never destroy history merely because migration failed.
-                        // Reconciliation of the destination parent gets another
-                        // chance to pair the same File ID with the new path.
                         g_log.WritePath("LIFECYCLE", "move_migration FAILED old", path);
                         g_log.WritePath("LIFECYCLE", "move_migration FAILED new", normalizedCurrent);
                     }
@@ -90,6 +84,26 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                     if (!newParent.empty()) QueueSlow(newParent);
                     return;
                 }
+            }
+        } else {
+            // A previous task in a rapid MOVE chain can already have migrated
+            // tracked_objects away from this path. If the path exists again,
+            // this queued removal is stale and must not destructively reset
+            // history merely because its old tracking row has moved. Release
+            // the tombstone and let canonical SLOW reconciliation compare the
+            // current File ID. That reconciliation still owns different-ID
+            // DELETE -> RECREATE semantics.
+            const DWORD attrs = GetFileAttributesW(path.c_str());
+            if (attrs != INVALID_FILE_ATTRIBUTES) {
+                {
+                    std::scoped_lock lock(g_deleteMutex);
+                    g_deletePending.erase(path);
+                    g_tombstones.erase(path);
+                }
+                g_log.WritePath("LIFECYCLE", "stale_removal_tracking_moved", path);
+                const auto parent = ExistingParent(path);
+                if (!parent.empty()) QueueSlow(parent);
+                return;
             }
         }
     }
@@ -120,4 +134,4 @@ endif()
 
 string(REPLACE "${OLD}" "${NEW}" ENGINE "${ENGINE}")
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.40 identity-first same-volume move/rename handling: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.41 rapid-move stale-task protection: ${INPUT}")
