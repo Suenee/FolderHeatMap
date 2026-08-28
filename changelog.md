@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.37 - 28.08.2026
+
+- Added `test_lifecycle_diag.ps1`, a third-stage diagnostic suite that runs after the existing stress suite to separate real FolderHeatMap lifecycle regressions from test assumptions before runtime lifecycle code is changed.
+- Added two rapid MOVE convergence profiles: a normal 1500 ms cadence and the original 450 ms stress cadence. Both wait up to 10 seconds for the complete persistent history signature to converge instead of merely waiting for a destination database row to exist.
+- Added detailed directory and file RENAME diagnostics with before/after File IDs, full SQLite history signatures, old-path state, and matching engine log lines for the unique rename paths.
+- Split MOVE plus destination-write diagnostics into independent checks: MOVE identity/history preservation, an immediate destination write before Total Commander watches the destination, and a control write after navigating Total Commander to the destination.
+- An unobserved immediate destination write outside the active watcher scope is reported as a warning instead of automatically being classified as a MOVE lifecycle regression.
+- `test.cmd` now syntax-checks all three PowerShell test files. Baseline failure still stops the suite immediately; lifecycle diagnostics run after stress even when the stress stage reports errors so evidence is not lost.
+- `upgrade.ps1` now packages and deploys `test_lifecycle_diag.ps1` together with the existing test tools.
+- FolderHeatMap runtime lifecycle behavior is unchanged in this release; the purpose of 1.37 is diagnostic confirmation before any rename or move-race runtime fix.
+- Version updated to 1.37 (`1.37-lifecycle-diagnostic-tests`).
+
 ## 1.36 - 28.08.2026
 
 - Rewrote `test_stress.ps1` into normal, readable PowerShell without compressed command/operator formatting that could parse successfully but fail at runtime.
