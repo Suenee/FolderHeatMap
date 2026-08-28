@@ -87,21 +87,6 @@ std::optional<std::wstring> ResolveCurrentPathByObjectId(const FolderIdentity& v
     return path;
 }
 
-std::optional<std::wstring> ResolveCurrentPathByObjectIdWithMoveGrace(
-    const FolderIdentity& volumeIdentity, const std::wstring& objectId, bool isDirectory) {
-    // OpenFileById can transiently fail while NTFS is completing a rename/move.
-    // A single failure must not turn a surviving File ID into a destructive
-    // lifecycle Delete. This runs only in SLOW reconciliation.
-    constexpr int kAttempts = 12;
-    constexpr DWORD kDelayMs = 250;
-    for (int attempt = 0; attempt < kAttempts; ++attempt) {
-        if (auto current = ResolveCurrentPathByObjectId(volumeIdentity, objectId, isDirectory))
-            return current;
-        if (attempt + 1 < kAttempts) Sleep(kDelayMs);
-    }
-    return std::nullopt;
-}
-
 bool IsRecycleBinPath(const FolderIdentity& identity) {
     const std::wstring relative = Lower(identity.relativePath);
     return relative == L"$recycle.bin" || relative.starts_with(L"$recycle.bin\\");
@@ -158,22 +143,14 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
         action.oldRelativePath = old.relativePath;
         action.isDirectory = old.isDirectory;
 
-        const auto currentPath = ResolveCurrentPathByObjectIdWithMoveGrace(
-            *directoryIdentity, old.objectId, old.isDirectory);
+        const auto currentPath = ResolveCurrentPathByObjectId(*directoryIdentity, old.objectId, old.isDirectory);
         if (currentPath) {
             const auto currentIdentity = ResolveFolderIdentity(*currentPath);
             if (currentIdentity && currentIdentity->volumeId == directoryIdentity->volumeId &&
-                !IsRecycleBinPath(*currentIdentity)) {
-                if (currentIdentity->relativePath != old.relativePath) {
-                    action.kind = TrackedActionKind::Move;
-                    action.newRelativePath = currentIdentity->relativePath;
-                    explicitActions.push_back(std::move(action));
-                }
-                // The filesystem enumeration can race a rapid MOVE round trip:
-                // the child was absent from this directory snapshot, but by the
-                // time File ID resolution runs the exact same object may already
-                // be back at its tracked path. That is a stale observation, not
-                // a deletion. Keep the existing history/tracked row unchanged.
+                !IsRecycleBinPath(*currentIdentity) && currentIdentity->relativePath != old.relativePath) {
+                action.kind = TrackedActionKind::Move;
+                action.newRelativePath = currentIdentity->relativePath;
+                explicitActions.push_back(std::move(action));
                 continue;
             }
         }
