@@ -7,7 +7,7 @@ file(READ "${INPUT}" ENGINE)
 function(fhm_replace_once OLD NEW LABEL)
     string(FIND "${ENGINE}" "${OLD}" POS)
     if(POS EQUAL -1)
-        message(FATAL_ERROR "1.40 TC navigation monitor anchor not found: ${LABEL}")
+        message(FATAL_ERROR "1.41 TC navigation monitor anchor not found: ${LABEL}")
     endif()
     string(REPLACE "${OLD}" "${NEW}" PATCHED "${ENGINE}")
     set(ENGINE "${PATCHED}" PARENT_SCOPE)
@@ -53,10 +53,10 @@ fhm_replace_once([=[    InterlockedExchange(&g_shared->shutdownRequested, 0);
 
 string(FIND "${ENGINE}" "FolderHeatMap 1.20 canonical lifecycle engine starting" VERSION_POS)
 if(VERSION_POS EQUAL -1)
-    message(FATAL_ERROR "1.40 engine version banner anchor not found")
+    message(FATAL_ERROR "1.41 engine version banner anchor not found")
 endif()
 string(REPLACE "FolderHeatMap 1.20 canonical lifecycle engine starting"
-               "FolderHeatMap 1.40 engine starting (identity-first move and rename lifecycle)" ENGINE "${ENGINE}")
+               "FolderHeatMap 1.41 engine starting (rapid-move stale-task protection)" ENGINE "${ENGINE}")
 
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.40 independent Total Commander navigation monitor: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.41 independent Total Commander navigation monitor: ${INPUT}")
