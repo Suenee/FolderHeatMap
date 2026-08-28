@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.42-rapid-move-reconciliation-grace"
+set "UPGRADE_REV=1.43-rapid-move-returned-object"
 set "RUN_TEST=0"
 if /I "%~1"=="--test" (
     set "RUN_TEST=1"
