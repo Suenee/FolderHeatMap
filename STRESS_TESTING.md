@@ -1,8 +1,10 @@
 # FolderHeatMap lifecycle stress tests
 
-Version 1.37 keeps the baseline and stress suites and adds a third diagnostic stage, `test_lifecycle_diag.ps1`. The diagnostic stage is designed to separate real FolderHeatMap lifecycle regressions from assumptions in the stress runner before runtime lifecycle code is changed.
+Version 1.38 keeps the baseline, stress, and lifecycle diagnostic suites from 1.37, and changes the test handoff so a completed baseline regression failure no longer prevents the diagnostic stage from running. This is specifically intended to capture evidence for the reproducible file MOVE round-trip mismatch observed in the baseline suite.
 
-Run `test.cmd` from the repository root. The launcher syntax-checks `test.ps1`, `test_stress.ps1`, and `test_lifecycle_diag.ps1` with `System.Management.Automation.Language.Parser` before any test executes. The proven baseline suite still runs first and remains a hard prerequisite. The stress suite runs second. The lifecycle diagnostic stage runs afterward even when the stress suite reports lifecycle errors, so the failing scenarios still produce detailed evidence.
+Run `test.cmd` from the repository root. The launcher syntax-checks `test.ps1`, `test_stress.ps1`, and `test_lifecycle_diag.ps1` with `System.Management.Automation.Language.Parser` before any test executes. The baseline suite still runs first. When baseline passes, stress runs second and lifecycle diagnostics run afterward. When baseline finishes with an assertion failure, the stress stage is skipped, lifecycle diagnostics still run, and `test.cmd` returns the original baseline failure code after diagnostics complete.
+
+A parser error, missing prerequisite, or other failure that prevents a test script from running safely remains a hard stop. The 1.38 change only preserves diagnostic execution after a completed baseline regression result.
 
 Before destructive test cleanup begins, Total Commander is explicitly navigated to the fixed non-destructive release path `D:\Temp`. Destructive filesystem operations remain hard-limited to the exclusive workspace `D:\Temp\FHM\`.
 
@@ -19,7 +21,7 @@ The original stress suite still covers:
 9. Controlled FolderHeatMapEngine restart persistence.
 10. Workspace reuse cleanup.
 
-The 1.37 diagnostic stage focuses on the four stress failures observed in 1.36:
+The lifecycle diagnostic stage focuses on move/rename convergence and watcher visibility:
 
 - Rapid MOVE is tested twice: a normal 1500 ms cadence and the original 450 ms stress cadence. Each variant waits up to 10 seconds for the complete history signature to converge instead of merely waiting for a destination database row to exist.
 - Directory and file RENAME diagnostics print before/after File IDs, full database state, old-path state, and matching engine log lines for the unique rename paths. This makes `RENAMED_OLD_NAME`, `RENAMED_NEW_NAME`, `REMOVED`, and lifecycle migration behavior visible without changing runtime code.
