@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.38 - 28.08.2026
+
+- Changed `test.cmd` so a completed baseline regression failure no longer prevents `test_lifecycle_diag.ps1` from running.
+- When the baseline suite returns an assertion failure, the stress stage is skipped, lifecycle diagnostics run immediately, and the launcher finally returns the original baseline failure code.
+- This preserves diagnostic evidence for the reproducible file MOVE round-trip mismatch where File ID survives but the baseline file history comparison fails on `DST -> SRC`.
+- Parser failures and unsafe prerequisite failures still stop execution before destructive diagnostic work begins.
+- FolderHeatMap runtime lifecycle behavior remains unchanged in this release; 1.38 is a diagnostic handoff release intended to identify whether file history is altered during migration or afterward by SLOW reconciliation.
+- Updated build/runtime/self-updating upgrader metadata to 1.38.
+- Version updated to 1.38 (`1.38-baseline-diagnostic-handoff`).
+
 ## 1.37 - 28.08.2026
 
 - Added `test_lifecycle_diag.ps1`, a third-stage diagnostic suite that runs after the existing stress suite to separate real FolderHeatMap lifecycle regressions from test assumptions before runtime lifecycle code is changed.
