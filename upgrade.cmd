@@ -2,7 +2,15 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.39-reset-link-hotfix"
+set "UPGRADE_REV=1.40-identity-first-move-rename"
+set "RUN_TEST=0"
+if /I "%~1"=="--test" (
+    set "RUN_TEST=1"
+) else if not "%~1"=="" (
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: Unknown upgrade option. Supported: --test' -ForegroundColor Red"
+    exit /b 2
+)
+
 set "REPO_DIR=%~dp0"
 if "!REPO_DIR:~-1!"=="\" set "REPO_DIR=!REPO_DIR:~0,-1!"
 cd /d "!REPO_DIR!"
@@ -45,5 +53,17 @@ rem EXIT command therefore cannot accidentally continue in newly replaced file.
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!RUNNER_TEMP!"
     set "UPGRADE_RC=!ERRORLEVEL!"
     del /q "!RUNNER_TEMP!" >nul 2>nul
+
+    if "!UPGRADE_RC!"=="0" if "!RUN_TEST!"=="1" (
+        if not exist "!REPO_DIR!\test.cmd" (
+            powershell.exe -NoProfile -Command "Write-Host 'ERROR: Upgrade succeeded, but test.cmd is missing.' -ForegroundColor Red"
+            set "UPGRADE_RC=3"
+        ) else (
+            powershell.exe -NoProfile -Command "Write-Host 'Upgrade succeeded. Starting test.cmd...' -ForegroundColor Cyan"
+            call "!REPO_DIR!\test.cmd"
+            set "UPGRADE_RC=!ERRORLEVEL!"
+        )
+    )
+
     exit /b !UPGRADE_RC!
 )
