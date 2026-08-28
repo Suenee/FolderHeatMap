@@ -14,6 +14,7 @@ enum class LifecycleChangeKind {
 
 struct LifecycleChange {
     LifecycleChangeKind kind = LifecycleChangeKind::Deleted;
+    std::wstring objectId;
     std::wstring oldPath;
     std::wstring newPath;
     bool isDirectory = false;
