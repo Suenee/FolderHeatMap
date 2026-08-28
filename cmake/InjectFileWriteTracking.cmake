@@ -32,6 +32,22 @@ fhm_write_replace_once([=[void QueuePrediction(const std::wstring& directory) {]
 
     const auto identity = fhm::ResolveFolderIdentity(key);
     if (!identity) return;
+
+    // A file can be created and written before a later SLOW parent scan has
+    // inserted its canonical tracked_objects row. Register Volume Serial +
+    // File ID on every accepted file write so a subsequent MOVE/RENAME can be
+    // reconciled identity-first instead of being mistaken for a deletion.
+    const auto objectId = fhm::ResolveFilesystemObjectId(key, false);
+    if (objectId) {
+        std::wstring movedFrom;
+        if (!g_writeDatabase.ObserveTrackedObject(*identity, *objectId, false, &movedFrom)) {
+            g_log.WritePath("FILE_WRITE", "tracked_identity FAILED", key);
+        } else if (!movedFrom.empty()) {
+            g_log.WritePath("LIFECYCLE", "write_identity_migrated old", movedFrom);
+            g_log.WritePath("LIFECYCLE", "write_identity_migrated new", key);
+        }
+    }
+
     if (!g_writeDatabase.ObserveFileWrite(*identity, data.ftLastWriteTime)) return;
 
     const double halfLife = EffectiveHalfLifeDays(settings);
@@ -69,4 +85,4 @@ fhm_write_replace_once([=[std::thread diagnostics(fhm::RunDeletionDiagnostics, g
 "watcher callback wiring")
 
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.28 file write tracking: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.40 canonical file-write tracking: ${INPUT}")
