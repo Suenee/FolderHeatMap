@@ -163,10 +163,17 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
         if (currentPath) {
             const auto currentIdentity = ResolveFolderIdentity(*currentPath);
             if (currentIdentity && currentIdentity->volumeId == directoryIdentity->volumeId &&
-                !IsRecycleBinPath(*currentIdentity) && currentIdentity->relativePath != old.relativePath) {
-                action.kind = TrackedActionKind::Move;
-                action.newRelativePath = currentIdentity->relativePath;
-                explicitActions.push_back(std::move(action));
+                !IsRecycleBinPath(*currentIdentity)) {
+                if (currentIdentity->relativePath != old.relativePath) {
+                    action.kind = TrackedActionKind::Move;
+                    action.newRelativePath = currentIdentity->relativePath;
+                    explicitActions.push_back(std::move(action));
+                }
+                // The filesystem enumeration can race a rapid MOVE round trip:
+                // the child was absent from this directory snapshot, but by the
+                // time File ID resolution runs the exact same object may already
+                // be back at its tracked path. That is a stale observation, not
+                // a deletion. Keep the existing history/tracked row unchanged.
                 continue;
             }
         }
