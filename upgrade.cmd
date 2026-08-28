@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.46-queued-file-id-rapid-move"
+set "UPGRADE_REV=1.47-rapid-move-roundtrip-memory"
 set "RUN_TEST=0"
 if /I "%~1"=="--test" (
     set "RUN_TEST=1"
