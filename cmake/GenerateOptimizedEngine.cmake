@@ -270,8 +270,14 @@ fhm_replace_once([=[void ProcessSlowTask(const std::wstring& directory) {
     if (!lifecycle.changes.empty()) {
         std::size_t moved = 0, deleted = 0;
         for (const auto& change : lifecycle.changes) {
-            if (change.kind == fhm::LifecycleChangeKind::Moved) ++moved;
-            else ++deleted;
+            if (change.kind == fhm::LifecycleChangeKind::Moved) {
+                ++moved;
+            } else {
+                ++deleted;
+                g_log.WriteWide("DB_DELETE_TRACE",
+                    L"source=slow_reconcile action=DELETE object_id=" + change.objectId +
+                    L" path=" + change.oldPath);
+            }
         }
         g_log.Write("LIFECYCLE", "batch observed=" + std::to_string(lifecycle.observed) +
                     " moved=" + std::to_string(moved) + " deleted=" + std::to_string(deleted));
