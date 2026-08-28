@@ -22,9 +22,10 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
     if (IsVolumeRoot(path)) { g_log.WritePath("LIFECYCLE", "ROOT_PURGE_BLOCKED", path); return; }
     const auto identity = DeletedPathIdentity(path);
 
-    // Identity-first lifecycle: FILE_ACTION_REMOVED is only a hint. The object
-    // may have been moved to another directory on the same volume. Keep the
-    // tracked history alive until Volume Serial + File ID proves otherwise.
+    // Identity-first lifecycle: FILE_ACTION_REMOVED/RENAMED_OLD_NAME is only
+    // a hint. The object may have moved elsewhere on the same volume, or a
+    // queued removal may have become stale because a rapid round trip already
+    // brought the same File ID back to this exact path.
     if (identity) {
         const auto tracked = g_readDatabase.GetTrackedObjectAtPath(identity->volumeId, identity->relativePath);
         if (tracked && !tracked->objectId.empty()) {
@@ -46,8 +47,22 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                     recycle = relative == L"$recycle.bin" || relative.starts_with(L"$recycle.bin\\");
                 }
 
-                if (currentIdentity && currentIdentity->volumeId == identity->volumeId && !recycle &&
-                    _wcsicmp(normalizedCurrent.c_str(), path.c_str()) != 0) {
+                if (currentIdentity && currentIdentity->volumeId == identity->volumeId && !recycle) {
+                    if (_wcsicmp(normalizedCurrent.c_str(), path.c_str()) == 0) {
+                        // The exact tracked File ID is alive again at the old
+                        // path. This is a stale removal task from a rapid move
+                        // round trip, not a deletion. Never purge its history.
+                        {
+                            std::scoped_lock lock(g_deleteMutex);
+                            g_deletePending.erase(path);
+                            g_tombstones.erase(path);
+                        }
+                        g_log.WritePath("LIFECYCLE", "stale_removal_same_identity", path);
+                        const auto parent = ExistingParent(path);
+                        if (!parent.empty()) QueueSlow(parent);
+                        return;
+                    }
+
                     const bool moved = g_writeDatabase.MoveTrackedObject(
                         identity->volumeId, tracked->objectId, tracked->relativePath,
                         currentIdentity->relativePath, tracked->isDirectory);
@@ -105,4 +120,4 @@ endif()
 
 string(REPLACE "${OLD}" "${NEW}" ENGINE "${ENGINE}")
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap identity-first same-volume move handling: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.40 identity-first same-volume move/rename handling: ${INPUT}")
