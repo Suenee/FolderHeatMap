@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.44 - 28.08.2026
+
+- Added diagnostic-only tracing for every destructive runtime lifecycle path involved in the rapid MOVE investigation without changing MOVE/RENAME/DELETE behavior.
+- Watcher-side recursive purges now emit `[DB_DELETE_TRACE] source=watcher_purge` with the queued path, canonical volume/relative path and tracked File ID when available immediately before `ResetRecursiveActivity()`.
+- SLOW canonical reconciliation now propagates File IDs through `LifecycleResult` and emits `[DB_DELETE_TRACE] source=slow_reconcile action=DELETE` for every applied destructive lifecycle action.
+- `test_lifecycle_diag.ps1` is now version 1.44 and captures engine-log lines produced during each RAPID_NORMAL / RAPID_STRESS case so the diagnostic log itself identifies which destructive path removed history.
+- Kept the 1.43 runtime lifecycle decisions unchanged; this release is intended to identify the actual deletion source before another behavioral fix is attempted.
+- Corrected the historical 1.29 changelog wording: recycle-bin moves are deletion semantics and are intentionally not migrated as normal moves.
+- Updated build/runtime/upgrader metadata to 1.44 (`1.44-destructive-lifecycle-trace`).
+
 ## 1.43 - 28.08.2026
 
 - Fixed the remaining rapid MOVE round-trip history loss in SLOW lifecycle reconciliation.
@@ -146,7 +156,7 @@
 - Changed watcher removal handling to identity-first semantics: `FILE_ACTION_REMOVED` is treated as a change hint, not immediate proof that the filesystem object was destroyed.
 - Before recursive purge, SLOW now resolves the previously tracked object by `Volume Serial + File ID` and retries briefly to cover source/destination notification races.
 - If the same object still exists elsewhere on the same volume, `MoveTrackedObject()` atomically migrates directory Visits/usage, descendant file activity, tracked identities, or file Writes to the new path.
-- Recycle-bin moves remain deletion semantics and are intentionally migrated as normal moves.
+- Recycle-bin moves remain deletion semantics and are intentionally not migrated as normal moves.
 - If a move is detected but database migration fails, history is preserved instead of being destructively purged; destination-parent reconciliation is queued as a recovery path.
 - The same-volume move build stage now fails configuration when its expected lifecycle anchor is missing instead of silently skipping the protection.
 - Added `[LIFECYCLE] move_migrated old/new` and `move_migration FAILED old/new` diagnostics.
