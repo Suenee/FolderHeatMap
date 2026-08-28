@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.40 - 28.08.2026
+
+- Fixed same-directory RENAME handling by sending `FILE_ACTION_RENAMED_OLD_NAME` through the same identity-first lifecycle path used for same-volume MOVE.
+- File-write handling now records canonical `Volume Serial + File ID` identity before persisting Writes, so recently created/written files are already present in `tracked_objects` before a subsequent MOVE/RENAME can be mistaken for deletion.
+- Kept the existing identity-first delete protection: a surviving same-volume File ID migrates history, while genuine deletion and DELETE -> RECREATE with a different File ID remain destructive/new-object semantics.
+- Added lifecycle diagnostics for write-driven identity migration and tracking failures.
+- Added `upgrade.cmd --test`: tests run automatically only after a successful upgrade/deployment; failed upgrades never launch `test.cmd`, and the final exit code reflects the test result when tests are requested.
+- Updated build/runtime/self-updating upgrader metadata to 1.40.
+- Version updated to 1.40 (`1.40-identity-first-move-rename`).
+
+## 1.39 - 28.08.2026
+
+- Fixed `FolderHeatMapReset.exe` linker failures by restoring `src/Database.cpp` to the reset target so `Database::Open()` and `Database::~Database()` are linked.
+- Kept runtime lifecycle behavior unchanged in this build hotfix.
+- Version updated to 1.39 (`1.39-reset-link-hotfix`).
+
 ## 1.38 - 28.08.2026
 
 - Changed `test.cmd` so a completed baseline regression failure no longer prevents `test_lifecycle_diag.ps1` from running.
