@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.43 - 28.08.2026
+
+- Fixed the remaining rapid MOVE round-trip history loss in SLOW lifecycle reconciliation.
+- When a child is missing from one directory enumeration but the same canonical File ID has already returned to its original tracked relative path, the event is now treated as a stale snapshot instead of a deletion.
+- The existing tracked row and Visits/Writes history are preserved unchanged for this returned-object case.
+- A surviving File ID at a different relative path still produces a MOVE, while a genuinely missing File ID still produces DELETE semantics.
+- Kept the 1.42 bounded File ID resolution grace in SLOW and left working RENAME, ordinary MOVE, file-write tracking and `identity_mismatch_non_destructive` behavior unchanged.
+- Updated build/runtime/upgrader metadata to 1.43 (`1.43-rapid-move-returned-object`).
+
+## 1.42 - 28.08.2026
+
+- Added bounded SLOW reconciliation grace for canonical File ID resolution during MOVE/RENAME transitions.
+- `OpenFileById` resolution is retried up to 12 times at 250 ms intervals before a missing tracked object can become a destructive DELETE action.
+- Kept the FAST navigation path non-blocking; the grace window exists only in SLOW lifecycle reconciliation.
+- Version updated to 1.42 (`1.42-rapid-move-reconciliation-grace`).
+
+## 1.41 - 28.08.2026
+
+- Added stale removal protection for rapid MOVE chains when a previous lifecycle task has already migrated the tracked-object row away from the old path.
+- If the old path exists again while that stale removal is processed, watcher-side cleanup releases the tombstone and queues canonical SLOW reconciliation instead of immediately resetting history.
+- Kept working same-directory RENAME, ordinary MOVE and file-write identity behavior unchanged.
+- Version updated to 1.41 (`1.41-rapid-move-stale-task`).
+
 ## 1.40 - 28.08.2026
 
 - Fixed same-directory RENAME handling by sending `FILE_ACTION_RENAMED_OLD_NAME` through the same identity-first lifecycle path used for same-volume MOVE.
@@ -123,7 +146,7 @@
 - Changed watcher removal handling to identity-first semantics: `FILE_ACTION_REMOVED` is treated as a change hint, not immediate proof that the filesystem object was destroyed.
 - Before recursive purge, SLOW now resolves the previously tracked object by `Volume Serial + File ID` and retries briefly to cover source/destination notification races.
 - If the same object still exists elsewhere on the same volume, `MoveTrackedObject()` atomically migrates directory Visits/usage, descendant file activity, tracked identities, or file Writes to the new path.
-- Recycle-bin moves remain deletion semantics and are intentionally not migrated as normal moves.
+- Recycle-bin moves remain deletion semantics and are intentionally migrated as normal moves.
 - If a move is detected but database migration fails, history is preserved instead of being destructively purged; destination-parent reconciliation is queued as a recovery path.
 - The same-volume move build stage now fails configuration when its expected lifecycle anchor is missing instead of silently skipping the protection.
 - Added `[LIFECYCLE] move_migrated old/new` and `move_migration FAILED old/new` diagnostics.
