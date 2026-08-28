@@ -193,6 +193,7 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
     result.changes.reserve(applied.size());
     for (const auto& action : applied) {
         LifecycleChange change;
+        change.objectId = action.objectId;
         change.isDirectory = action.isDirectory;
         change.oldPath = JoinPath(directoryIdentity->mountPoint, action.oldRelativePath);
         if (action.kind == TrackedActionKind::Move) {
