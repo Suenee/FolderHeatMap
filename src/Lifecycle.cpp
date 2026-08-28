@@ -87,6 +87,21 @@ std::optional<std::wstring> ResolveCurrentPathByObjectId(const FolderIdentity& v
     return path;
 }
 
+std::optional<std::wstring> ResolveCurrentPathByObjectIdWithMoveGrace(
+    const FolderIdentity& volumeIdentity, const std::wstring& objectId, bool isDirectory) {
+    // OpenFileById can transiently fail while NTFS is completing a rename/move.
+    // A single failure must not turn a surviving File ID into a destructive
+    // lifecycle Delete. This runs only in SLOW reconciliation.
+    constexpr int kAttempts = 12;
+    constexpr DWORD kDelayMs = 250;
+    for (int attempt = 0; attempt < kAttempts; ++attempt) {
+        if (auto current = ResolveCurrentPathByObjectId(volumeIdentity, objectId, isDirectory))
+            return current;
+        if (attempt + 1 < kAttempts) Sleep(kDelayMs);
+    }
+    return std::nullopt;
+}
+
 bool IsRecycleBinPath(const FolderIdentity& identity) {
     const std::wstring relative = Lower(identity.relativePath);
     return relative == L"$recycle.bin" || relative.starts_with(L"$recycle.bin\\");
@@ -99,10 +114,6 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
     const auto directoryIdentity = ResolveFolderIdentity(directory);
     if (!directoryIdentity || directoryIdentity->volumeId.starts_with(L"unc:")) return result;
 
-    // Pre-1.19 builds could leave a tracked-object row for the volume root with
-    // a non-canonical File ID. The root itself is never a child observation and
-    // does not need a tracked-object row. Remove only that identity row here;
-    // folder history, heat and file activity remain untouched.
     if (directoryIdentity->relativePath.empty())
         database.DeleteTrackedIdentityOnlyAtPath(directoryIdentity->volumeId, L"");
 
@@ -147,7 +158,8 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
         action.oldRelativePath = old.relativePath;
         action.isDirectory = old.isDirectory;
 
-        const auto currentPath = ResolveCurrentPathByObjectId(*directoryIdentity, old.objectId, old.isDirectory);
+        const auto currentPath = ResolveCurrentPathByObjectIdWithMoveGrace(
+            *directoryIdentity, old.objectId, old.isDirectory);
         if (currentPath) {
             const auto currentIdentity = ResolveFolderIdentity(*currentPath);
             if (currentIdentity && currentIdentity->volumeId == directoryIdentity->volumeId &&
@@ -162,10 +174,6 @@ LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstri
         explicitActions.push_back(std::move(action));
     }
 
-    // Critical ordering: invalidate/delete/move the previous filesystem objects
-    // before inserting observations for objects currently present at the same
-    // path. This makes external DELETE + recreate safe even when the watcher did
-    // not see the original deletion.
     std::vector<TrackedAction> applied;
     const std::vector<TrackedObservation> noObservations;
     const std::vector<TrackedAction> noActions;
