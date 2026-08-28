@@ -12,7 +12,13 @@ for %%F in (test.ps1 test_stress.ps1 test_lifecycle_diag.ps1) do (
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!REPO_DIR!\test.ps1"
 set "BASE_RC=!ERRORLEVEL!"
-if not "!BASE_RC!"=="0" exit /b !BASE_RC!
+
+if not "!BASE_RC!"=="0" (
+    powershell.exe -NoProfile -Command "Write-Host 'WARNING: Baseline regression failed. Stress stage is skipped, but lifecycle diagnostics will still run.' -ForegroundColor Yellow"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!REPO_DIR!\test_lifecycle_diag.ps1"
+    set "DIAG_RC=!ERRORLEVEL!"
+    exit /b !BASE_RC!
+)
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!REPO_DIR!\test_stress.ps1"
 set "STRESS_RC=!ERRORLEVEL!"
