@@ -7,7 +7,7 @@ file(READ "${INPUT}" ENGINE)
 function(fhm_replace_once OLD NEW LABEL)
     string(FIND "${ENGINE}" "${OLD}" POS)
     if(POS EQUAL -1)
-        message(FATAL_ERROR "1.49 TC navigation monitor anchor not found: ${LABEL}")
+        message(FATAL_ERROR "1.50 TC navigation monitor anchor not found: ${LABEL}")
     endif()
     string(REPLACE "${OLD}" "${NEW}" PATCHED "${ENGINE}")
     set(ENGINE "${PATCHED}" PARENT_SCOPE)
@@ -30,7 +30,8 @@ fhm_replace_once([=[    InterlockedExchange(&g_shared->shutdownRequested, 0);
     std::thread fast(FastWorker);
     std::thread slow(SlowWorker);
     std::thread diagnostics(fhm::RunDeletionDiagnostics, g_shared, &g_log, &g_stopping,
-                                            &HandleObservedRemoval, &HandleObservedModification);
+                                            &HandleObservedRemoval, &HandleObservedModification,
+                                            &HandleObservedArrival);
 
     fhm::TotalCommanderNavigationMonitor tcNavigation([&](int panel, const std::wstring& rawPath) {
         const auto path = fhm::runtime::NormalizePath(rawPath);
@@ -53,10 +54,10 @@ fhm_replace_once([=[    InterlockedExchange(&g_shared->shutdownRequested, 0);
 
 string(FIND "${ENGINE}" "FolderHeatMap 1.20 canonical lifecycle engine starting" VERSION_POS)
 if(VERSION_POS EQUAL -1)
-    message(FATAL_ERROR "1.49 engine version banner anchor not found")
+    message(FATAL_ERROR "1.50 engine version banner anchor not found")
 endif()
 string(REPLACE "FolderHeatMap 1.20 canonical lifecycle engine starting"
-               "FolderHeatMap 1.49 engine starting (rapid MOVE identity memory + surviving File ID reconciliation)" ENGINE "${ENGINE}")
+               "FolderHeatMap 1.50 engine starting (arrival-side File ID reconciliation)" ENGINE "${ENGINE}")
 
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.49 independent Total Commander navigation monitor: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.50 independent Total Commander navigation monitor: ${INPUT}")
