@@ -7,6 +7,8 @@
 - Added explicit `queued_identity_reconciled` and `queued_identity_survived_unreconciled` lifecycle diagnostics.
 - Updated the lifecycle diagnostic suite to report test version 1.48 and include the new reconciliation traces.
 - Fixed the 1.48 CMake pipeline after the first 1.48 package attempt: the 1.48 same-volume MOVE injector already contains the required rapid round-trip handling, so the obsolete 1.47 `ProtectRapidMoveRoundTrips.cmake` stage is no longer applied a second time. This was a build-time anchor conflict only; the failed package was never deployed.
+- Fixed the lifecycle diagnostic launcher after a runtime-only PowerShell tokenization defect (`Info'...'`, `Write-LogLine'...'`) prevented diagnostics from starting. `test.cmd` now normalizes those legacy compact command calls in its temporary diagnostic copy before parser validation and execution.
+- Runtime lifecycle behavior is unchanged by this diagnostic launcher hotfix.
 - Updated build/runtime/launcher metadata to 1.48 (`1.48-surviving-file-id-reconcile`).
 
 ## 1.47 - 29.08.2026
