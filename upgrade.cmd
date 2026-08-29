@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.50-arrival-file-id-reconcile"
+set "UPGRADE_REV=1.51-folder-icon-repair"
 set "RUN_TEST=0"
 if /I "%~1"=="--test" (set "RUN_TEST=1") else if not "%~1"=="" (powershell.exe -NoProfile -Command "Write-Host 'ERROR: Unknown upgrade option. Supported: --test' -ForegroundColor Red" & exit /b 2)
 set "REPO_DIR=%~dp0"
