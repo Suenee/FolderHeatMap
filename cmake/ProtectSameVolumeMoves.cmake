@@ -7,7 +7,7 @@ file(READ "${INPUT}" ENGINE)
 function(fhm_move_replace_once OLD NEW LABEL)
     string(FIND "${ENGINE}" "${OLD}" POS)
     if(POS EQUAL -1)
-        message(FATAL_ERROR "1.46 rapid MOVE identity anchor not found: ${LABEL}")
+        message(FATAL_ERROR "1.48 rapid MOVE reconciliation anchor not found: ${LABEL}")
     endif()
     string(REPLACE "${OLD}" "${NEW}" PATCHED "${ENGINE}")
     set(ENGINE "${PATCHED}" PARENT_SCOPE)
@@ -73,8 +73,6 @@ fhm_move_replace_once([=[        g_tombstones.insert(key);
         if (g_deletePending.insert(key).second) { g_deleteQueue.push_back(key); newlyQueued = true; }]=]
 "store queued File ID")
 
-# CoalesceDeleteQueue runs before this stage. If a higher branch supersedes a
-# queued child, discard the child identity snapshot together with its task.
 string(FIND "${ENGINE}" "coveredDescendants" HAS_COALESCING)
 if(NOT HAS_COALESCING EQUAL -1)
     fhm_move_replace_once([=[        for (const auto& descendant : coveredDescendants) {
@@ -117,8 +115,6 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
     std::wstring purgeObjectId = queuedHint ? queuedHint->objectId : L"";
     bool hadTrackedAtOldPath = false;
 
-    // Normal same-volume MOVE handling: when the old tracked row is still at
-    // this path, resolve that exact File ID and migrate its stored history.
     if (identity) {
         const auto tracked = g_readDatabase.GetTrackedObjectAtPath(identity->volumeId, identity->relativePath);
         if (tracked && !tracked->objectId.empty()) {
@@ -136,9 +132,7 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                 bool recycle = false;
                 if (currentIdentity) {
                     std::wstring relative = currentIdentity->relativePath;
-                    std::transform(relative.begin(), relative.end(), relative.begin(), [](wchar_t c) {
-                        return static_cast<wchar_t>(std::towlower(c));
-                    });
+                    std::transform(relative.begin(), relative.end(), relative.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
                     recycle = relative == L"$recycle.bin" || relative.starts_with(L"$recycle.bin\\");
                 }
 
@@ -146,27 +140,18 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                     if (_wcsicmp(normalizedCurrent.c_str(), path.c_str()) == 0) {
                         {
                             std::scoped_lock lock(g_deleteMutex);
-                            g_deletePending.erase(path);
-                            g_tombstones.erase(path);
-                            g_deleteIdentityHints.erase(path);
+                            g_deletePending.erase(path); g_tombstones.erase(path); g_deleteIdentityHints.erase(path);
                         }
                         g_log.WritePath("LIFECYCLE", "stale_removal_same_identity", path);
-                        const auto parent = ExistingParent(path);
-                        if (!parent.empty()) QueueSlow(parent);
+                        const auto parent = ExistingParent(path); if (!parent.empty()) QueueSlow(parent);
                         return;
                     }
 
-                    const bool moved = g_writeDatabase.MoveTrackedObject(
-                        identity->volumeId, tracked->objectId, tracked->relativePath,
-                        currentIdentity->relativePath, tracked->isDirectory);
-
+                    const bool moved = g_writeDatabase.MoveTrackedObject(identity->volumeId, tracked->objectId, tracked->relativePath, currentIdentity->relativePath, tracked->isDirectory);
                     {
                         std::scoped_lock lock(g_deleteMutex);
-                        g_deletePending.erase(path);
-                        g_tombstones.erase(path);
-                        g_deleteIdentityHints.erase(path);
+                        g_deletePending.erase(path); g_tombstones.erase(path); g_deleteIdentityHints.erase(path);
                     }
-
                     if (moved) {
                         g_log.WritePath("LIFECYCLE", "move_migrated old", path);
                         g_log.WritePath("LIFECYCLE", "move_migrated new", normalizedCurrent);
@@ -174,24 +159,18 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
                         g_log.WritePath("LIFECYCLE", "move_migration FAILED old", path);
                         g_log.WritePath("LIFECYCLE", "move_migration FAILED new", normalizedCurrent);
                     }
-
-                    const auto oldParent = ExistingParent(path);
-                    const auto newParent = ExistingParent(normalizedCurrent);
-                    if (!oldParent.empty()) QueueSlow(oldParent);
-                    if (!newParent.empty()) QueueSlow(newParent);
+                    const auto oldParent = ExistingParent(path); const auto newParent = ExistingParent(normalizedCurrent);
+                    if (!oldParent.empty()) QueueSlow(oldParent); if (!newParent.empty()) QueueSlow(newParent);
                     return;
                 }
             }
         }
     }
 
-    // Rapid MOVE fix: the old path may no longer have a tracked row because an
-    // earlier queued MOVE already migrated it. Use the File ID captured at the
-    // moment this removal was observed. If that exact object still exists
-    // anywhere on the same volume, this queued task is stale and must never
-    // erase history just because its old pathname is temporarily absent.
-    if (!hadTrackedAtOldPath && identity && queuedHint && !queuedHint->objectId.empty() &&
-        queuedHint->volumeId == identity->volumeId) {
+    // If the queued File ID survived but the tracked row already moved away
+    // from this stale old path, do not merely cancel DELETE. Reconcile the
+    // database row for that exact File ID to its current filesystem path.
+    if (!hadTrackedAtOldPath && identity && queuedHint && !queuedHint->objectId.empty() && queuedHint->volumeId == identity->volumeId) {
         std::optional<std::wstring> currentPath;
         for (int attempt = 0; attempt < 8 && !currentPath; ++attempt) {
             currentPath = fhm::ResolveFilesystemPathByObjectId(*identity, queuedHint->objectId, queuedHint->isDirectory);
@@ -203,46 +182,44 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
             bool recycle = false;
             if (currentIdentity) {
                 std::wstring relative = currentIdentity->relativePath;
-                std::transform(relative.begin(), relative.end(), relative.begin(), [](wchar_t c) {
-                    return static_cast<wchar_t>(std::towlower(c));
-                });
+                std::transform(relative.begin(), relative.end(), relative.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
                 recycle = relative == L"$recycle.bin" || relative.starts_with(L"$recycle.bin\\");
             }
             if (currentIdentity && currentIdentity->volumeId == identity->volumeId && !recycle) {
+                bool reconciled = false;
+                std::wstring databasePath;
+                if (const auto trackedCurrent = g_readDatabase.GetTrackedObjectById(queuedHint->volumeId, queuedHint->objectId)) {
+                    databasePath = trackedCurrent->relativePath;
+                    if (_wcsicmp(databasePath.c_str(), currentIdentity->relativePath.c_str()) == 0) {
+                        reconciled = true;
+                    } else {
+                        reconciled = g_writeDatabase.MoveTrackedObject(queuedHint->volumeId, queuedHint->objectId, databasePath, currentIdentity->relativePath, queuedHint->isDirectory);
+                    }
+                }
+
                 {
                     std::scoped_lock lock(g_deleteMutex);
-                    g_deletePending.erase(path);
-                    g_tombstones.erase(path);
-                    g_deleteIdentityHints.erase(path);
+                    g_deletePending.erase(path); g_tombstones.erase(path); g_deleteIdentityHints.erase(path);
                 }
-                g_log.WriteWide("LIFECYCLE",
-                    L"queued_identity_survived object_id=" + queuedHint->objectId +
-                    L" old=" + path + L" current=" + normalizedCurrent);
-                const auto oldParent = ExistingParent(path);
-                const auto newParent = ExistingParent(normalizedCurrent);
-                if (!oldParent.empty()) QueueSlow(oldParent);
-                if (!newParent.empty()) QueueSlow(newParent);
+                if (reconciled) {
+                    g_log.WriteWide("LIFECYCLE", L"queued_identity_reconciled object_id=" + queuedHint->objectId + L" db=" + databasePath + L" current=" + normalizedCurrent);
+                } else {
+                    g_log.WriteWide("LIFECYCLE", L"queued_identity_survived_unreconciled object_id=" + queuedHint->objectId + L" current=" + normalizedCurrent);
+                }
+                const auto oldParent = ExistingParent(path); const auto newParent = ExistingParent(normalizedCurrent);
+                if (!oldParent.empty()) QueueSlow(oldParent); if (!newParent.empty()) QueueSlow(newParent);
                 return;
             }
         }
     }
 
     if (identity) {
-        g_log.WriteWide("DB_DELETE_TRACE",
-            L"source=watcher_purge action=RESET_RECURSIVE object_id=" + purgeObjectId +
-            L" volume=" + identity->volumeId + L" relative=" + identity->relativePath +
-            L" path=" + path);
+        g_log.WriteWide("DB_DELETE_TRACE", L"source=watcher_purge action=RESET_RECURSIVE object_id=" + purgeObjectId + L" volume=" + identity->volumeId + L" relative=" + identity->relativePath + L" path=" + path);
     }
-
-    // Only a File ID that no longer survives on the volume may reach the
-    // destructive reset path. Recycle-bin moves intentionally keep DELETE
-    // semantics.
     const bool ok = identity && g_writeDatabase.ResetRecursiveActivity(*identity);
     if (ok) {
         std::scoped_lock lock(g_deleteMutex);
-        g_deletePending.erase(path);
-        g_tombstones.erase(path);
-        g_deleteIdentityHints.erase(path);
+        g_deletePending.erase(path); g_tombstones.erase(path); g_deleteIdentityHints.erase(path);
     }
     if (ok) {
         g_log.WritePath("LIFECYCLE", "purge_subtree completed", path);
@@ -252,9 +229,8 @@ set(NEW [=[void ProcessDeleteTask(const std::wstring& path) {
 
 string(FIND "${ENGINE}" "${OLD}" POS)
 if(POS EQUAL -1)
-    message(FATAL_ERROR "FolderHeatMap 1.46 identity-first move anchor not found: ${INPUT}")
+    message(FATAL_ERROR "FolderHeatMap 1.48 identity-first move anchor not found: ${INPUT}")
 endif()
-
 string(REPLACE "${OLD}" "${NEW}" ENGINE "${ENGINE}")
 file(WRITE "${INPUT}" "${ENGINE}")
-message(STATUS "Injected FolderHeatMap 1.46 queued File ID rapid-MOVE protection: ${INPUT}")
+message(STATUS "Injected FolderHeatMap 1.48 surviving File ID path reconciliation: ${INPUT}")
