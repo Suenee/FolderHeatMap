@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.50'
-$Revision = '1.50-arrival-file-id-reconcile'
+$Version = '1.51'
+$Revision = '1.51-folder-icon-repair'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -157,18 +157,19 @@ try {
 
     $FailPhase='BUILD'; Info '[3/7] Preparing build...'; $build=Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64')|Out-Null
-    Info '[5/7] Building FolderHeatMap 1.50 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset')|Out-Null
+    Info '[5/7] Building FolderHeatMap 1.51 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset')|Out-Null
     $artifacts=@('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
 
     $FailPhase='DIST'; Info '[6/7] Preparing isolated package staging...'; $package=Join-Path $build 'package'; if (Test-Path $package) { Remove-Item $package -Recurse -Force }; New-Item -ItemType Directory -Path $package -Force|Out-Null
     foreach ($f in $artifacts) { Copy-Item -LiteralPath (Join-Path "$build\Release" $f) -Destination (Join-Path $package $f) -Force }
-    foreach ($f in @('configure.cmd','README.md','TESTING.md','STRESS_TESTING.md','test.cmd','test.ps1','test_stress.ps1','test_lifecycle_diag.ps1')) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item -LiteralPath (Join-Path $Repo $f) -Destination (Join-Path $package $f) -Force } }
+    $supportFiles=@('configure.cmd','README.md','TESTING.md','STRESS_TESTING.md','test.cmd','test.ps1','test_stress.ps1','test_lifecycle_diag.ps1','setup_icons.ps1')
+    foreach ($f in $supportFiles) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item -LiteralPath (Join-Path $Repo $f) -Destination (Join-Path $package $f) -Force } }
     Info ("[DIST] Package staging ready: $package")
 
     $FailPhase='DEPLOY'; Info '[7/7] Deploying staged package to Total Commander installation...'; Stop-TotalCommanderForDeploy -Reason 'pre-deploy guard'; Stop-EngineForDeploy -Reason 'pre-deploy guard'
     $dist=Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force|Out-Null
     foreach ($f in $artifacts) { $guardTc=($f -eq 'FolderHeatMap.wdx64'); $guardEngine=($f -eq 'FolderHeatMapEngine.exe'); Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' -GuardTotalCommander:$guardTc -GuardEngine:$guardEngine }
-    foreach ($f in @('configure.cmd','README.md','TESTING.md','STRESS_TESTING.md','test.cmd','test.ps1','test_stress.ps1','test_lifecycle_diag.ps1')) { if (Test-Path (Join-Path $package $f)) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' } }
+    foreach ($f in $supportFiles) { if (Test-Path (Join-Path $package $f)) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' } }
 
     if ($tc.Plugin) {
         $pluginFull=[IO.Path]::GetFullPath($tc.Plugin); $distPlugin=[IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
@@ -177,6 +178,18 @@ try {
     }
 
     Stop-TotalCommanderForDeploy -Reason 'post-deploy verification'; Stop-EngineForDeploy -Reason 'post-deploy verification'
+    $iconSetup=Join-Path $dist 'setup_icons.ps1'
+    if (-not (Test-Path -LiteralPath $iconSetup)) { Fail 'DEPLOY' 'setup_icons.ps1 is missing from the deployed package.' }
+    Info '[TC] Regenerating FolderHeatMap heat-colored folder icons and Internal Associations...'
+    $savedPreference=$ErrorActionPreference
+    try {
+        $ErrorActionPreference='Continue'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $iconSetup 2>&1 | ForEach-Object { Info ([string]$_) }
+        $iconRc=$LASTEXITCODE
+    } finally { $ErrorActionPreference=$savedPreference }
+    if ($iconRc -ne 0) { Fail 'DEPLOY' 'FolderHeatMap folder icon associations could not be regenerated.' }
+    Info '[TC] FolderHeatMap folder icon associations regenerated successfully.'
+
     $engineLauncher=Join-Path $Repo 'start_engine.ps1'; if (Test-Path $engineLauncher) { Info '[FHM] Starting FolderHeatMap engine after successful deployment.'; Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$engineLauncher) -WindowStyle Hidden|Out-Null }
     if ($tcWasRunning -and $tc.Exe) { Info '[TC] Restarting Total Commander after successful deployment.'; Start-Process -FilePath $tc.Exe|Out-Null }
 
