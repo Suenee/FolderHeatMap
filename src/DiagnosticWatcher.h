@@ -9,9 +9,10 @@ namespace runtime { struct SharedState; }
 
 using RemovalCallback = void(*)(const std::wstring& path);
 using ModificationCallback = void(*)(const std::wstring& path);
+using ArrivalCallback = void(*)(const std::wstring& path);
 
 void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
                             std::atomic<bool>* stopping, RemovalCallback onRemoved,
-                            ModificationCallback onModified);
+                            ModificationCallback onModified, ArrivalCallback onArrived);
 
 } // namespace fhm
