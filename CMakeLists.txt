@@ -34,10 +34,9 @@ execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}"
 if(NOT FHM_MOVE_GUARD_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap same-volume move protection.")
 endif()
-execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/ProtectRapidMoveRoundTrips.cmake" RESULT_VARIABLE FHM_ROUNDTRIP_GUARD_RESULT)
-if(NOT FHM_ROUNDTRIP_GUARD_RESULT EQUAL 0)
-    message(FATAL_ERROR "Could not inject FolderHeatMap rapid MOVE round-trip protection.")
-endif()
+# FolderHeatMap 1.48 integrates the former 1.47 rapid round-trip protection
+# directly into ProtectSameVolumeMoves.cmake. Running the legacy injector here
+# would patch the same generated block a second time and fail on stale anchors.
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DINPUT=${FHM_ENGINE_GENERATED_CPP}" -P "${CMAKE_SOURCE_DIR}/cmake/InjectFileWriteTracking.cmake" RESULT_VARIABLE FHM_FILE_WRITE_RESULT)
 if(NOT FHM_FILE_WRITE_RESULT EQUAL 0)
     message(FATAL_ERROR "Could not inject FolderHeatMap file write tracking.")
