@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$TestVersion = '1.48'
+$TestVersion = '1.50'
 $Workspace = 'D:\Temp\FHM'
 $ReleasePath = 'D:\Temp'
 $Repo = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -226,7 +226,7 @@ try {
         Dump-State "$($case.Name) BEFORE" $path $before $beforeId $folderFields
         Dump-State "$($case.Name) AFTER" $current $after $afterId $folderFields
         Info ("[DIAG] old_db_path_present=" + [bool](Get-FolderState $database $path))
-        Dump-EngineTrace @($name,'DB_DELETE_TRACE','queued_identity_reconciled','queued_identity_survived_unreconciled') $traceStart
+        Dump-EngineTrace @($name,'DB_DELETE_TRACE','queued_identity_reconciled','queued_identity_survived_unreconciled','arrival_identity_reconciled','arrival_identity_reconcile_FAILED') $traceStart
         if ($after -and $beforeId -eq $afterId) { Pass "$($case.Name) rapid MOVE converged to the original identity/history." }
         else { ErrorResult "$($case.Name) rapid MOVE did not converge within 10 seconds." }
     }
