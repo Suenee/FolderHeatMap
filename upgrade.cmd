@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.49-rapid-move-identity-memory"
+set "UPGRADE_REV=1.50-arrival-file-id-reconcile"
 set "RUN_TEST=0"
 if /I "%~1"=="--test" (set "RUN_TEST=1") else if not "%~1"=="" (powershell.exe -NoProfile -Command "Write-Host 'ERROR: Unknown upgrade option. Supported: --test' -ForegroundColor Red" & exit /b 2)
 set "REPO_DIR=%~dp0"
@@ -20,7 +20,7 @@ git show origin/devel:upgrade.ps1 > "!RUNNER_TEMP!" 2>nul
 if errorlevel 1 (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: Could not extract origin/devel:upgrade.ps1. & >> "!REPO_DIR!\logs\upgrade.log" echo STATUS: FAILED - phase=SELF-UPDATE/BOOTSTRAP & powershell.exe -NoProfile -Command "Write-Host 'ERROR: Could not extract upgrade.ps1 from origin/devel.' -ForegroundColor Red" & exit /b 1)
 rem The authoritative runner logic remains origin/devel. Release metadata is aligned
 rem in the temporary copy only, so the tracked working tree stays untouched.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p='!RUNNER_TEMP!';$s=[IO.File]::ReadAllText($p);$s=$s.Replace([char]36+'Version = ''1.46''',[char]36+'Version = ''1.49''').Replace([char]36+'Revision = ''1.46-queued-file-id-rapid-move''',[char]36+'Revision = ''1.49-rapid-move-identity-memory''').Replace('Building FolderHeatMap 1.46 and tools...','Building FolderHeatMap 1.49 and tools...');[IO.File]::WriteAllText($p,$s,[Text.UTF8Encoding]::new($false))"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p='!RUNNER_TEMP!';$s=[IO.File]::ReadAllText($p);$s=$s.Replace([char]36+'Version = ''1.46''',[char]36+'Version = ''1.50''').Replace([char]36+'Revision = ''1.46-queued-file-id-rapid-move''',[char]36+'Revision = ''1.50-arrival-file-id-reconcile''').Replace('Building FolderHeatMap 1.46 and tools...','Building FolderHeatMap 1.50 and tools...');[IO.File]::WriteAllText($p,$s,[Text.UTF8Encoding]::new($false))"
 if errorlevel 1 (del /q "!RUNNER_TEMP!" >nul 2>nul & powershell.exe -NoProfile -Command "Write-Host 'ERROR: Could not align temporary upgrader metadata.' -ForegroundColor Red" & exit /b 1)
 (
     set "FHM_UPGRADE_REPO=!REPO_DIR!"
