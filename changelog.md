@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.50 - 29.08.2026
+
+- Fixed the remaining rapid MOVE round-trip gap shown by the 1.49 diagnostics: path/File-ID memory prevented destructive purge, but history could remain stranded on `DST` when the watcher did not observe the unwatched `DST -> SRC` departure.
+- Added an arrival lifecycle callback for `FILE_ACTION_ADDED` and `FILE_ACTION_RENAMED_NEW_NAME` events.
+- Arrival handling resolves the object's canonical volume + File ID. If the same File ID is already tracked at another path, the database history is migrated to the path where the object physically exists now.
+- Added `arrival_identity_reconciled`, `arrival_identity_current`, and `arrival_identity_reconcile_FAILED` lifecycle diagnostics.
+- Recycle-bin arrivals are excluded from reconciliation, and genuinely new File IDs are not migrated from unrelated history.
+- Kept the 1.49 durable path-to-File-ID memory and the 1.48 surviving-File-ID reconciliation path; no additional timing delays or 1.41-1.43 speculative SLOW behaviors were introduced.
+- Updated lifecycle diagnostic metadata to 1.50 and included arrival reconciliation traces in rapid MOVE diagnostics.
+- Normalized the tracked `upgrade.ps1` metadata to 1.50 and removed the temporary metadata rewriting workaround from `upgrade.cmd`; the launcher now executes the self-updated authoritative `origin/devel:upgrade.ps1` directly.
+- Updated project/runtime/launcher metadata to 1.50 (`1.50-arrival-file-id-reconcile`).
+
 ## 1.49 - 29.08.2026
 
 - Fixed the confirmed 1.48 rapid-MOVE regression where second and later removals reached watcher purge with an empty `object_id`, causing `RESET_RECURSIVE` even though the same filesystem File ID survived.
