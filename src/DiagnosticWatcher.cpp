@@ -67,7 +67,7 @@ std::string SlowState(runtime::SharedState* shared) {
 
 void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
                             std::atomic<bool>* stopping, RemovalCallback onRemoved,
-                            ModificationCallback onModified) {
+                            ModificationCallback onModified, ArrivalCallback onArrived) {
     if (!shared || !log || !stopping) return;
 
     using Clock = std::chrono::steady_clock;
@@ -121,7 +121,7 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
         if (!readPending) log->WritePath("DIAG", "WATCH_READ_FAILED", watched);
     };
 
-    log->Write("DIAG", "filesystem diagnostics active; lifecycle removal, rename and file modification callbacks enabled");
+    log->Write("DIAG", "filesystem diagnostics active; lifecycle removal, arrival, rename and file modification callbacks enabled");
 
     while (!stopping->load()) {
         wchar_t currentBuf[runtime::kDirectoryChars]{};
@@ -187,6 +187,7 @@ void RunDeletionDiagnostics(runtime::SharedState* shared, EngineLogger* log,
                     log->WritePath("FILE_WRITE", "coalesced", full);
                 }
             } else if (info->Action == FILE_ACTION_ADDED || info->Action == FILE_ACTION_RENAMED_NEW_NAME) {
+                if (existsNow && onArrived) onArrived(full);
                 const auto it = removed.find(full);
                 if (it != removed.end()) {
                     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second).count();
