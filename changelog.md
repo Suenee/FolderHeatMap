@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.49 - 29.08.2026
+
+- Fixed the confirmed 1.48 rapid-MOVE regression where second and later removals reached watcher purge with an empty `object_id`, causing `RESET_RECURSIVE` even though the same filesystem File ID survived.
+- Restored durable path-to-File-ID memory at anchors compatible with the 1.48 generated lifecycle code.
+- A confirmed MOVE now remembers canonical volume, File ID and object type for both old and new endpoints; later removal events can recover that identity even after the tracked database row has already migrated away from the old path.
+- The recovered identity feeds the existing 1.48 surviving-File-ID reconciliation path, allowing `queued_identity_reconciled` to migrate database history to the object's current filesystem path instead of purging it.
+- No additional timing delays were added and the unsuccessful 1.41-1.43 SLOW lifecycle experiments remain rolled back.
+- Updated project/runtime/launcher metadata to 1.49 (`1.49-rapid-move-identity-memory`).
+
 ## 1.48 - 29.08.2026
 
 - Added canonical reconciliation for a surviving queued File ID: when a rapid MOVE round trip leaves the database row on an earlier path, the watcher now looks up the tracked object by volume and File ID and migrates its history to the object's current filesystem path.
