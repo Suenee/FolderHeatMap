@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.51 - 30.08.2026
+
+- Fixed the regression where FolderHeatMap text colors still followed Heat, but Total Commander folder icons remained at the normal yellow icon instead of using the heat-colored icon map.
+- Root cause: the deployed configurator expected `setup_icons.ps1` beside `FolderHeatMapConfig.exe`, but the isolated package/deployment did not include that script, and normal upgrades did not re-apply the FolderHeatMap Internal Associations.
+- `upgrade.ps1` now packages and deploys `setup_icons.ps1` beside `FolderHeatMapConfig.exe`.
+- Every successful upgrade now regenerates the FolderHeatMap heat icon files and Total Commander Internal Associations while Total Commander is stopped, before the application is restarted.
+- Icon regeneration failure is now a deployment failure instead of silently leaving a partially installed visual integration.
+- Existing user-selected icon artwork and configured heat colors continue to be read from `FolderHeatMap.ini`; the repair does not reset those settings.
+- Updated project/upgrader metadata to 1.51 (`1.51-folder-icon-repair`).
+
 ## 1.50 - 29.08.2026
 
 - Fixed the remaining rapid MOVE round-trip gap shown by the 1.49 diagnostics: path/File-ID memory prevented destructive purge, but history could remain stranded on `DST` when the watcher did not observe the unwatched `DST -> SRC` departure.
