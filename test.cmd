@@ -42,7 +42,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!REPO_DIR!\test_lifecyc
 set "DIAG_RC=!ERRORLEVEL!"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $log=Get-ChildItem -LiteralPath 'D:\Temp\FHM\logs' -Filter 'diagnostic-*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if(-not $log){ Write-Host 'ERROR: Lifecycle diagnostic log was not found for Heat reference output.' -ForegroundColor Red; exit 4 }; $utf8=[Text.UTF8Encoding]::new($false); $lines=@('', '[TEST] Dual-Timescale Activity golden reference', ('Heat test executable: ' + '!HEAT_TEST!')); foreach($line in $lines){ [IO.File]::AppendAllText($log.FullName,$line+[Environment]::NewLine,$utf8); Write-Host $line -ForegroundColor Cyan }; $output=& '!HEAT_TEST!' 2>&1; $rc=$LASTEXITCODE; foreach($line in $output){ $text=[string]$line; [IO.File]::AppendAllText($log.FullName,$text+[Environment]::NewLine,$utf8); Write-Host $text }; if($rc -eq 0){ $status='[PASS] Heat model golden reference regression passed.'; $color='Green' } else { $status='[ERROR] Heat model golden reference regression failed.'; $color='Red' }; [IO.File]::AppendAllText($log.FullName,$status+[Environment]::NewLine,$utf8); Write-Host $status -ForegroundColor $color; Write-Host ('Heat reference output appended to: ' + $log.FullName) -ForegroundColor Gray; exit $rc"
-set "HEAT_RC=!ERRORLEVEL!"
+set "HEAT_RC=!ERRORLEVEL!"
+
 if not "!STRESS_RC!"=="0" exit /b !STRESS_RC!
 if not "!HEAT_RC!"=="0" exit /b !HEAT_RC!
 exit /b !DIAG_RC!
