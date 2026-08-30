@@ -7,8 +7,8 @@
 - Added `FolderHeatMapHeatReferenceTest`, a standalone C++ regression executable that reproduces the current pre-refactor heat equations and verifies all golden outputs with a `1e-9` tolerance.
 - Kept the reference fixtures separate from the test runner so the same activity scenarios can later be reused to compare alternative heat models without changing the source data.
 - Integrated the heat reference test into `test.cmd`. The test target is built automatically from the existing CMake build tree when needed.
-- Fixed test logging so the complete `FolderHeatMapHeatReferenceTest` output is appended to the same `D:\Temp\FHM\logs\test-*.log` file created by the baseline regression run, while remaining visible in the console.
-- The Heat stage now runs after the baseline log exists; a Heat regression failure stops the stress stage and returns a non-zero test result. Baseline failures still hand off to lifecycle diagnostics.
+- Fixed test logging so the complete `FolderHeatMapHeatReferenceTest` output is appended to the final `D:\Temp\FHM\logs\diagnostic-*.log` created by the lifecycle diagnostic stage, while remaining visible in the console.
+- The Heat stage now runs after lifecycle diagnostics so its output survives the workspace cleanup performed between baseline, stress and diagnostic stages. A Heat regression failure returns a non-zero test result. Baseline failures still hand off to lifecycle diagnostics.
 - Runtime heat behavior is unchanged. FolderHeatMap remains version 1.51 while this test foundation is prepared for the later heat-model object refactor.
 
 ## 1.51 - 30.08.2026
