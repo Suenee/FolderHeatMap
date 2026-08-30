@@ -10,6 +10,22 @@ for %%F in (test.ps1 test_stress.ps1 test_lifecycle_diag.ps1) do (
     if errorlevel 1 exit /b !ERRORLEVEL!
 )
 
+set "HEAT_TEST="
+if exist "!REPO_DIR!\dist\FolderHeatMapHeatReferenceTest.exe" set "HEAT_TEST=!REPO_DIR!\dist\FolderHeatMapHeatReferenceTest.exe"
+if not defined HEAT_TEST if exist "!REPO_DIR!\build\Release\FolderHeatMapHeatReferenceTest.exe" set "HEAT_TEST=!REPO_DIR!\build\Release\FolderHeatMapHeatReferenceTest.exe"
+if not defined HEAT_TEST (
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: FolderHeatMapHeatReferenceTest.exe is missing. Run upgrade.cmd first.' -ForegroundColor Red"
+    exit /b 3
+)
+
+powershell.exe -NoProfile -Command "Write-Host 'Running Dual-Timescale Activity golden reference tests...' -ForegroundColor Cyan"
+"!HEAT_TEST!"
+set "HEAT_RC=!ERRORLEVEL!"
+if not "!HEAT_RC!"=="0" (
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: Heat model golden reference regression failed. Runtime/stress tests are skipped.' -ForegroundColor Red"
+    exit /b !HEAT_RC!
+)
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!REPO_DIR!\test.ps1"
 set "BASE_RC=!ERRORLEVEL!"
 
