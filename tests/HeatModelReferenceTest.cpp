@@ -1,6 +1,6 @@
 #include "HeatModelFixtures.h"
+#include "HeatModel.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -10,65 +10,6 @@
 namespace {
 
 constexpr double kTolerance = 1e-9;
-
-// Frozen reference implementation of the current heat mathematics from
-// EngineApp.cpp. This test code must not be used by the runtime. Its purpose is
-// to preserve the pre-refactor behavior as a golden master.
-
-double EffectiveHalfLifeDays(int activeDaysIn60) {
-    constexpr int window = 60;
-    if (activeDaysIn60 < 7) return 30.0;
-    const double activeFraction = static_cast<double>(activeDaysIn60) / window;
-    return std::clamp(12.0 / std::max(activeFraction, 1.0 / window), 7.0, 180.0);
-}
-
-double RecentHeat(std::int64_t recentVisits, double daysAgo, double halfLifeDays) {
-    if (!recentVisits) return 0.0;
-    constexpr double targetVisits = 24.0;
-    const double activity = std::log1p(static_cast<double>(recentVisits)) / std::log1p(targetVisits);
-    const double base = 5.8 * std::clamp(activity, 0.0, 1.0);
-    const double recentHalfLife = std::clamp(halfLifeDays * 0.18, 0.5, 14.0);
-    const double recency = std::exp(-std::log(2.0) * daysAgo / recentHalfLife);
-    return std::clamp(base * recency, 0.0, 5.8);
-}
-
-double HabitHeat(std::int64_t activeDays, double spanDays, double daysAgo, double halfLifeDays) {
-    if (!activeDays) return 0.0;
-    const double frequency = std::clamp(static_cast<double>(activeDays) / std::max(1.0, spanDays), 0.0, 1.0);
-    const double maturity = 1.0 - std::exp(-static_cast<double>(activeDays) / 6.0);
-    const double regularity = 0.45 + 0.55 * std::sqrt(frequency);
-    const double base = 5.2 * maturity * regularity;
-    const double habitHalfLife = std::clamp(halfLifeDays * 3.0, 14.0, 540.0);
-    const double recency = std::exp(-std::log(2.0) * daysAgo / habitHalfLife);
-    return std::clamp(base * recency, 0.0, 5.2);
-}
-
-double DirectHeat(const fhm::tests::FolderHeatFixture& a) {
-    if (!a.visits) return 0.0;
-    const double recent = RecentHeat(a.recentVisits, a.daysSinceLastEffectiveVisit, a.halfLifeDays);
-    const double habit = HabitHeat(a.activeDays, a.spanDays, a.daysSinceLastEffectiveVisit, a.halfLifeDays);
-    const double high = std::max(recent, habit);
-    const double low = std::min(recent, habit);
-    return std::clamp(high + 0.30 * low, 0.0, 7.0);
-}
-
-double FileHeat(const fhm::tests::FileHeatFixture& a) {
-    if (!a.writeEvents) return 0.0;
-    constexpr double targetWrites = 12.0;
-    const double activity = std::log1p(static_cast<double>(a.writeEvents)) / std::log1p(targetWrites);
-    const double recentBase = 6.2 * std::clamp(activity, 0.0, 1.0);
-    const double writeHalfLife = std::clamp(a.halfLifeDays * 0.14, 0.5, 21.0);
-    const double recency = std::exp(-std::log(2.0) * a.daysSinceLastWrite / writeHalfLife);
-    const double recent = recentBase * recency;
-    const double frequency = std::clamp(static_cast<double>(a.activeDays) / std::max(1.0, a.spanDays), 0.0, 1.0);
-    const double maturity = 1.0 - std::exp(-static_cast<double>(a.writeEvents) / 8.0);
-    const double habitBase = 4.4 * maturity * (0.45 + 0.55 * std::sqrt(frequency));
-    const double habitHalfLife = std::clamp(a.halfLifeDays * 2.0, 10.0, 365.0);
-    const double habit = habitBase * std::exp(-std::log(2.0) * a.daysSinceLastWrite / habitHalfLife);
-    const double high = std::max(recent, habit);
-    const double low = std::min(recent, habit);
-    return std::clamp(high + 0.22 * low, 0.0, 7.0);
-}
 
 bool Equal(double actual, double expected) {
     return std::abs(actual - expected) <= kTolerance;
@@ -85,29 +26,51 @@ void PrintCase(const char* group, std::string_view name, double actual, double e
 int main() {
     int passCount = 0;
     int errorCount = 0;
+    const fhm::DualTimescaleActivityModel model;
 
     std::cout << "============================================================\n";
     std::cout << "FolderHeatMap heat model golden reference tests\n";
-    std::cout << "Reference model: Dual-Timescale Activity (pre-refactor)\n";
+    std::cout << "Runtime model: " << model.DisplayName() << "\n";
+    std::cout << "Model id: " << model.Id() << "\n";
+    std::cout << "Reference data: pre-refactor Dual-Timescale Activity golden master\n";
     std::cout << "Tolerance: " << std::setprecision(2) << std::scientific << kTolerance << std::defaultfloat << "\n";
     std::cout << "============================================================\n";
 
     for (const auto& fixture : fhm::tests::kCoolingFixtures) {
-        const double actual = EffectiveHalfLifeDays(fixture.activeDaysIn60);
+        fhm::CoolingInput input{};
+        input.automatic = true;
+        input.configuredHalfLifeDays = 30.0;
+        input.activeDaysIn60 = fixture.activeDaysIn60;
+        const double actual = model.EffectiveHalfLifeDays(input);
         const bool pass = Equal(actual, fixture.expectedHalfLifeDays);
         PrintCase("cooling", fixture.name, actual, fixture.expectedHalfLifeDays, pass);
         pass ? ++passCount : ++errorCount;
     }
 
     for (const auto& fixture : fhm::tests::kFolderHeatFixtures) {
-        const double actual = DirectHeat(fixture);
+        fhm::FolderHeatInput input{};
+        input.visits = static_cast<std::uint64_t>(fixture.visits);
+        input.recentVisits = static_cast<std::uint64_t>(fixture.recentVisits);
+        input.activeDays = static_cast<std::uint64_t>(fixture.activeDays);
+        input.spanDays = fixture.spanDays;
+        input.daysSinceLastEffectiveVisit = fixture.daysSinceLastEffectiveVisit;
+        input.halfLifeDays = fixture.halfLifeDays;
+        input.hasLastEffectiveVisit = fixture.visits != 0;
+        const double actual = model.CalculateFolderHeat(input);
         const bool pass = Equal(actual, fixture.expectedHeat);
         PrintCase("folder", fixture.name, actual, fixture.expectedHeat, pass);
         pass ? ++passCount : ++errorCount;
     }
 
     for (const auto& fixture : fhm::tests::kFileHeatFixtures) {
-        const double actual = FileHeat(fixture);
+        fhm::FileHeatInput input{};
+        input.writeEvents = static_cast<std::uint64_t>(fixture.writeEvents);
+        input.activeDays = static_cast<std::uint64_t>(fixture.activeDays);
+        input.spanDays = fixture.spanDays;
+        input.daysSinceLastWrite = fixture.daysSinceLastWrite;
+        input.halfLifeDays = fixture.halfLifeDays;
+        input.hasLastWrite = fixture.writeEvents != 0;
+        const double actual = model.CalculateFileHeat(input);
         const bool pass = Equal(actual, fixture.expectedHeat);
         PrintCase("file", fixture.name, actual, fixture.expectedHeat, pass);
         pass ? ++passCount : ++errorCount;
