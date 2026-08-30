@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased - Heat model test foundation
+
+- Added a frozen golden-master reference dataset for the current `Dual-Timescale Activity` heat mathematics.
+- Added deterministic, date-independent folder, file and automatic-cooling scenarios covering bursts, short-term decay, long-term habit, idle periods and different user activity rhythms.
+- Added `FolderHeatMapHeatReferenceTest`, a standalone C++ regression executable that reproduces the current pre-refactor heat equations and verifies all golden outputs with a `1e-9` tolerance.
+- Kept the reference fixtures separate from the test runner so the same activity scenarios can later be reused to compare alternative heat models without changing the source data.
+- Integrated the heat reference test into `test.cmd`. The test target is built automatically from the existing CMake build tree when needed, runs before runtime/lifecycle tests, and stops the suite immediately if the golden reference changes unexpectedly.
+- Runtime heat behavior is unchanged. FolderHeatMap remains version 1.51 while this test foundation is prepared for the later heat-model object refactor.
+
 ## 1.51 - 30.08.2026
 
 - Fixed the regression where FolderHeatMap text colors still followed Heat, but Total Commander folder icons remained at the normal yellow icon instead of using the heat-colored icon map.
