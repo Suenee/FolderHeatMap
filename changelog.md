@@ -1,15 +1,17 @@
 # Changelog
 
-## Unreleased - Heat model test foundation
+## Unreleased - Heat model object refactor
 
 - Added a frozen golden-master reference dataset for the current `Dual-Timescale Activity` heat mathematics.
 - Added deterministic, date-independent folder, file and automatic-cooling scenarios covering bursts, short-term decay, long-term habit, idle periods and different user activity rhythms.
-- Added `FolderHeatMapHeatReferenceTest`, a standalone C++ regression executable that reproduces the current pre-refactor heat equations and verifies all golden outputs with a `1e-9` tolerance.
-- Kept the reference fixtures separate from the test runner so the same activity scenarios can later be reused to compare alternative heat models without changing the source data.
-- Integrated the heat reference test into `test.cmd`. The test target is built automatically from the existing CMake build tree when needed.
-- Fixed test logging so the complete `FolderHeatMapHeatReferenceTest` output is appended to the final `D:\Temp\FHM\logs\diagnostic-*.log` created by the lifecycle diagnostic stage, while remaining visible in the console.
-- The Heat stage now runs after lifecycle diagnostics so its output survives the workspace cleanup performed between baseline, stress and diagnostic stages. A Heat regression failure returns a non-zero test result. Baseline failures still hand off to lifecycle diagnostics.
-- Runtime heat behavior is unchanged. FolderHeatMap remains version 1.51 while this test foundation is prepared for the later heat-model object refactor.
+- Added `FolderHeatMapHeatReferenceTest` and integrated it into `test.cmd`; the complete output is appended to the final `D:\Temp\FHM\logs\diagnostic-*.log` while remaining visible in the console.
+- Added the generic `IHeatModel` contract plus the named `DualTimescaleActivityModel` implementation (`dual_timescale_activity`).
+- Moved short-term folder heat, long-term folder habit heat, file heat and automatic cooling-half-life mathematics into the model implementation. The model receives aggregated activity/time inputs and does not access the database, filesystem, Total Commander, icons or presentation state.
+- The generated engine now adapts database/time data into model-facing inputs and delegates direct folder/file heat calculations to `DualTimescaleActivityModel`; hierarchy/path aggregation remains engine-level logic.
+- The CMake refactor stage is guarded by source anchors and aborts configuration if the verified engine baseline no longer matches the expected heat-math block.
+- Changed the golden-reference executable from a duplicate frozen formula implementation to a test of the actual runtime `DualTimescaleActivityModel` against the frozen pre-refactor expected values. This makes any mathematical drift in the production model fail the 24-case golden reference test at `1e-9` tolerance.
+- Kept the shared fixture source independent from the current model so the same dataset can later compare additional heat models without changing activity inputs.
+- Runtime heat semantics are intentionally unchanged; FolderHeatMap remains version 1.51 until a user-visible model-selection feature is introduced.
 
 ## 1.51 - 30.08.2026
 
