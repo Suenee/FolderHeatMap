@@ -10,11 +10,19 @@ for %%F in (test.ps1 test_stress.ps1 test_lifecycle_diag.ps1) do (
     if errorlevel 1 exit /b !ERRORLEVEL!
 )
 
-set "HEAT_TEST="
-if exist "!REPO_DIR!\dist\FolderHeatMapHeatReferenceTest.exe" set "HEAT_TEST=!REPO_DIR!\dist\FolderHeatMapHeatReferenceTest.exe"
-if not defined HEAT_TEST if exist "!REPO_DIR!\build\Release\FolderHeatMapHeatReferenceTest.exe" set "HEAT_TEST=!REPO_DIR!\build\Release\FolderHeatMapHeatReferenceTest.exe"
-if not defined HEAT_TEST (
-    powershell.exe -NoProfile -Command "Write-Host 'ERROR: FolderHeatMapHeatReferenceTest.exe is missing. Run upgrade.cmd first.' -ForegroundColor Red"
+set "HEAT_TEST=!REPO_DIR!\build\Release\FolderHeatMapHeatReferenceTest.exe"
+if not exist "!HEAT_TEST!" (
+    if not exist "!REPO_DIR!\build\CMakeCache.txt" (
+        powershell.exe -NoProfile -Command "Write-Host 'ERROR: Heat reference test is not built and the CMake build tree is missing. Run upgrade.cmd first.' -ForegroundColor Red"
+        exit /b 3
+    )
+    powershell.exe -NoProfile -Command "Write-Host 'Building FolderHeatMapHeatReferenceTest...' -ForegroundColor Cyan"
+    cmake --build "!REPO_DIR!\build" --config Release --target FolderHeatMapHeatReferenceTest
+    if errorlevel 1 exit /b !ERRORLEVEL!
+)
+
+if not exist "!HEAT_TEST!" (
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: FolderHeatMapHeatReferenceTest.exe is missing after build.' -ForegroundColor Red"
     exit /b 3
 )
 
