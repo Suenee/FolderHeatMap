@@ -6,7 +6,9 @@
 - Added deterministic, date-independent folder, file and automatic-cooling scenarios covering bursts, short-term decay, long-term habit, idle periods and different user activity rhythms.
 - Added `FolderHeatMapHeatReferenceTest`, a standalone C++ regression executable that reproduces the current pre-refactor heat equations and verifies all golden outputs with a `1e-9` tolerance.
 - Kept the reference fixtures separate from the test runner so the same activity scenarios can later be reused to compare alternative heat models without changing the source data.
-- Integrated the heat reference test into `test.cmd`. The test target is built automatically from the existing CMake build tree when needed, runs before runtime/lifecycle tests, and stops the suite immediately if the golden reference changes unexpectedly.
+- Integrated the heat reference test into `test.cmd`. The test target is built automatically from the existing CMake build tree when needed.
+- Fixed test logging so the complete `FolderHeatMapHeatReferenceTest` output is appended to the same `D:\Temp\FHM\logs\test-*.log` file created by the baseline regression run, while remaining visible in the console.
+- The Heat stage now runs after the baseline log exists; a Heat regression failure stops the stress stage and returns a non-zero test result. Baseline failures still hand off to lifecycle diagnostics.
 - Runtime heat behavior is unchanged. FolderHeatMap remains version 1.51 while this test foundation is prepared for the later heat-model object refactor.
 
 ## 1.51 - 30.08.2026
