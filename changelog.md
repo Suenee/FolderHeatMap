@@ -2,6 +2,9 @@
 
 ## Unreleased - Heat model object refactor
 
+- Added automatic Git `safe.directory` recovery to `upgrade.cmd` (`1.52-bootstrap-network-safe-directory`) for repositories on NAS, UNC paths and mapped network drives. If Git rejects an existing checkout with `detected dubious ownership`, the launcher now parses Git's own suggested repository-specific safe path, registers only that exact path in the user's global Git configuration, retries repository detection and continues normally.
+- `dubious ownership` is no longer treated as "not a Git repository", preventing a valid freshly cloned network checkout from re-entering bootstrap and attempting another clone.
+- Documented the network-repository failure mode and added mapped/UNC `dubious ownership` recovery to the mandatory upgrader acceptance checklist in `UPGRADE.md`. Wildcard `safe.directory=*` is explicitly avoided.
 - Fixed fresh-machine bootstrap recursion in `upgrade.cmd` (`1.52-bootstrap-current-dir`). The launcher now installs the repository directly into the directory that contains the standalone `upgrade.cmd` instead of appending another `FolderHeatMap` subdirectory.
 - Bootstrap now hands control to a temporary copy of the launcher before replacing the standalone `upgrade.cmd`, so the running batch file is never overwritten in place. The temporary runner removes only the standalone launcher, clones `origin/devel` into the now-empty target directory, verifies `.git` and the authoritative cloned `upgrade.cmd`, then hands off to the normal updater.
 - Added a bootstrap safety check: the target directory must contain only `upgrade.cmd`. Leftovers from a failed bootstrap, including a nested `FolderHeatMap` directory, cause an explicit error instead of being deleted automatically.
