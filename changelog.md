@@ -2,6 +2,10 @@
 
 ## Unreleased - Heat model object refactor
 
+- Added automatic C++ build-environment bootstrap for fresh Windows machines. `upgrade.cmd` now runs the authoritative `ensure_build_tools.ps1` from `origin/devel` before the main upgrade runner.
+- If Visual Studio/Build Tools is absent, the dependency bootstrap uses `winget` to install Visual Studio 2022 Build Tools with the `Microsoft.VisualStudio.Workload.VCTools` workload and recommended components, including MSVC, Windows SDK and Visual Studio CMake support. Administrator elevation may be requested by Windows.
+- If Visual Studio/Build Tools already exists but the required C++/CMake workload is missing, the bootstrap uses the installed Visual Studio Installer to add the workload instead of installing a second IDE/toolchain.
+- Dependency installation is verified by resolving a usable CMake executable after installation. Missing `winget`, installer failure, cancelled elevation or an incomplete toolchain now produce an explicit dependency-bootstrap error instead of reaching the later generic CMake failure.
 - Added automatic Git `safe.directory` recovery to `upgrade.cmd` (`1.52-bootstrap-network-safe-directory`) for repositories on NAS, UNC paths and mapped network drives. If Git rejects an existing checkout with `detected dubious ownership`, the launcher now parses Git's own suggested repository-specific safe path, registers only that exact path in the user's global Git configuration, retries repository detection and continues normally.
 - `dubious ownership` is no longer treated as "not a Git repository", preventing a valid freshly cloned network checkout from re-entering bootstrap and attempting another clone.
 - Documented the network-repository failure mode and added mapped/UNC `dubious ownership` recovery to the mandatory upgrader acceptance checklist in `UPGRADE.md`. Wildcard `safe.directory=*` is explicitly avoided.
