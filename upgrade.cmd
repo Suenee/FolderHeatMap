@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.52-bootstrap-current-dir"
+set "UPGRADE_REV=1.52-bootstrap-network-safe-directory"
 set "RUN_TEST=0"
 
 if /I "%~1"=="--bootstrap-internal" goto :bootstrap_internal
@@ -15,9 +15,12 @@ cd /d "!REPO_DIR!"
 where git.exe >nul 2>nul
 if errorlevel 1 (powershell.exe -NoProfile -Command "Write-Host 'ERROR: Git was not found in PATH. Install Git for Windows, then run upgrade.cmd again.' -ForegroundColor Red" & exit /b 1)
 
-git rev-parse --is-inside-work-tree >nul 2>nul
-if errorlevel 1 goto :bootstrap
+call :detect_git_repository
+if "!GIT_REPO_STATE!"=="1" goto :repository_ready
+if "!GIT_REPO_STATE!"=="2" exit /b 1
+goto :bootstrap
 
+:repository_ready
 if not exist "!REPO_DIR!\logs" mkdir "!REPO_DIR!\logs" >nul 2>nul
 git fetch origin >nul 2>nul
 if errorlevel 1 (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: git fetch origin failed before PowerShell runner bootstrap. & >> "!REPO_DIR!\logs\upgrade.log" echo STATUS: FAILED - phase=SELF-UPDATE/BOOTSTRAP & powershell.exe -NoProfile -Command "Write-Host 'ERROR: git fetch origin failed before upgrade bootstrap.' -ForegroundColor Red" & exit /b 1)
@@ -34,6 +37,40 @@ if errorlevel 1 (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: Could not extract o
     )
     exit /b !UPGRADE_RC!
 )
+
+:detect_git_repository
+set "GIT_REPO_STATE=0"
+set "GIT_DETECT_ERR=%TEMP%\FolderHeatMap-git-detect-%RANDOM%-%RANDOM%.log"
+git rev-parse --is-inside-work-tree >nul 2> "!GIT_DETECT_ERR!"
+if not errorlevel 1 (
+    del /q "!GIT_DETECT_ERR!" >nul 2>nul
+    set "GIT_REPO_STATE=1"
+    exit /b 0
+)
+findstr /I /C:"detected dubious ownership" "!GIT_DETECT_ERR!" >nul 2>nul
+if errorlevel 1 (
+    del /q "!GIT_DETECT_ERR!" >nul 2>nul
+    set "GIT_REPO_STATE=0"
+    exit /b 0
+)
+powershell.exe -NoProfile -Command "Write-Host 'Git marked this repository as dubious ownership. Registering this exact repository as safe.directory...' -ForegroundColor Yellow"
+set "FHM_GIT_DETECT_ERR=!GIT_DETECT_ERR!"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$text=[IO.File]::ReadAllText($env:FHM_GIT_DETECT_ERR); $m=[regex]::Match($text, \"safe\.directory\s+'([^']+)'\"); if(-not $m.Success){ Write-Host 'ERROR: Git reported dubious ownership, but its safe.directory path could not be parsed.' -ForegroundColor Red; exit 3 }; $safe=$m.Groups[1].Value; & git.exe config --global --add safe.directory $safe; if($LASTEXITCODE -ne 0){ Write-Host ('ERROR: Could not register Git safe.directory: ' + $safe) -ForegroundColor Red; exit $LASTEXITCODE }; Write-Host ('Git safe.directory registered: ' + $safe) -ForegroundColor Green"
+set "SAFE_RC=!ERRORLEVEL!"
+del /q "!GIT_DETECT_ERR!" >nul 2>nul
+set "FHM_GIT_DETECT_ERR="
+if not "!SAFE_RC!"=="0" (
+    set "GIT_REPO_STATE=2"
+    exit /b 0
+)
+git rev-parse --is-inside-work-tree >nul 2>nul
+if errorlevel 1 (
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: Repository is still rejected by Git after safe.directory registration.' -ForegroundColor Red"
+    set "GIT_REPO_STATE=2"
+    exit /b 0
+)
+set "GIT_REPO_STATE=1"
+exit /b 0
 
 :bootstrap
 set "BOOTSTRAP_TARGET=!REPO_DIR!"
