@@ -121,6 +121,7 @@ This section is a mandatory pre-flight checklist when creating or modifying an u
 
 ### Git and self-update bugs
 
+- **Git `dubious ownership` on NAS/UNC/mapped-network repositories:** `git rev-parse` can fail even though `.git` exists, which can make a bootstrapper falsely conclude that the directory is not a repository and start cloning again. Symptom: `fatal: detected dubious ownership in repository at ...` followed by a nested/repeated bootstrap attempt. Prevention: capture the failed Git diagnostic, detect the exact `dubious ownership` condition, parse Git's own suggested `safe.directory` value, register only that exact repository with `git config --global --add safe.directory ...`, then retry repository detection. Never use a wildcard `safe.directory=*` for this recovery path.
 - **Raw hash comparison of working files against Git blobs:** CRLF vs LF produces a false mismatch even though Git considers the file clean. Prevention: use Git diff/blob semantics and `HEAD == origin/<branch>`.
 - **Updater changes itself during `stash`, `pull`, `checkout`, or `reset`:** never assume the source file currently executing is immutable. The launcher must not depend on rereading itself after repository mutation.
 - **Managed stash reports success but bootstrap remains dirty:** on Windows, line-ending materialization can leave `upgrade.cmd` looking locally modified even after a successful tracked-file stash, causing the following pull/merge to abort with `local changes ... would be overwritten`. Prevention: treat bootstrap files as authoritative remote state rather than user data; preserve real tracked edits separately, then synchronize the tracked installation tree deterministically to the fetched target commit while leaving untracked runtime data untouched.
@@ -193,7 +194,7 @@ UPGRADE.md             protocol + buglist + project-specific notes
 
 ## 20. Minimum acceptance test
 
-Before declaring an upgrader stable, test: clean repo/app stopped; clean repo/app running; old local updater; no update; remote update; build failure; locked deployment target; graceful shutdown timeout; existing runtime config/log/database; tracked local modification; untracked runtime file; repository path with spaces; immediate second run; final log status and exit code for success/warning/failure.
+Before declaring an upgrader stable, test: clean repo/app stopped; clean repo/app running; old local updater; no update; remote update; build failure; locked deployment target; graceful shutdown timeout; existing runtime config/log/database; tracked local modification; untracked runtime file; repository path with spaces; repository on a mapped/UNC network path that triggers Git `dubious ownership`; immediate second run; final log status and exit code for success/warning/failure.
 
 Also deliberately test at least one harmless native stderr warning and verify that it remains a warning rather than becoming a failed upgrade.
 
