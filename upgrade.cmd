@@ -2,17 +2,20 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.51-folder-icon-repair"
+set "UPGRADE_REV=1.52-bootstrap-clone"
 set "RUN_TEST=0"
 if /I "%~1"=="--test" (set "RUN_TEST=1") else if not "%~1"=="" (powershell.exe -NoProfile -Command "Write-Host 'ERROR: Unknown upgrade option. Supported: --test' -ForegroundColor Red" & exit /b 2)
 set "REPO_DIR=%~dp0"
 if "!REPO_DIR:~-1!"=="\" set "REPO_DIR=!REPO_DIR:~0,-1!"
 cd /d "!REPO_DIR!"
-if not exist "!REPO_DIR!\logs" mkdir "!REPO_DIR!\logs" >nul 2>nul
+
 where git.exe >nul 2>nul
-if errorlevel 1 (powershell.exe -NoProfile -Command "Write-Host 'ERROR: Git was not found in PATH.' -ForegroundColor Red" & exit /b 1)
+if errorlevel 1 (powershell.exe -NoProfile -Command "Write-Host 'ERROR: Git was not found in PATH. Install Git for Windows, then run upgrade.cmd again.' -ForegroundColor Red" & exit /b 1)
+
 git rev-parse --is-inside-work-tree >nul 2>nul
-if errorlevel 1 (powershell.exe -NoProfile -Command "Write-Host 'ERROR: This folder is not a Git working tree.' -ForegroundColor Red" & exit /b 1)
+if errorlevel 1 goto :bootstrap
+
+if not exist "!REPO_DIR!\logs" mkdir "!REPO_DIR!\logs" >nul 2>nul
 git fetch origin >nul 2>nul
 if errorlevel 1 (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: git fetch origin failed before PowerShell runner bootstrap. & >> "!REPO_DIR!\logs\upgrade.log" echo STATUS: FAILED - phase=SELF-UPDATE/BOOTSTRAP & powershell.exe -NoProfile -Command "Write-Host 'ERROR: git fetch origin failed before upgrade bootstrap.' -ForegroundColor Red" & exit /b 1)
 set "RUNNER_TEMP=%TEMP%\FolderHeatMap-upgrade-%RANDOM%-%RANDOM%.ps1"
@@ -28,3 +31,44 @@ if errorlevel 1 (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: Could not extract o
     )
     exit /b !UPGRADE_RC!
 )
+
+:bootstrap
+set "BOOTSTRAP_PARENT=!REPO_DIR!"
+set "BOOTSTRAP_TARGET=!BOOTSTRAP_PARENT!\FolderHeatMap"
+set "BOOTSTRAP_LOG=!BOOTSTRAP_PARENT!\FolderHeatMap-bootstrap.log"
+> "!BOOTSTRAP_LOG!" echo FolderHeatMap bootstrap %UPGRADE_REV%
+>> "!BOOTSTRAP_LOG!" echo Target: !BOOTSTRAP_TARGET!
+powershell.exe -NoProfile -Command "Write-Host 'FolderHeatMap repository not found. Starting fresh-machine bootstrap...' -ForegroundColor Cyan"
+if exist "!BOOTSTRAP_TARGET!" (
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: Bootstrap target already exists: !BOOTSTRAP_TARGET!' -ForegroundColor Red"
+    >> "!BOOTSTRAP_LOG!" echo ERROR: Bootstrap target already exists.
+    exit /b 1
+)
+powershell.exe -NoProfile -Command "Write-Host 'Cloning origin/devel into: !BOOTSTRAP_TARGET!' -ForegroundColor Cyan"
+git clone --branch devel --single-branch "https://github.com/Suenee/FolderHeatMap.git" "!BOOTSTRAP_TARGET!" >> "!BOOTSTRAP_LOG!" 2>&1
+if errorlevel 1 (
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: Git clone failed. See FolderHeatMap-bootstrap.log. If the repository requires authentication, sign in with Git Credential Manager and run upgrade.cmd again.' -ForegroundColor Red"
+    >> "!BOOTSTRAP_LOG!" echo STATUS: FAILED - phase=BOOTSTRAP-CLONE
+    exit /b 1
+)
+if not exist "!BOOTSTRAP_TARGET!\upgrade.cmd" (
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: Clone completed, but the authoritative upgrade.cmd is missing.' -ForegroundColor Red"
+    >> "!BOOTSTRAP_LOG!" echo STATUS: FAILED - phase=BOOTSTRAP-VERIFY
+    exit /b 1
+)
+>> "!BOOTSTRAP_LOG!" echo STATUS: CLONE OK - handing off to repository upgrade.cmd
+powershell.exe -NoProfile -Command "Write-Host 'Repository cloned successfully. Handing off to its current upgrade.cmd...' -ForegroundColor Green"
+if "!RUN_TEST!"=="1" (
+    call "!BOOTSTRAP_TARGET!\upgrade.cmd" --test
+) else (
+    call "!BOOTSTRAP_TARGET!\upgrade.cmd"
+)
+set "BOOTSTRAP_RC=!ERRORLEVEL!"
+if "!BOOTSTRAP_RC!"=="0" (
+    >> "!BOOTSTRAP_LOG!" echo STATUS: SUCCESS
+    powershell.exe -NoProfile -Command "Write-Host 'FolderHeatMap bootstrap and upgrade completed successfully.' -ForegroundColor Green"
+) else (
+    >> "!BOOTSTRAP_LOG!" echo STATUS: FAILED - repository upgrade exit code !BOOTSTRAP_RC!
+    powershell.exe -NoProfile -Command "Write-Host 'ERROR: Repository was cloned, but its upgrade failed. Check FolderHeatMap\logs\upgrade.log.' -ForegroundColor Red"
+)
+exit /b !BOOTSTRAP_RC!
