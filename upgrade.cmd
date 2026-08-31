@@ -2,7 +2,7 @@
 cls
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "UPGRADE_REV=1.52-bootstrap-network-safe-directory"
+set "UPGRADE_REV=1.52-bootstrap-build-tools"
 set "RUN_TEST=0"
 
 if /I "%~1"=="--bootstrap-internal" goto :bootstrap_internal
@@ -24,6 +24,15 @@ goto :bootstrap
 if not exist "!REPO_DIR!\logs" mkdir "!REPO_DIR!\logs" >nul 2>nul
 git fetch origin >nul 2>nul
 if errorlevel 1 (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: git fetch origin failed before PowerShell runner bootstrap. & >> "!REPO_DIR!\logs\upgrade.log" echo STATUS: FAILED - phase=SELF-UPDATE/BOOTSTRAP & powershell.exe -NoProfile -Command "Write-Host 'ERROR: git fetch origin failed before upgrade bootstrap.' -ForegroundColor Red" & exit /b 1)
+
+set "DEPENDENCY_TEMP=%TEMP%\FolderHeatMap-dependencies-%RANDOM%-%RANDOM%.ps1"
+git show origin/devel:ensure_build_tools.ps1 > "!DEPENDENCY_TEMP!" 2>nul
+if errorlevel 1 (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: Could not extract origin/devel:ensure_build_tools.ps1. & >> "!REPO_DIR!\logs\upgrade.log" echo STATUS: FAILED - phase=DEPENDENCIES/BOOTSTRAP & powershell.exe -NoProfile -Command "Write-Host 'ERROR: Could not extract the build dependency bootstrap from origin/devel.' -ForegroundColor Red" & exit /b 1)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "!DEPENDENCY_TEMP!"
+set "DEPENDENCY_RC=!ERRORLEVEL!"
+del /q "!DEPENDENCY_TEMP!" >nul 2>nul
+if not "!DEPENDENCY_RC!"=="0" (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: Automatic build dependency bootstrap failed with exit code !DEPENDENCY_RC!. & >> "!REPO_DIR!\logs\upgrade.log" echo STATUS: FAILED - phase=DEPENDENCIES/BOOTSTRAP & exit /b !DEPENDENCY_RC!)
+
 set "RUNNER_TEMP=%TEMP%\FolderHeatMap-upgrade-%RANDOM%-%RANDOM%.ps1"
 git show origin/devel:upgrade.ps1 > "!RUNNER_TEMP!" 2>nul
 if errorlevel 1 (> "!REPO_DIR!\logs\upgrade.log" echo ERROR: Could not extract origin/devel:upgrade.ps1. & >> "!REPO_DIR!\logs\upgrade.log" echo STATUS: FAILED - phase=SELF-UPDATE/BOOTSTRAP & powershell.exe -NoProfile -Command "Write-Host 'ERROR: Could not extract upgrade.ps1 from origin/devel.' -ForegroundColor Red" & exit /b 1)
