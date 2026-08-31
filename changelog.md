@@ -2,6 +2,7 @@
 
 ## Unreleased - Heat model object refactor
 
+- Added fresh-machine bootstrap mode to `upgrade.cmd` (`1.52-bootstrap-clone`). When launched outside a Git working tree, the launcher now clones `origin/devel` into a new `FolderHeatMap` subdirectory and immediately hands off to the authoritative cloned `upgrade.cmd`; `--test` is preserved across the handoff. Bootstrap failures are written to `FolderHeatMap-bootstrap.log`, and missing Git/authentication or an existing target directory produce explicit errors.
 - Added a frozen golden-master reference dataset for the current `Dual-Timescale Activity` heat mathematics.
 - Added deterministic, date-independent folder, file and automatic-cooling scenarios covering bursts, short-term decay, long-term habit, idle periods and different user activity rhythms.
 - Added `FolderHeatMapHeatReferenceTest` and integrated it into `test.cmd`; the complete output is appended to the final `D:\Temp\FHM\logs\diagnostic-*.log` while remaining visible in the console.
@@ -60,7 +61,7 @@
 ## 1.47 - 29.08.2026
 
 - Fixed the remaining 1.46 rapid MOVE round-trip gap shown by the 1.46 runtime trace: after the first successful MOVE consumed its per-task identity hint, a later removal of the same old path could have no tracked row and therefore reach watcher purge with an empty File ID.
-- Added last-confirmed path identity memory independent of individual delete tasks. A successful same-volume MOVE remembers the canonical volume, File ID and object type for both endpoints.
+- Added last-confirmed path identity memory independent of individual delete tasks. A successful same-volume MOVE remembers canonical volume, File ID and object type for both endpoints.
 - When a later rapid round-trip removal has no tracked row at its old path, the watcher can recover the last confirmed File ID for that path and verify whether that exact object still survives on the volume before allowing destructive reset.
 - Genuine DELETE and DELETE -> RECREATE remain destructive when the remembered File ID no longer exists; recycle-bin semantics are unchanged.
 - Added a guarded build-stage patch dedicated to the confirmed round-trip race instead of reintroducing the unsuccessful 1.41-1.43 speculative lifecycle changes.
