@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$Version = '1.02'
+$Version = '1.03'
 $Repo = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $LogsDir = Join-Path $Repo 'logs'
 New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
@@ -37,11 +37,11 @@ function Get-TcInstalledVersion([object]$tc) {
 }
 
 function Get-LatestTcRelease {
-    $url='https://www.ghisler.com/amazons3.php'
+    $url='https://www.ghisler.com/download.htm'
     try {
         $response=Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 15
         $html=[string]$response.Content
-        $m=[regex]::Match($html,'(?i)Download\s+Total\s+Commander\s+(\d+\.\d+(?:\.\d+)*)\s+final')
+        $m=[regex]::Match($html,'(?i)Download\s+version\s+(\d+\.\d+(?:\.\d+)*)\s+of\s+Total\s+Commander')
         if (-not $m.Success) { throw 'latest stable version could not be parsed from the official download page' }
         $versionText=$m.Groups[1].Value
         $link=[regex]::Match($html,'(?i)href=["'']([^"'']*tcmd[^"'']*x64\.exe)["'']')
@@ -83,7 +83,9 @@ function Offer-TcUpdate([object]$tc) {
     if (-not (Test-Path -LiteralPath $installer)) { Fail 'Total Commander installer download did not produce a file.' }
     $signature=Get-AuthenticodeSignature -FilePath $installer
     if ($signature.Status -ne 'Valid') { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue; Fail "Downloaded Total Commander installer has invalid Authenticode signature: $($signature.Status)." }
-    Log "[TC] Installer signature valid: $($signature.SignerCertificate.Subject)"
+    $signer=[string]$signature.SignerCertificate.Subject
+    if ($signer -notmatch '(?i)Ghisler Software GmbH') { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue; Fail "Downloaded Total Commander installer is not signed by Ghisler Software GmbH. Signer: $signer" }
+    Log "[TC] Installer signature valid: $signer"
     Log '[TC] Starting Total Commander upgrade installer. Existing Total Commander configuration is preserved by the official installer.'
     $process=Start-Process -FilePath $installer -Wait -PassThru
     $rc=$process.ExitCode
