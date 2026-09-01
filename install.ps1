@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$Version = '1.00'
+$Version = '1.01'
 $Repo = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $LogsDir = Join-Path $Repo 'logs'
 New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
@@ -11,6 +11,7 @@ function Log([string]$text) { [IO.File]::AppendAllText($Log, $text + [Environmen
 function Fail([string]$text) { Log ('ERROR: ' + $text); throw $text }
 function Expand-Value([string]$value) { if ([string]::IsNullOrWhiteSpace($value)) { return '' }; return [Environment]::ExpandEnvironmentVariables($value.Trim('"')) }
 function Get-RegValue([string]$path,[string]$name) { try { return (Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction Stop).$name } catch { return $null } }
+function Same-Path([string]$a,[string]$b) { if (-not $a -or -not $b) { return $false }; return [string]::Equals([IO.Path]::GetFullPath($a),[IO.Path]::GetFullPath($b),[StringComparison]::OrdinalIgnoreCase) }
 
 function Find-TC {
     $path = Expand-Value $env:COMMANDER_PATH
@@ -33,24 +34,23 @@ public static class FhmInstallIni {
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern uint GetPrivateProfileString(string section,string key,string def,StringBuilder ret,uint size,string fileName);
 }
 '@
-function Read-Ini([string]$file,[string]$section,[string]$key) { $b=[Text.StringBuilder]::new(32768); [void][FhmInstallIni]::GetPrivateProfileString($section,$key,'',$b,[uint32]$b.Capacity,$file); $b.ToString() }
-function Write-Ini([string]$file,[string]$section,[string]$key,[string]$value) { if (-not [FhmInstallIni]::WritePrivateProfileString($section,$key,$value,$file)) { Fail "Could not update [$section] $key in $file" } }
+function Read-Ini([string]$file,[string]$section,[string]$key,[string]$default='') { $b=[Text.StringBuilder]::new(32768); [void][FhmInstallIni]::GetPrivateProfileString($section,$key,$default,$b,[uint32]$b.Capacity,$file); $b.ToString() }
+function Write-Ini([string]$file,[string]$section,[string]$key,[AllowNull()][string]$value) { if (-not [FhmInstallIni]::WritePrivateProfileString($section,$key,$value,$file)) { Fail "Could not update [$section] $key in $file" } }
 
-try {
-    Log "FolderHeatMap installer $Version"
-    $tc=Find-TC
-    if (-not $tc.Ini -or -not (Test-Path -LiteralPath $tc.Ini)) { Fail 'Active Total Commander WINCMD.INI could not be located.' }
-    $ini=(Resolve-Path -LiteralPath $tc.Ini).Path
-    $wdx=Join-Path $Repo 'FolderHeatMap.wdx64'
-    if (-not (Test-Path -LiteralPath $wdx)) {
-        $candidates=@(Get-ChildItem -LiteralPath $Repo -Filter 'FolderHeatMap.wdx64' -File -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
-        if ($candidates.Count -eq 0) { Fail 'FolderHeatMap.wdx64 was not found. Run upgrade.cmd first.' }
-        $wdx=$candidates[0].FullName
-    }
-    $wdx=[IO.Path]::GetFullPath($wdx)
-    Log "[TC] Configuration: $ini"
-    Log "[FHM] WDX:          $wdx"
+function Stop-TC([object]$tc) {
+    $running=@(Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) { return $false }
+    if (-not $tc.Exe) { Fail 'Total Commander is running, but its executable path could not be resolved for restart.' }
+    Log '[TC] Total Commander is running; stopping it before configuration repair.'
+    $running | Stop-Process -ErrorAction SilentlyContinue
+    $deadline=[DateTime]::UtcNow.AddSeconds(15)
+    while ((Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    if (Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) { Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue | Stop-Process -Force }
+    if (Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) { Fail 'Total Commander could not be stopped for configuration repair.' }
+    return $true
+}
 
+function Ensure-WdxRegistration([string]$ini,[string]$wdx) {
     $foundKey=$null; $foundPath=$null; $freeKey=$null
     for ($i=0; $i -le 999; $i++) {
         $key=[string]$i; $value=Read-Ini $ini 'ContentPlugins' $key
@@ -58,34 +58,135 @@ try {
         $expanded=Expand-Value $value
         if ([IO.Path]::GetFileName($expanded) -ieq 'FolderHeatMap.wdx64') { $foundKey=$key; $foundPath=$expanded; break }
     }
-    $changed=$false
     if ($null -ne $foundKey) {
-        if ([string]::Equals([IO.Path]::GetFullPath($foundPath),$wdx,[StringComparison]::OrdinalIgnoreCase)) { Log "[TC] FolderHeatMap WDX is already registered in [ContentPlugins] $foundKey." }
-        else {
-            $backup="$ini.fhm-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"; Copy-Item -LiteralPath $ini -Destination $backup -Force
-            Write-Ini $ini 'ContentPlugins' $foundKey $wdx; $changed=$true
-            Log "[TC] Updated FolderHeatMap WDX registration: $foundKey=$wdx"; Log "[TC] Backup: $backup"
-        }
-    } else {
-        if ($null -eq $freeKey) { Fail 'No free [ContentPlugins] slot (0..999) was found.' }
-        $backup="$ini.fhm-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"; Copy-Item -LiteralPath $ini -Destination $backup -Force
-        Write-Ini $ini 'ContentPlugins' $freeKey $wdx; $changed=$true
-        Log "[TC] Registered FolderHeatMap WDX: $freeKey=$wdx"; Log "[TC] Backup: $backup"
+        if (Same-Path $foundPath $wdx) { Log "[TC] FolderHeatMap WDX already points to dist in [ContentPlugins] $foundKey."; return $false }
+        Write-Ini $ini 'ContentPlugins' $foundKey $wdx
+        Log "[TC] Repaired FolderHeatMap WDX registration: $foundKey=$wdx"
+        return $true
     }
+    if ($null -eq $freeKey) { Fail 'No free [ContentPlugins] slot (0..999) was found.' }
+    Write-Ini $ini 'ContentPlugins' $freeKey $wdx
+    Log "[TC] Registered FolderHeatMap WDX: $freeKey=$wdx"
+    return $true
+}
 
-    $tcRunning=@(Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue)
-    if ($changed -and $tcRunning.Count -gt 0) {
-        if (-not $tc.Exe) { Fail 'Total Commander is running, but its executable path could not be resolved for restart.' }
-        Log '[TC] Registration changed while Total Commander is running; forcing configuration reload by restart.'
-        $tcRunning | Stop-Process -ErrorAction SilentlyContinue
-        $deadline=[DateTime]::UtcNow.AddSeconds(15)
-        while ((Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
-        if (Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) { Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue | Stop-Process -Force }
-        Start-Sleep -Milliseconds 500
-        Start-Process -FilePath $tc.Exe
-        Log '[TC] Total Commander restarted.'
-    } elseif ($changed) { Log '[TC] Registration changed. Total Commander will load it on next start.' }
-    else { Log '[TC] No configuration change was necessary.' }
+function Ensure-CustomColumns([string]$ini) {
+    $title='FolderHeatMap'
+    $rawTitles=Read-Ini $ini 'CustomFields' 'Titles'
+    $titles=if ([string]::IsNullOrEmpty($rawTitles)) { @() } else { @($rawTitles -split '\|',-1) }
+    $slot=0
+    for ($i=0;$i -lt $titles.Count;$i++) { if ($titles[$i] -eq $title) { $slot=$i+1; break } }
+    if ($slot -eq 0) {
+        $maxSlot=0
+        for ($i=1;$i -le 999;$i++) {
+            if ((Read-Ini $ini 'CustomFields' "Widths$i") -or (Read-Ini $ini 'CustomFields' "Headers$i") -or (Read-Ini $ini 'CustomFields' "Contents$i")) { $maxSlot=$i }
+        }
+        $slot=[Math]::Max($maxSlot,$titles.Count)+1
+        if ($slot -gt 999) { Fail 'No free Total Commander custom-column view slot was found.' }
+        $list=[Collections.Generic.List[string]]::new(); foreach($t in $titles){[void]$list.Add($t)}
+        while ($list.Count -lt ($slot-1)) { [void]$list.Add('') }
+        [void]$list.Add($title)
+        Write-Ini $ini 'CustomFields' 'Titles' ($list -join '|')
+        Log "[TC] Added custom-column view title '$title' as view $slot."
+    }
+    $widths='180,45,55,60,95,60,95'
+    $headers='Heat\nVisits\nLast Visit\nWrites\nLast Write'
+    $contents='[=folderheatmap.Heat]\n[=folderheatmap.Visits]\n[=folderheatmap.Last Visit]\n[=folderheatmap.Writes]\n[=folderheatmap.Last Write]'
+    $options='-1|0|96'
+    $changed=$false
+    foreach($pair in @(@("Widths$slot",$widths),@("Headers$slot",$headers),@("Contents$slot",$contents),@("Options$slot",$options))) {
+        if ((Read-Ini $ini 'CustomFields' $pair[0]) -ne $pair[1]) { Write-Ini $ini 'CustomFields' $pair[0] $pair[1]; $changed=$true }
+    }
+    if ($changed) { Log "[TC] Created/repaired FolderHeatMap custom-column view $slot (Heat, Visits, Last Visit, Writes, Last Write)." }
+    else { Log "[TC] FolderHeatMap custom-column view $slot is already correct." }
+    return $changed
+}
+
+function Color-Component([uint32]$c,[int]$shift) { return [int](($c -shr $shift) -band 0xff) }
+function Interpolate-Color([uint32]$a,[uint32]$b,[double]$t) {
+    $r=[Math]::Max(0,[Math]::Min(255,[int][Math]::Round((Color-Component $a 0)+((Color-Component $b 0)-(Color-Component $a 0))*$t)))
+    $g=[Math]::Max(0,[Math]::Min(255,[int][Math]::Round((Color-Component $a 8)+((Color-Component $b 8)-(Color-Component $a 8))*$t)))
+    $bl=[Math]::Max(0,[Math]::Min(255,[int][Math]::Round((Color-Component $a 16)+((Color-Component $b 16)-(Color-Component $a 16))*$t)))
+    return [uint32]($r -bor ($g -shl 8) -bor ($bl -shl 16))
+}
+function Read-FhmColor([string]$settings,[int]$level) {
+    $defaults=@(0,7915600,5954690,4645320,4312565,3644410,3955445,7882485)
+    if (-not (Test-Path -LiteralPath $settings)) { return [uint32]$defaults[$level] }
+    $raw=Read-Ini $settings 'Colors' "Color$level" ([string]$defaults[$level]); $parsed=0L
+    if ([Int64]::TryParse($raw,[ref]$parsed)) { return [uint32]$parsed }
+    return [uint32]$defaults[$level]
+}
+function Managed-SearchName([int]$index) { return ('FolderHeatMap Heat {0:000}' -f $index) }
+function Install-ColorRules([string]$ini,[string]$settings) {
+    $existing=@()
+    for($i=1;$i -le 999;$i++) {
+        $base="ColorFilter$i"; $filter=Read-Ini $ini 'Colors' $base
+        if ($filter -and $filter -notlike '>FolderHeatMap Heat *') { $existing += [pscustomobject]@{Filter=$filter;Color=(Read-Ini $ini 'Colors' ($base+'Color'));Dark=(Read-Ini $ini 'Colors' ($base+'ColorDark'))} }
+    }
+    for($i=1;$i -le 999;$i++) { $base="ColorFilter$i"; Write-Ini $ini 'Colors' $base $null; Write-Ini $ini 'Colors' ($base+'Color') $null; Write-Ini $ini 'Colors' ($base+'ColorDark') $null }
+    for($i=1;$i -le 128;$i++) { $name=Managed-SearchName $i; foreach($suffix in @('_SearchFor','_SearchIn','_SearchText','_SearchFlags','_plugin')) { Write-Ini $ini 'searches' ($name+$suffix) $null } }
+    $smooth=1; $steps=4
+    if (Test-Path -LiteralPath $settings) { [void][int]::TryParse((Read-Ini $settings 'Colors' 'Smooth' '1'),[ref]$smooth); [void][int]::TryParse((Read-Ini $settings 'Colors' 'StepsPerLevel' '4'),[ref]$steps) }
+    if ($smooth -eq 0) { $steps=1 } else { $steps=[Math]::Max(1,[Math]::Min(16,$steps)) }
+    $colors=@(0); for($level=1;$level -le 7;$level++){ $colors += (Read-FhmColor $settings $level) }
+    $rule=1; $managed=0; $epsilon=0.001
+    $entries=@()
+    $entries += [pscustomobject]@{Threshold=7.0-$epsilon;Color=$colors[7]}
+    for($level=6;$level -ge 1;$level--) {
+        for($s=$steps-1;$s -ge 0;$s--) { $pos=[double]$s/$steps; $entries += [pscustomobject]@{Threshold=$level+$pos-$epsilon;Color=(Interpolate-Color $colors[$level] $colors[$level+1] $pos)} }
+    }
+    foreach($entry in $entries) {
+        $managed++; $name=Managed-SearchName $managed
+        Write-Ini $ini 'searches' ($name+'_SearchFor') ''
+        Write-Ini $ini 'searches' ($name+'_SearchIn') ''
+        Write-Ini $ini 'searches' ($name+'_SearchText') ''
+        Write-Ini $ini 'searches' ($name+'_SearchFlags') '0|002002000020|||||||||0000|||'
+        Write-Ini $ini 'searches' ($name+'_plugin') ('folderheatmap.Heat > '+$entry.Threshold.ToString('0.000',[Globalization.CultureInfo]::InvariantCulture))
+        Write-Ini $ini 'Colors' "ColorFilter$rule" ('>'+$name)
+        Write-Ini $ini 'Colors' "ColorFilter${rule}Color" ([string][uint32]$entry.Color)
+        $rule++
+    }
+    foreach($old in $existing) {
+        if($rule -gt 999){break}; Write-Ini $ini 'Colors' "ColorFilter$rule" $old.Filter
+        if($old.Color){Write-Ini $ini 'Colors' "ColorFilter${rule}Color" $old.Color}; if($old.Dark){Write-Ini $ini 'Colors' "ColorFilter${rule}ColorDark" $old.Dark}; $rule++
+    }
+    Write-Ini $ini 'FolderHeatMap' 'ManagedColorRuleCount' ([string]$managed); Write-Ini $ini 'FolderHeatMap' 'ManagedColorRuleStart' '1'
+    Log "[TC] Installed FolderHeatMap text-color integration ($managed managed heat rules)."
+    return $true
+}
+
+try {
+    Log "FolderHeatMap installer $Version"
+    $tc=Find-TC
+    if (-not $tc.Ini -or -not (Test-Path -LiteralPath $tc.Ini)) { Fail 'Active Total Commander WINCMD.INI could not be located.' }
+    $ini=(Resolve-Path -LiteralPath $tc.Ini).Path
+    $dist=Join-Path $Repo 'dist'
+    $wdx=Join-Path $dist 'FolderHeatMap.wdx64'
+    if (-not (Test-Path -LiteralPath $wdx)) { Fail "Stable deployed WDX was not found at '$wdx'. Run upgrade.cmd first." }
+    $wdx=[IO.Path]::GetFullPath($wdx)
+    $settings=Join-Path (Split-Path -Parent $ini) 'FolderHeatMap.ini'
+    $setupIcons=Join-Path $Repo 'setup_icons.ps1'
+    if (-not (Test-Path -LiteralPath $setupIcons)) { Fail 'setup_icons.ps1 is missing; folder icon integration cannot be installed.' }
+
+    Log "[TC] Configuration: $ini"
+    Log "[FHM] Stable WDX:    $wdx"
+    $tcWasRunning=Stop-TC $tc
+
+    $backup="$ini.fhm-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"
+    Copy-Item -LiteralPath $ini -Destination $backup -Force
+    Log "[TC] Backup:        $backup"
+
+    [void](Ensure-WdxRegistration $ini $wdx)
+    [void](Ensure-CustomColumns $ini)
+    [void](Install-ColorRules $ini $settings)
+
+    Log '[TC] Installing FolderHeatMap heat-colored folder icons and Internal Associations...'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setupIcons 2>&1 | ForEach-Object { Log ([string]$_) }
+    if ($LASTEXITCODE -ne 0) { Fail "Folder icon integration failed with exit code $LASTEXITCODE." }
+    Log '[TC] Folder icon integration installed.'
+
+    if ($tcWasRunning) { Start-Process -FilePath $tc.Exe; Log '[TC] Total Commander restarted once after complete integration repair.' }
+    else { Log '[TC] Total Commander was not running; the repaired integration will load on next start.' }
     Log 'STATUS: SUCCESS'
     exit 0
 } catch {
