@@ -2,10 +2,16 @@
 
 ## Unreleased - Heat model object refactor
 
-- Added `install.cmd` / `install.ps1` for idempotent Total Commander WDX registration and repair. The installer locates the active `WINCMD.INI`, verifies `[ContentPlugins]`, adds FolderHeatMap to the first free slot when missing, and repairs an obsolete FolderHeatMap WDX path without duplicating the plugin.
-- The installer creates a timestamped `WINCMD.INI` backup before any registration change and records diagnostics in `logs\install.log`.
-- If Total Commander is running and the WDX registration changes, the installer restarts Total Commander to force an immediate configuration/plugin reload. If no registration change is required, a running Total Commander instance is left untouched.
-- Documented `install.cmd` as the standalone registration/repair entry point in `README.md`.
+- Fixed the deploy retry failure where an obsolete Total Commander registration could point to `build\package\FolderHeatMap.wdx64`, causing the upgrader to repeatedly try to copy the staged WDX onto itself and misreport the condition as a temporary file lock. `Copy-FileWithRetry` now canonicalizes source and destination paths and skips an identical source/destination copy immediately.
+- Defined `dist\FolderHeatMap.wdx64` as the only stable live WDX registration. `build\Release` remains build output and `build\package` remains temporary staging; neither is used as Total Commander's persistent FolderHeatMap registration.
+- The upgrader no longer deploys runtime files back into an arbitrary previously registered FolderHeatMap path. After stable `dist` deployment it runs `install.cmd`, which migrates or creates the WDX registration and repairs the complete Total Commander integration consistently.
+- Expanded `install.cmd` / internal `install.ps1` helper to installer version 1.01. `install.cmd` remains the primary user-facing helper entry point; PowerShell is used only as its internal implementation helper.
+- The installer now creates or repairs a selectable Total Commander custom-column view named `FolderHeatMap` containing `Heat`, `Visits`, `Last Visit`, `Writes` and `Last Write`.
+- The installer now creates or repairs FolderHeatMap text-color rules using the same configured color anchors, smooth interpolation and steps-per-level behavior as the configurator, while preserving unrelated user color filters.
+- The installer now regenerates FolderHeatMap heat-colored folder icons and Internal Associations from the same FolderHeatMap color/icon settings.
+- The installer creates a timestamped `WINCMD.INI` backup and writes diagnostics to `logs\install.log`; when Total Commander is running it is stopped before configuration changes and restarted once after the complete integration repair.
+- Upgrade packaging now carries `install.cmd`, its internal installer helper, `setup_icons.cmd` and its internal icon helper into the stable distribution alongside the existing support files.
+- Updated `README.md` to document the stable `dist` runtime path and the complete `install.cmd` repair workflow. Runtime FolderHeatMap remains version 1.51.
 - Added automatic C++ build-environment bootstrap for fresh Windows machines. `upgrade.cmd` now runs the authoritative `ensure_build_tools.ps1` from `origin/devel` before the main upgrade runner.
 - If Visual Studio/Build Tools is absent, the dependency bootstrap uses `winget` to install Visual Studio 2022 Build Tools with the `Microsoft.VisualStudio.Workload.VCTools` workload and recommended components, including MSVC, Windows SDK and Visual Studio CMake support. Administrator elevation may be requested by Windows.
 - If Visual Studio/Build Tools already exists but the required C++/CMake workload is missing, the bootstrap uses the installed Visual Studio Installer to add the workload instead of installing a second IDE/toolchain.
