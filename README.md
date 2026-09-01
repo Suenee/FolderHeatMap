@@ -116,7 +116,7 @@ Drive letters are not part of the permanent folder identity. A local folder is i
 
 FolderHeatMap uses SQLite with WAL mode and `synchronous=NORMAL`. SQLite stores activity history plus the latest complete runtime-cache generation. Existing databases are upgraded in place.
 
-## Install / repair Total Commander registration
+## Install / repair Total Commander integration
 
 Run:
 
@@ -124,9 +124,13 @@ Run:
 install.cmd
 ```
 
-The installer locates Total Commander's active `WINCMD.INI`, verifies the FolderHeatMap WDX entry in `[ContentPlugins]`, adds it when missing, and repairs an obsolete FolderHeatMap WDX path when necessary. It creates a timestamped backup before changing Total Commander configuration and writes diagnostics to `logs\install.log`.
+`install.cmd` is the primary user-facing installer and repair entry point. Its internal helper locates Total Commander's active `WINCMD.INI` and repairs the complete FolderHeatMap integration in one operation.
 
-The operation is idempotent. If the WDX is already registered at the correct path, no configuration is changed. If a registration change is required while Total Commander is running, the installer restarts Total Commander so the WDX configuration is reloaded immediately.
+The stable live plugin is always `dist\FolderHeatMap.wdx64`. The installer adds or repairs the `[ContentPlugins]` registration so it points to that stable file and never to temporary build output such as `build\package`.
+
+The installer also creates or repairs a selectable Total Commander custom-column view named `FolderHeatMap` with the fields `Heat`, `Visits`, `Last Visit`, `Writes` and `Last Write`. It installs the heat-based text-color rules using the same configured color anchors, smoothing and intermediate-step settings as the FolderHeatMap configurator, while preserving unrelated user color filters. Folder heat icons and their Internal Associations are regenerated from the same FolderHeatMap color/icon settings.
+
+Before changing Total Commander configuration, the installer creates a timestamped `WINCMD.INI` backup. Diagnostics are written to `logs\install.log`. If Total Commander is running, it is stopped before the integration is changed and restarted once after the complete repair has finished.
 
 ## Upgrade
 
@@ -136,7 +140,9 @@ Run only:
 upgrade.cmd
 ```
 
-The script updates `devel`, relaunches the freshly pulled upgrader, prepares dependencies, builds the WDX, background engine, configurator and reset utility, stops Total Commander for atomic deployment when necessary, deploys `FolderHeatMapEngine.exe` beside the registered WDX and restarts Total Commander if it had been running.
+The script updates `devel`, relaunches the freshly pulled upgrader, prepares dependencies, builds the WDX, background engine, configurator and reset utility, and deploys the package to the stable `dist` directory. After deployment it runs `install.cmd` to repair WDX registration, the FolderHeatMap custom-column view, text colors and folder icons as one consistent Total Commander integration step. Temporary `build\package` files are staging only and are never used as the live plugin registration.
+
+The upgrader guards live files while Total Commander or the engine is running and restarts Total Commander once after a successful deployment if it had been running before the upgrade.
 
 ## Target
 
