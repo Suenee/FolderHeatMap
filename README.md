@@ -116,6 +116,18 @@ Drive letters are not part of the permanent folder identity. A local folder is i
 
 FolderHeatMap uses SQLite with WAL mode and `synchronous=NORMAL`. SQLite stores activity history plus the latest complete runtime-cache generation. Existing databases are upgraded in place.
 
+## Install / repair Total Commander registration
+
+Run:
+
+```bat
+install.cmd
+```
+
+The installer locates Total Commander's active `WINCMD.INI`, verifies the FolderHeatMap WDX entry in `[ContentPlugins]`, adds it when missing, and repairs an obsolete FolderHeatMap WDX path when necessary. It creates a timestamped backup before changing Total Commander configuration and writes diagnostics to `logs\install.log`.
+
+The operation is idempotent. If the WDX is already registered at the correct path, no configuration is changed. If a registration change is required while Total Commander is running, the installer restarts Total Commander so the WDX configuration is reloaded immediately.
+
 ## Upgrade
 
 Run only:
