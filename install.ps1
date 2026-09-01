@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$Version = '1.01'
+$Version = '1.02'
 $Repo = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $LogsDir = Join-Path $Repo 'logs'
 New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
@@ -8,6 +8,7 @@ $Utf8 = [Text.UTF8Encoding]::new($false)
 [IO.File]::WriteAllText($Log, '', $Utf8)
 
 function Log([string]$text) { [IO.File]::AppendAllText($Log, $text + [Environment]::NewLine, $Utf8); Write-Host $text }
+function Warn([string]$text) { Log ('WARNING: ' + $text) }
 function Fail([string]$text) { Log ('ERROR: ' + $text); throw $text }
 function Expand-Value([string]$value) { if ([string]::IsNullOrWhiteSpace($value)) { return '' }; return [Environment]::ExpandEnvironmentVariables($value.Trim('"')) }
 function Get-RegValue([string]$path,[string]$name) { try { return (Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction Stop).$name } catch { return $null } }
@@ -23,6 +24,78 @@ function Find-TC {
     $exe=$null
     if ($path) { foreach ($n in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { $p=Join-Path $path $n; if (Test-Path -LiteralPath $p) { $exe=$p; break } } }
     [pscustomobject]@{Path=$path;Ini=$ini;Exe=$exe}
+}
+
+function Get-TcInstalledVersion([object]$tc) {
+    if (-not $tc.Exe -or -not (Test-Path -LiteralPath $tc.Exe)) { return $null }
+    try {
+        $raw=(Get-Item -LiteralPath $tc.Exe).VersionInfo.ProductVersion
+        if (-not $raw) { $raw=(Get-Item -LiteralPath $tc.Exe).VersionInfo.FileVersion }
+        if ($raw -match '(\d+\.\d+(?:\.\d+)*)') { return [version]$matches[1] }
+    } catch {}
+    return $null
+}
+
+function Get-LatestTcRelease {
+    $url='https://www.ghisler.com/amazons3.php'
+    try {
+        $response=Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 15
+        $html=[string]$response.Content
+        $m=[regex]::Match($html,'(?i)Download\s+Total\s+Commander\s+(\d+\.\d+(?:\.\d+)*)\s+final')
+        if (-not $m.Success) { throw 'latest stable version could not be parsed from the official download page' }
+        $versionText=$m.Groups[1].Value
+        $link=[regex]::Match($html,'(?i)href=["'']([^"'']*tcmd[^"'']*x64\.exe)["'']')
+        $download=$null
+        if ($link.Success) {
+            $download=$link.Groups[1].Value
+            if ($download -notmatch '^https?://') { $download=[Uri]::new([Uri]$url,$download).AbsoluteUri }
+        } else {
+            $compact=$versionText.Replace('.','')
+            $download="https://totalcommander.ch/$compact/tcmd${compact}x64.exe"
+        }
+        return [pscustomobject]@{Version=[version]$versionText;VersionText=$versionText;DownloadUrl=$download;SourceUrl=$url}
+    } catch {
+        Warn "Could not verify the latest Total Commander version from the official Ghisler download page: $($_.Exception.Message). FolderHeatMap installation will continue."
+        return $null
+    }
+}
+
+function Offer-TcUpdate([object]$tc) {
+    $installed=Get-TcInstalledVersion $tc
+    if (-not $installed) { Warn 'Installed Total Commander version could not be determined; online update check skipped.'; return $tc }
+    $latest=Get-LatestTcRelease
+    if (-not $latest) { return $tc }
+    Log "[TC] Installed version: $installed"
+    Log "[TC] Latest stable version: $($latest.VersionText) (official Ghisler download page)"
+    if ($installed -ge $latest.Version) { Log '[TC] Total Commander is up to date.'; return $tc }
+
+    Write-Host ''
+    Write-Host "A newer stable Total Commander is available: $installed -> $($latest.VersionText)" -ForegroundColor Yellow
+    $answer=Read-Host 'Upgrade Total Commander now? [Y/N]'
+    if ($answer -notmatch '^(?i)y(?:es)?$') { Log '[TC] Total Commander update declined; continuing FolderHeatMap installation.'; return $tc }
+
+    $wasRunning=@(Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue).Count -gt 0
+    if ($wasRunning) { [void](Stop-TC $tc) }
+    $installer=Join-Path $env:TEMP ("FolderHeatMap-tcmd-$($latest.VersionText)-x64.exe")
+    Log "[TC] Downloading official Total Commander $($latest.VersionText) installer..."
+    try { Invoke-WebRequest -UseBasicParsing -Uri $latest.DownloadUrl -OutFile $installer -TimeoutSec 120 }
+    catch { Fail "Could not download the official Total Commander installer: $($_.Exception.Message)" }
+    if (-not (Test-Path -LiteralPath $installer)) { Fail 'Total Commander installer download did not produce a file.' }
+    $signature=Get-AuthenticodeSignature -FilePath $installer
+    if ($signature.Status -ne 'Valid') { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue; Fail "Downloaded Total Commander installer has invalid Authenticode signature: $($signature.Status)." }
+    Log "[TC] Installer signature valid: $($signature.SignerCertificate.Subject)"
+    Log '[TC] Starting Total Commander upgrade installer. Existing Total Commander configuration is preserved by the official installer.'
+    $process=Start-Process -FilePath $installer -Wait -PassThru
+    $rc=$process.ExitCode
+    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+    if ($rc -ne 0) { Fail "Total Commander installer returned exit code $rc." }
+    $refreshed=Find-TC
+    $after=Get-TcInstalledVersion $refreshed
+    if (-not $after) { Fail 'Total Commander upgrade completed, but the installed version could not be verified.' }
+    if ($after -lt $latest.Version) { Fail "Total Commander upgrade completed, but version $after is still older than $($latest.VersionText)." }
+    Log "[TC] Total Commander upgraded successfully to $after."
+    if ($wasRunning) { $script:TcWasRunningBeforeInstall=$true }
+    return $refreshed
 }
 
 Add-Type @'
@@ -157,8 +230,11 @@ function Install-ColorRules([string]$ini,[string]$settings) {
 
 try {
     Log "FolderHeatMap installer $Version"
+    $script:TcWasRunningBeforeInstall=$false
     $tc=Find-TC
     if (-not $tc.Ini -or -not (Test-Path -LiteralPath $tc.Ini)) { Fail 'Active Total Commander WINCMD.INI could not be located.' }
+    if (-not $tc.Exe) { Warn 'Total Commander executable could not be located; version check and automatic update are unavailable.' }
+    else { $tc=Offer-TcUpdate $tc }
     $ini=(Resolve-Path -LiteralPath $tc.Ini).Path
     $dist=Join-Path $Repo 'dist'
     $wdx=Join-Path $dist 'FolderHeatMap.wdx64'
@@ -170,7 +246,8 @@ try {
 
     Log "[TC] Configuration: $ini"
     Log "[FHM] Stable WDX:    $wdx"
-    $tcWasRunning=Stop-TC $tc
+    $runningAtRepair=Stop-TC $tc
+    $tcWasRunning=$script:TcWasRunningBeforeInstall -or $runningAtRepair
 
     $backup="$ini.fhm-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"
     Copy-Item -LiteralPath $ini -Destination $backup -Force
