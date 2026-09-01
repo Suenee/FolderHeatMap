@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Version = '1.51'
-$Revision = '1.51-folder-icon-repair'
+$Revision = '1.51-stable-dist-integration-repair'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -100,15 +100,21 @@ function Stop-EngineForDeploy {
 }
 function Copy-FileWithRetry {
     param([Parameter(Mandatory=$true)][string]$Source,[Parameter(Mandatory=$true)][string]$Destination,[string]$Phase='DEPLOY',[int]$Attempts=30,[int]$DelayMs=1000,[switch]$GuardTotalCommander,[switch]$GuardEngine)
-    $parent=Split-Path -Parent $Destination; if ($parent) { New-Item -ItemType Directory -Path $parent -Force|Out-Null }
+    $sourceFull=[IO.Path]::GetFullPath($Source)
+    $destinationFull=[IO.Path]::GetFullPath($Destination)
+    if ($sourceFull.Equals($destinationFull,[StringComparison]::OrdinalIgnoreCase)) {
+        Info ("[DEPLOY] Source and destination are identical; copy skipped: $destinationFull")
+        return
+    }
+    $parent=Split-Path -Parent $destinationFull; if ($parent) { New-Item -ItemType Directory -Path $parent -Force|Out-Null }
     for ($attempt=1;$attempt -le $Attempts;$attempt++) {
         if ($GuardTotalCommander) { Stop-TotalCommanderForDeploy -Reason ("deployment attempt $attempt") }
         if ($GuardEngine) { Stop-EngineForDeploy -Reason ("deployment attempt $attempt") }
-        try { Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop; if ($attempt -gt 1) { Info ("[DEPLOY] Copy succeeded after $attempt attempts: $Destination") }; return }
+        try { Copy-Item -LiteralPath $sourceFull -Destination $destinationFull -Force -ErrorAction Stop; if ($attempt -gt 1) { Info ("[DEPLOY] Copy succeeded after $attempt attempts: $destinationFull") }; return }
         catch {
-            if ($attempt -ge $Attempts) { Fail $Phase ("Could not replace '$Destination' after $Attempts attempts. The target is still locked or unavailable. Last error: $($_.Exception.Message)") }
-            if ($attempt -eq 1) { Warn ("Deployment target is temporarily locked; retrying for up to $([int](($Attempts*$DelayMs)/1000)) seconds: $Destination") }
-            elseif (($attempt % 5) -eq 0) { Info ("[DEPLOY] Still waiting for target lock release ($attempt/$Attempts): $Destination") }
+            if ($attempt -ge $Attempts) { Fail $Phase ("Could not replace '$destinationFull' after $Attempts attempts. The target is still locked or unavailable. Last error: $($_.Exception.Message)") }
+            if ($attempt -eq 1) { Warn ("Deployment target is temporarily locked; retrying for up to $([int](($Attempts*$DelayMs)/1000)) seconds: $destinationFull") }
+            elseif (($attempt % 5) -eq 0) { Info ("[DEPLOY] Still waiting for target lock release ($attempt/$Attempts): $destinationFull") }
             Start-Sleep -Milliseconds $DelayMs
         }
     }
@@ -162,36 +168,38 @@ try {
 
     $FailPhase='DIST'; Info '[6/7] Preparing isolated package staging...'; $package=Join-Path $build 'package'; if (Test-Path $package) { Remove-Item $package -Recurse -Force }; New-Item -ItemType Directory -Path $package -Force|Out-Null
     foreach ($f in $artifacts) { Copy-Item -LiteralPath (Join-Path "$build\Release" $f) -Destination (Join-Path $package $f) -Force }
-    $supportFiles=@('configure.cmd','README.md','TESTING.md','STRESS_TESTING.md','test.cmd','test.ps1','test_stress.ps1','test_lifecycle_diag.ps1','setup_icons.ps1')
+    $supportFiles=@('configure.cmd','README.md','TESTING.md','STRESS_TESTING.md','test.cmd','test.ps1','test_stress.ps1','test_lifecycle_diag.ps1','install.cmd','install.ps1','setup_icons.cmd','setup_icons.ps1')
     foreach ($f in $supportFiles) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item -LiteralPath (Join-Path $Repo $f) -Destination (Join-Path $package $f) -Force } }
     Info ("[DIST] Package staging ready: $package")
 
-    $FailPhase='DEPLOY'; Info '[7/7] Deploying staged package to Total Commander installation...'; Stop-TotalCommanderForDeploy -Reason 'pre-deploy guard'; Stop-EngineForDeploy -Reason 'pre-deploy guard'
+    $FailPhase='DEPLOY'; Info '[7/7] Deploying staged package to stable dist and repairing Total Commander integration...'; Stop-TotalCommanderForDeploy -Reason 'pre-deploy guard'; Stop-EngineForDeploy -Reason 'pre-deploy guard'
     $dist=Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force|Out-Null
     foreach ($f in $artifacts) { $guardTc=($f -eq 'FolderHeatMap.wdx64'); $guardEngine=($f -eq 'FolderHeatMapEngine.exe'); Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' -GuardTotalCommander:$guardTc -GuardEngine:$guardEngine }
     foreach ($f in $supportFiles) { if (Test-Path (Join-Path $package $f)) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' } }
 
+    $distPlugin=[IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
     if ($tc.Plugin) {
-        $pluginFull=[IO.Path]::GetFullPath($tc.Plugin); $distPlugin=[IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
-        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) { $pluginDir=Split-Path -Parent $pluginFull; Copy-FileWithRetry -Source (Join-Path $package 'FolderHeatMap.wdx64') -Destination $pluginFull -Phase 'DEPLOY' -GuardTotalCommander; Copy-FileWithRetry -Source (Join-Path $package 'FolderHeatMapEngine.exe') -Destination (Join-Path $pluginDir 'FolderHeatMapEngine.exe') -Phase 'DEPLOY' -GuardEngine; Info ("[TC] Updated WDX and engine in: $pluginDir") }
-        else { Info '[TC] Registered plugin points to dist; staged deployment updated the live WDX there.' }
-    }
+        $pluginFull=[IO.Path]::GetFullPath($tc.Plugin)
+        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) {
+            Info ("[TC] Registered WDX uses a non-stable path and will be migrated to dist by install.cmd: $pluginFull")
+        } else { Info '[TC] Registered plugin already points to stable dist.' }
+    } else { Info '[TC] FolderHeatMap WDX is not registered yet; install.cmd will register stable dist.' }
 
-    Stop-TotalCommanderForDeploy -Reason 'post-deploy verification'; Stop-EngineForDeploy -Reason 'post-deploy verification'
-    $iconSetup=Join-Path $dist 'setup_icons.ps1'
-    if (-not (Test-Path -LiteralPath $iconSetup)) { Fail 'DEPLOY' 'setup_icons.ps1 is missing from the deployed package.' }
-    Info '[TC] Regenerating FolderHeatMap heat-colored folder icons and Internal Associations...'
+    Stop-TotalCommanderForDeploy -Reason 'integration repair'; Stop-EngineForDeploy -Reason 'integration repair'
+    $installer=Join-Path $Repo 'install.cmd'
+    if (-not (Test-Path -LiteralPath $installer)) { Fail 'DEPLOY' 'install.cmd is missing; Total Commander integration cannot be repaired.' }
+    Info '[TC] Running install.cmd to repair WDX registration, custom columns, text colors and folder icons...'
     $savedPreference=$ErrorActionPreference
     try {
         $ErrorActionPreference='Continue'
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $iconSetup 2>&1 | ForEach-Object { Info ([string]$_) }
-        $iconRc=$LASTEXITCODE
+        & $installer 2>&1 | ForEach-Object { Info ([string]$_) }
+        $installRc=$LASTEXITCODE
     } finally { $ErrorActionPreference=$savedPreference }
-    if ($iconRc -ne 0) { Fail 'DEPLOY' 'FolderHeatMap folder icon associations could not be regenerated.' }
-    Info '[TC] FolderHeatMap folder icon associations regenerated successfully.'
+    if ($installRc -ne 0) { Fail 'DEPLOY' "install.cmd failed with exit code $installRc. See logs\install.log." }
+    Info '[TC] Total Commander integration repaired successfully. Stable WDX registration is dist\FolderHeatMap.wdx64.'
 
     $engineLauncher=Join-Path $Repo 'start_engine.ps1'; if (Test-Path $engineLauncher) { Info '[FHM] Starting FolderHeatMap engine after successful deployment.'; Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$engineLauncher) -WindowStyle Hidden|Out-Null }
-    if ($tcWasRunning -and $tc.Exe) { Info '[TC] Restarting Total Commander after successful deployment.'; Start-Process -FilePath $tc.Exe|Out-Null }
+    if ($tcWasRunning -and $tc.Exe) { Info '[TC] Restarting Total Commander once after successful deployment and integration repair.'; Start-Process -FilePath $tc.Exe|Out-Null }
 
     Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green; Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $LogsDir\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
     if ($HadWarning) { Write-Line 'STATUS: WARNING - phase=COMPLETE' Yellow } else { Write-Line 'STATUS: SUCCESS - phase=COMPLETE' Green }; exit 0
