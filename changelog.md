@@ -2,15 +2,17 @@
 
 ## Unreleased - Heat model object refactor
 
-- Fixed `upgrade.ps1` Total Commander detection on fresh machines: it now matches the installer fallback logic and checks `%APPDATA%\GHISLER\WINCMD.INI` when `COMMANDER_INI` and registry `IniFileName` are absent. FolderHeatMap settings are then derived from the resolved active TC INI directory.
-- Total Commander paths read from environment variables or registry values are now environment-expanded and quote-trimmed before use. The upgrader also checks common Total Commander installation directories when `InstallDir` is unavailable.
-- Improved repeated fresh-clone dirty-tree handling on network/NAS checkouts. Working-tree differences that disappear with `git diff --ignore-space-at-eol` are treated as line-ending materialization only and no longer trigger an automatic stash. Real tracked changes still trigger the managed stash, and their exact `git status --porcelain` entries are written to `logs\upgrade.log` for diagnosis.
-- Updated upgrade runner revision to `1.51-tc-detection-dirty-tree-repair`; FolderHeatMap runtime remains version 1.51.
+- Extended `install.cmd` to launcher revision 1.04 with robust Total Commander executable discovery before the internal installer runs. This fixes older Total Commander installations whose active `WINCMD.INI` is known but whose executable directory is not exposed through the registry paths used by newer releases.
+- The CMD launcher now checks the inherited `COMMANDER_PATH`, classic Total Commander locations including `C:\totalcmd`, common Program Files locations, PATH via `where`, and finally the executable path of a currently running `TOTALCMD64` / `TOTALCMD` process. When found, it exports `COMMANDER_PATH` to the internal installer so version detection and the optional official Total Commander upgrade can run normally.
 - Extended `install.cmd` / internal installer helper to version 1.03 with an online Total Commander version check against Ghisler's current official download page (`download.htm`).
 - The installer reads the version of the actually detected `TOTALCMD64.EXE`/`TOTALCMD.EXE`, compares it with the latest stable Total Commander release, and continues silently when the local installation is current.
 - If a newer stable Total Commander is available, the installer asks the user before doing anything. Declining the offer continues FolderHeatMap installation unchanged; Total Commander is never upgraded without explicit confirmation.
 - After confirmation, the installer downloads the official x64 Total Commander installer, requires a valid Authenticode signature from `Ghisler Software GmbH`, runs the official installer, verifies the resulting installed version, then resumes FolderHeatMap integration. Failure to perform the online version check itself is non-fatal and is logged as a warning.
 - Current official Total Commander release verified while implementing this change: 11.58, published 01.07.2026. The version is not hard-coded; the installer re-reads the official download page on each run.
+- Fixed Total Commander detection in `upgrade.ps1` (`1.51-tc-detection-dirty-tree-repair`). The upgrader now expands environment variables/quotes in TC paths and uses the same `%APPDATA%\GHISLER\WINCMD.INI` fallback as the installer, so a fresh machine no longer fails configuration merely because `COMMANDER_INI` and the registry do not expose the active INI path.
+- Added common Total Commander executable-location fallbacks to the upgrader when no install path is available from environment variables or registry.
+- Refined pre-upgrade dirty-tree detection to distinguish real tracked content edits from CRLF/LF-only materialization. Line-ending-only differences no longer trigger an unnecessary automatic stash.
+- When real tracked modifications are present, the upgrader now logs the exact `git status --porcelain` entries before stashing them, making repeated fresh-machine dirty-tree warnings diagnosable instead of opaque.
 - Fixed the deploy retry failure where an obsolete Total Commander registration could point to `build\package\FolderHeatMap.wdx64`, causing the upgrader to repeatedly try to copy the staged WDX onto itself and misreport the condition as a temporary file lock. `Copy-FileWithRetry` now canonicalizes source and destination paths and skips an identical source/destination copy immediately.
 - Defined `dist\FolderHeatMap.wdx64` as the only stable live WDX registration. `build\Release` remains build output and `build\package` remains temporary staging; neither is used as Total Commander's persistent FolderHeatMap registration.
 - The upgrader no longer deploys runtime files back into an arbitrary previously registered FolderHeatMap path. After stable `dist` deployment it runs `install.cmd`, which migrates or creates the WDX registration and repairs the complete Total Commander integration consistently.
@@ -18,7 +20,7 @@
 - The installer now creates or repairs a selectable Total Commander custom-column view named `FolderHeatMap` containing `Heat`, `Visits`, `Last Visit`, `Writes` and `Last Write`.
 - The installer now creates or repairs FolderHeatMap text-color rules using the same configured color anchors, smooth interpolation and steps-per-level behavior as the configurator, while preserving unrelated user color filters.
 - The installer now regenerates FolderHeatMap heat-colored folder icons and Internal Associations from the same FolderHeatMap color/icon settings.
-- The installer creates a timestamped `WINCMD.INI` backup and writes diagnostics to `logs\install.log`; when Total Commander is running it is stopped before configuration changes and restarted once after the complete integration repair.
+- The installer creates a timestamped `WINCMD.INI` backup and writes diagnostics to `logs\install.log`; when Total Commander is running it is stopped before configuration changes and restarted once after the complete repair has finished.
 - Upgrade packaging now carries `install.cmd`, its internal installer helper, `setup_icons.cmd` and its internal icon helper into the stable distribution alongside the existing support files.
 - Updated `README.md` to document the stable `dist` runtime path and the complete `install.cmd` repair workflow. Runtime FolderHeatMap remains version 1.51.
 - Added automatic C++ build-environment bootstrap for fresh Windows machines. `upgrade.cmd` now runs the authoritative `ensure_build_tools.ps1` from `origin/devel` before the main upgrade runner.
@@ -76,7 +78,7 @@
 
 ## 1.48 - 29.08.2026
 
-- Added canonical reconciliation for a surviving queued File ID: when a rapid MOVE round trip leaves the database row on an earlier path, the watcher now looks up the tracked object by volume and File ID and migrates its history to the object's current filesystem path.
+- Added canonical reconciliation for a surviving queued File ID: when a rapid MOVE round trip leaves the database row on an earlier path, the watcher now looks up the tracked object by volume and File ID and migrates its history to the path where the object physically exists now.
 - Added `Database::GetTrackedObjectById()` for identity-first reconciliation without relying on a stale path.
 - Added explicit `queued_identity_reconciled` and `queued_identity_survived_unreconciled` lifecycle diagnostics.
 - Updated the lifecycle diagnostic suite to report test version 1.48 and include the new reconciliation traces.
