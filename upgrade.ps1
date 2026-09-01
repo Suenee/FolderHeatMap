@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Version = '1.51'
-$Revision = '1.51-stable-dist-integration-repair'
+$Revision = '1.51-tc-detection-dirty-tree-repair'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -48,6 +48,10 @@ function Run-Native {
 }
 function Is-ProcessRunning([string[]]$Names) { foreach ($n in $Names) { if (Get-Process -Name $n -ErrorAction SilentlyContinue) { return $true } } return $false }
 function Get-RegValue([string]$Path,[string]$Name) { try { return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name } catch { return $null } }
+function Expand-PathValue([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+    return [Environment]::ExpandEnvironmentVariables($Value.Trim().Trim('"'))
+}
 function Resolve-CMake {
     $cmd = Get-Command cmake.exe -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -59,14 +63,28 @@ function Resolve-CMake {
     return $null
 }
 function Resolve-TC {
-    $tcPath = $env:COMMANDER_PATH; $tcIni = $env:COMMANDER_INI
+    $tcPath = Expand-PathValue $env:COMMANDER_PATH
+    $tcIni = Expand-PathValue $env:COMMANDER_INI
     $keys = @('HKCU:\Software\Ghisler\Total Commander','HKLM:\Software\Ghisler\Total Commander','HKLM:\Software\Wow6432Node\Ghisler\Total Commander')
-    if (-not $tcPath) { foreach ($k in $keys) { $v = Get-RegValue $k 'InstallDir'; if ($v) { $tcPath = $v; break } } }
-    if (-not $tcIni) { foreach ($k in $keys) { $v = Get-RegValue $k 'IniFileName'; if ($v) { $tcIni = $v; break } } }
+    if (-not $tcPath) { foreach ($k in $keys) { $v = Get-RegValue $k 'InstallDir'; if ($v) { $tcPath = Expand-PathValue $v; break } } }
+    if (-not $tcIni) { foreach ($k in $keys) { $v = Get-RegValue $k 'IniFileName'; if ($v) { $tcIni = Expand-PathValue $v; break } } }
+    if (-not $tcIni -and $env:APPDATA) {
+        $candidate = Join-Path $env:APPDATA 'GHISLER\WINCMD.INI'
+        if (Test-Path -LiteralPath $candidate) { $tcIni = [IO.Path]::GetFullPath($candidate) }
+    }
+    if (-not $tcPath) {
+        $candidates = @()
+        if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles 'Total Commander') }
+        if (${env:ProgramFiles(x86)}) { $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Total Commander') }
+        $candidates += 'C:\totalcmd'
+        foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath $candidate) { $tcPath = $candidate; break }
+        }
+    }
     $tcExe = $null
-    if ($tcPath) { foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { $p = Join-Path $tcPath $name; if (Test-Path $p) { $tcExe = $p; break } } }
+    if ($tcPath) { foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) { $p = Join-Path $tcPath $name; if (Test-Path -LiteralPath $p) { $tcExe = $p; break } } }
     $plugin = $null
-    if ($tcIni -and (Test-Path $tcIni)) { foreach ($line in Get-Content -LiteralPath $tcIni) { if ($line -match 'FolderHeatMap\.wdx64' -and $line -match '=') { $plugin = ($line -split '=',2)[1].Trim('"'); break } } }
+    if ($tcIni -and (Test-Path -LiteralPath $tcIni)) { foreach ($line in Get-Content -LiteralPath $tcIni) { if ($line -match 'FolderHeatMap\.wdx64' -and $line -match '=') { $plugin = Expand-PathValue (($line -split '=',2)[1]); break } } }
     $settings = if ($tcIni) { Join-Path (Split-Path -Parent $tcIni) 'FolderHeatMap.ini' } else { $null }
     [pscustomobject]@{ Path=$tcPath; Ini=$tcIni; Exe=$tcExe; Plugin=$plugin; Settings=$settings }
 }
@@ -128,9 +146,23 @@ try {
     $FailPhase='SELF-UPDATE'; if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { Fail $FailPhase 'Git was not found in PATH.' }
     Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('fetch','origin')|Out-Null
     $currentBranch=(& git branch --show-current).Trim(); if ($currentBranch -ne 'devel') { Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('switch','devel')|Out-Null }
-    & git diff --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'; $userTrackedDirty=($LASTEXITCODE -ne 0)
-    & git diff --cached --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'; if ($LASTEXITCODE -ne 0) { $userTrackedDirty=$true }
-    if ($userTrackedDirty) { Warn 'Local tracked changes outside bootstrap files detected; stashing tracked files before update.'; Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-m','FolderHeatMap automatic pre-upgrade stash')|Out-Null }
+
+    & git diff --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'
+    $plainWorktreeDirty=($LASTEXITCODE -ne 0)
+    & git diff --quiet --ignore-space-at-eol --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'
+    $substantiveWorktreeDirty=($LASTEXITCODE -ne 0)
+    & git diff --cached --quiet --ignore-submodules -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1'
+    $stagedDirty=($LASTEXITCODE -ne 0)
+    $userTrackedDirty=$substantiveWorktreeDirty -or $stagedDirty
+    if ($plainWorktreeDirty -and -not $substantiveWorktreeDirty -and -not $stagedDirty) {
+        Info '[GIT] Tracked working-tree differences are line-ending-only; no automatic stash is required.'
+        & git diff --name-only -- . ':(exclude)upgrade.cmd' ':(exclude)upgrade.ps1' 2>$null | ForEach-Object { Info ("[GIT] EOL-only: $_") }
+    }
+    if ($userTrackedDirty) {
+        Warn 'Local tracked changes outside bootstrap files detected; stashing tracked files before update.'
+        & git status --porcelain=v1 --untracked-files=no 2>$null | ForEach-Object { Info ("[GIT] Dirty: $_") }
+        Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('stash','push','-m','FolderHeatMap automatic pre-upgrade stash')|Out-Null
+    }
     Info '[BOOTSTRAP] Synchronizing tracked tree to origin/devel.'; Run-Native -Phase $FailPhase -Exe 'git.exe' -ArgumentList @('reset','--hard','origin/devel')|Out-Null
     $head=(& git rev-parse HEAD 2>$null).Trim(); $remoteHead=(& git rev-parse origin/devel 2>$null).Trim(); if (-not $head -or -not $remoteHead -or $head -ne $remoteHead) { Fail $FailPhase 'Local devel HEAD is not identical to origin/devel after synchronization.' }
     $runnerHeadBlob=(& git rev-parse 'HEAD:upgrade.ps1' 2>$null).Trim(); $runnerRemoteBlob=(& git rev-parse 'origin/devel:upgrade.ps1' 2>$null).Trim(); if (-not $runnerHeadBlob -or -not $runnerRemoteBlob -or $runnerHeadBlob -ne $runnerRemoteBlob) { Fail $FailPhase 'upgrade.ps1 in HEAD is not identical to origin/devel.' }
@@ -156,7 +188,7 @@ try {
     if (Is-ProcessRunning @('FolderHeatMapEngine')) { Warn 'FolderHeatMapEngine did not finish graceful shutdown within 30 seconds; forcing it to stop.'; Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue|Stop-Process -Force; $deadline=[DateTime]::UtcNow.AddSeconds(5); while ((Is-ProcessRunning @('FolderHeatMapEngine')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }; if (Is-ProcessRunning @('FolderHeatMapEngine')) { Fail $FailPhase 'FolderHeatMapEngine is still running after forced shutdown; deployment would be unsafe.' } }
     Start-Sleep -Milliseconds 500; Move-RootLogsIntoLogsDirectory
 
-    $FailPhase='CONFIGURATION'; Info '[2/7] Configuring repository-local logging path...'; if (-not $tc.Settings) { Fail $FailPhase 'FolderHeatMap settings path could not be resolved.' }
+    $FailPhase='CONFIGURATION'; Info '[2/7] Configuring repository-local logging path...'; if (-not $tc.Settings) { Fail $FailPhase 'FolderHeatMap settings path could not be resolved because Total Commander WINCMD.INI could not be located.' }
     $helper=Join-Path $Repo 'configure_logging_path.ps1'; if (-not (Test-Path $helper)) { Fail $FailPhase 'configure_logging_path.ps1 is missing.' }
     $savedPreference=$ErrorActionPreference; try { $ErrorActionPreference='Continue'; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -SettingsIni $tc.Settings -RepositoryRoot $Repo 2>&1|ForEach-Object{Info ([string]$_)}; $helperRc=$LASTEXITCODE } finally { $ErrorActionPreference=$savedPreference }
     if ($helperRc -ne 0) { Fail $FailPhase 'Could not configure FolderHeatMap.log in the repository logs directory.' }
