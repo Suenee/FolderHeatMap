@@ -2,6 +2,11 @@
 
 ## Unreleased - Heat model object refactor
 
+- Extended `install.cmd` / internal installer helper to version 1.03 with an online Total Commander version check against Ghisler's current official download page (`download.htm`).
+- The installer reads the version of the actually detected `TOTALCMD64.EXE`/`TOTALCMD.EXE`, compares it with the latest stable Total Commander release, and continues silently when the local installation is current.
+- If a newer stable Total Commander is available, the installer asks the user before doing anything. Declining the offer continues FolderHeatMap installation unchanged; Total Commander is never upgraded without explicit confirmation.
+- After confirmation, the installer downloads the official x64 Total Commander installer, requires a valid Authenticode signature from `Ghisler Software GmbH`, runs the official installer, verifies the resulting installed version, then resumes FolderHeatMap integration. Failure to perform the online version check itself is non-fatal and is logged as a warning.
+- Current official Total Commander release verified while implementing this change: 11.58, published 01.07.2026. The version is not hard-coded; the installer re-reads the official download page on each run.
 - Fixed the deploy retry failure where an obsolete Total Commander registration could point to `build\package\FolderHeatMap.wdx64`, causing the upgrader to repeatedly try to copy the staged WDX onto itself and misreport the condition as a temporary file lock. `Copy-FileWithRetry` now canonicalizes source and destination paths and skips an identical source/destination copy immediately.
 - Defined `dist\FolderHeatMap.wdx64` as the only stable live WDX registration. `build\Release` remains build output and `build\package` remains temporary staging; neither is used as Total Commander's persistent FolderHeatMap registration.
 - The upgrader no longer deploys runtime files back into an arbitrary previously registered FolderHeatMap path. After stable `dist` deployment it runs `install.cmd`, which migrates or creates the WDX registration and repairs the complete Total Commander integration consistently.
