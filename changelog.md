@@ -2,6 +2,10 @@
 
 ## Unreleased - Heat model object refactor
 
+- Added `install.cmd` / `install.ps1` for idempotent Total Commander WDX registration and repair. The installer locates the active `WINCMD.INI`, verifies `[ContentPlugins]`, adds FolderHeatMap to the first free slot when missing, and repairs an obsolete FolderHeatMap WDX path without duplicating the plugin.
+- The installer creates a timestamped `WINCMD.INI` backup before any registration change and records diagnostics in `logs\install.log`.
+- If Total Commander is running and the WDX registration changes, the installer restarts Total Commander to force an immediate configuration/plugin reload. If no registration change is required, a running Total Commander instance is left untouched.
+- Documented `install.cmd` as the standalone registration/repair entry point in `README.md`.
 - Added automatic C++ build-environment bootstrap for fresh Windows machines. `upgrade.cmd` now runs the authoritative `ensure_build_tools.ps1` from `origin/devel` before the main upgrade runner.
 - If Visual Studio/Build Tools is absent, the dependency bootstrap uses `winget` to install Visual Studio 2022 Build Tools with the `Microsoft.VisualStudio.Workload.VCTools` workload and recommended components, including MSVC, Windows SDK and Visual Studio CMake support. Administrator elevation may be requested by Windows.
 - If Visual Studio/Build Tools already exists but the required C++/CMake workload is missing, the bootstrap uses the installed Visual Studio Installer to add the workload instead of installing a second IDE/toolchain.
@@ -51,7 +55,7 @@
 - Fixed the confirmed 1.48 rapid-MOVE regression where second and later removals reached watcher purge with an empty `object_id`, causing `RESET_RECURSIVE` even though the same filesystem File ID survived.
 - Restored durable path-to-File-ID memory at anchors compatible with the 1.48 generated lifecycle code.
 - A confirmed MOVE now remembers canonical volume, File ID and object type for both old and new endpoints; later removal events can recover that identity even after the tracked database row has already migrated away from the old path.
-- The recovered identity feeds the existing 1.48 surviving-File-ID reconciliation path, allowing `queued_identity_reconciled` to migrate database history to the object's current filesystem path instead of purging it.
+- The recovered identity feeds the existing 1.48 surviving-File-ID reconciliation path, allowing `queued_identity_reconciled` to migrate database history to the path where the object physically exists now instead of purging it.
 - No additional timing delays were added and the unsuccessful 1.41-1.43 SLOW lifecycle experiments remain rolled back.
 - Updated project/runtime/launcher metadata to 1.49 (`1.49-rapid-move-identity-memory`).
 
@@ -77,7 +81,7 @@
 - Added a guarded build-stage patch dedicated to the confirmed round-trip race instead of reintroducing the unsuccessful 1.41-1.43 speculative lifecycle changes.
 - `test.cmd` now derives the lifecycle diagnostic runtime version from the authoritative CMake project version, preventing copied summaries from reporting an obsolete hard-coded test version during normal `test.cmd` / `upgrade.cmd --test` runs.
 - The self-updating launcher now synchronizes release metadata in its temporary PowerShell runner copy, keeping upgrade output aligned with the launcher/project release without modifying the tracked working tree.
-- Updated build/runtime/launcher metadata to 1.47 (`1.47-rapid-move-roundtrip-memory`).
+- Updated project/runtime/launcher metadata to 1.47 (`1.47-rapid-move-roundtrip-memory`).
 
 ## 1.46 - 29.08.2026
 
