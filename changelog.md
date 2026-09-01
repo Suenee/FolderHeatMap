@@ -2,6 +2,10 @@
 
 ## Unreleased - Heat model object refactor
 
+- Fixed `upgrade.ps1` Total Commander detection on fresh machines: it now matches the installer fallback logic and checks `%APPDATA%\GHISLER\WINCMD.INI` when `COMMANDER_INI` and registry `IniFileName` are absent. FolderHeatMap settings are then derived from the resolved active TC INI directory.
+- Total Commander paths read from environment variables or registry values are now environment-expanded and quote-trimmed before use. The upgrader also checks common Total Commander installation directories when `InstallDir` is unavailable.
+- Improved repeated fresh-clone dirty-tree handling on network/NAS checkouts. Working-tree differences that disappear with `git diff --ignore-space-at-eol` are treated as line-ending materialization only and no longer trigger an automatic stash. Real tracked changes still trigger the managed stash, and their exact `git status --porcelain` entries are written to `logs\upgrade.log` for diagnosis.
+- Updated upgrade runner revision to `1.51-tc-detection-dirty-tree-repair`; FolderHeatMap runtime remains version 1.51.
 - Extended `install.cmd` / internal installer helper to version 1.03 with an online Total Commander version check against Ghisler's current official download page (`download.htm`).
 - The installer reads the version of the actually detected `TOTALCMD64.EXE`/`TOTALCMD.EXE`, compares it with the latest stable Total Commander release, and continues silently when the local installation is current.
 - If a newer stable Total Commander is available, the installer asks the user before doing anything. Declining the offer continues FolderHeatMap installation unchanged; Total Commander is never upgraded without explicit confirmation.
@@ -86,7 +90,7 @@
 ## 1.47 - 29.08.2026
 
 - Fixed the remaining 1.46 rapid MOVE round-trip gap shown by the 1.46 runtime trace: after the first successful MOVE consumed its per-task identity hint, a later removal of the same old path could have no tracked row and therefore reach watcher purge with an empty File ID.
-- Added last-confirmed path identity memory independent of individual delete tasks. A successful same-volume MOVE remembers the canonical volume, File ID and object type for both endpoints.
+- Added last-confirmed path identity memory independent of individual delete tasks. A successful same-volume MOVE remembers canonical volume, File ID and object type for both endpoints.
 - When a later rapid round-trip removal has no tracked row at its old path, the watcher can recover the last confirmed File ID for that path and verify whether that exact object still survives on the volume before allowing destructive reset.
 - Genuine DELETE and DELETE -> RECREATE remain destructive when the remembered File ID no longer exists; recycle-bin semantics are unchanged.
 - Added a guarded build-stage patch dedicated to the confirmed round-trip race instead of reintroducing the unsuccessful 1.41-1.43 speculative lifecycle changes.
