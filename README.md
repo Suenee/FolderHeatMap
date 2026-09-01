@@ -126,6 +126,8 @@ install.cmd
 
 `install.cmd` is the primary user-facing installer and repair entry point. Its internal helper locates Total Commander's active `WINCMD.INI` and repairs the complete FolderHeatMap integration in one operation.
 
+Before changing FolderHeatMap integration, the installer reads the version of the detected Total Commander executable and checks Ghisler's official current download page for the latest stable release. If a newer release is available, the user is asked whether Total Commander should be upgraded. Declining continues FolderHeatMap installation normally. An update is never started without explicit confirmation. When accepted, only the official x64 installer is downloaded; its Authenticode signature must be valid and signed by `Ghisler Software GmbH` before it is executed. The official Total Commander installer updates the existing installation and preserves its configuration. If the online version check cannot be performed, this is logged as a warning and FolderHeatMap installation continues.
+
 The stable live plugin is always `dist\FolderHeatMap.wdx64`. The installer adds or repairs the `[ContentPlugins]` registration so it points to that stable file and never to temporary build output such as `build\package`.
 
 The installer also creates or repairs a selectable Total Commander custom-column view named `FolderHeatMap` with the fields `Heat`, `Visits`, `Last Visit`, `Writes` and `Last Write`. It installs the heat-based text-color rules using the same configured color anchors, smoothing and intermediate-step settings as the FolderHeatMap configurator, while preserving unrelated user color filters. Folder heat icons and their Internal Associations are regenerated from the same FolderHeatMap color/icon settings.
