@@ -2,6 +2,8 @@
 
 ## Unreleased - Heat model object refactor
 
+- Updated `install.cmd` / `install.ps1` to version 1.07 and fixed the PowerShell parser failure `InvalidVariableReferenceWithDrive` introduced by the Total Commander update-status log line. The ambiguous `$after:` interpolation is now written as `${after}:`.
+- Added a mandatory parser preflight in `install.cmd` for both `install.ps1` and `repair_custom_columns.ps1`. Parser errors are now reported with the exact script, line, column and message before either helper can run, preventing a syntax defect from reaching the DEPLOY phase as an opaque child-process failure.
 - Updated the installer launcher to 1.06 and added an idempotent Total Commander custom-column repair pass. Every `install.cmd` / `upgrade.cmd` run now verifies that exactly one `FolderHeatMap` custom-column view remains, removes duplicate FolderHeatMap entries, compacts the surviving custom-column definitions, and preserves unrelated user-defined custom-column views.
 - Added `repair_custom_columns.ps1` as the dedicated internal repair helper. It resolves the active `WINCMD.INI`, stops Total Commander before editing custom-column configuration, restores the previous running state afterwards, and verifies the final FolderHeatMap view count before reporting success.
 - Updated the FolderHeatMap installer to version 1.05. The Total Commander upgrade prompt is now emitted as complete ordered console lines with an explicit `ACTION REQUIRED` message before waiting for `Y`/`N`, avoiding the unreadable interleaving previously caused by `Read-Host` when `install.cmd` is invoked from `upgrade.cmd`.
@@ -95,7 +97,6 @@
 - Restored the lifecycle diagnostic script to conventional PowerShell formatting, eliminating the compact-token runtime failures such as `Info'...'` and `Write-LogLine'...'` at their source.
 - Baseline assertion failures still skip the stress suite but always hand off to lifecycle diagnostics, while preserving the original baseline exit code.
 - Runtime lifecycle behavior is unchanged by these diagnostic-runner fixes.
-- Updated build/runtime/launcher metadata to 1.48 (`1.48-surviving-file-id-reconcile`).
 
 ## 1.47 - 29.08.2026
 
