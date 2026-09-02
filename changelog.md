@@ -2,6 +2,12 @@
 
 ## Unreleased - Heat model object refactor
 
+- Updated the FolderHeatMap installer to version 1.05. The Total Commander upgrade prompt is now emitted as complete ordered console lines with an explicit `ACTION REQUIRED` message before waiting for `Y`/`N`, avoiding the unreadable interleaving previously caused by `Read-Host` when `install.cmd` is invoked from `upgrade.cmd`.
+- Added visible liveness output while the Total Commander installer is downloaded and while the official installer process is running, so a long update no longer appears frozen.
+- Total Commander upgrades now lock the detected existing installation directory as the explicit installer target. The official installer is launched with `/F "<existing-directory>"`, and FolderHeatMap verifies that the upgraded `TOTALCMD64.EXE`/`TOTALCMD.EXE` in that original directory reaches the expected stable version before accepting the update as successful.
+- Before a Total Commander update, the active `WINCMD.INI` is backed up separately with an `fhm-before-tc-update` timestamp. The normal FolderHeatMap integration backup is still created afterwards.
+- Added a Total Commander font-profile guard to every `install.cmd` run, including those launched automatically by `upgrade.cmd`. It enforces Microsoft Sans Serif 8 bold for file lists and the main window, Microsoft Sans Serif 8 regular for dialogs, charset 238, and `AutoSizeDialogs=1` (automatic dialog sizing for larger fonts) in the active/existing resolution profile sections.
+- The font guard is idempotent and runs after Total Commander is stopped but before FolderHeatMap WDX/custom-column/color/icon integration is repaired, preventing a Total Commander reinstall/update from silently leaving the UI font configuration changed.
 - Extended `install.cmd` to launcher revision 1.04 with robust Total Commander executable discovery before the internal installer runs. This fixes older Total Commander installations whose active `WINCMD.INI` is known but whose executable directory is not exposed through the registry paths used by newer releases.
 - The CMD launcher now checks the inherited `COMMANDER_PATH`, classic Total Commander locations including `C:\totalcmd`, common Program Files locations, PATH via `where`, and finally the executable path of a currently running `TOTALCMD64` / `TOTALCMD` process. When found, it exports `COMMANDER_PATH` to the internal installer so version detection and the optional official Total Commander upgrade can run normally.
 - Extended `install.cmd` / internal installer helper to version 1.03 with an online Total Commander version check against Ghisler's current official download page (`download.htm`).
@@ -78,7 +84,7 @@
 
 ## 1.48 - 29.08.2026
 
-- Added canonical reconciliation for a surviving queued File ID: when a rapid MOVE round trip leaves the database row on an earlier path, the watcher now looks up the tracked object by volume and File ID and migrates its history to the path where the object physically exists now.
+- Added canonical reconciliation for a surviving queued File ID: when a rapid MOVE round trip leaves the database row on an earlier path, the watcher now looks up the tracked object by volume and File ID and migrates its history to the object's current filesystem path.
 - Added `Database::GetTrackedObjectById()` for identity-first reconciliation without relying on a stale path.
 - Added explicit `queued_identity_reconciled` and `queued_identity_survived_unreconciled` lifecycle diagnostics.
 - Updated the lifecycle diagnostic suite to report test version 1.48 and include the new reconciliation traces.
