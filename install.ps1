@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$Version = '1.05'
+$Version = '1.07'
 $Repo = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $LogsDir = Join-Path $Repo 'logs'
 New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
@@ -180,7 +180,7 @@ function Offer-TcUpdate([object]$tc) {
     if (-not $after) { Fail "Total Commander upgrade completed, but the version in the original installation directory '$targetPath' could not be verified." }
     if ($after -lt $latest.Version) { Fail "Total Commander upgrade completed, but the original installation directory still contains version $after instead of $($latest.VersionText)." }
     $env:COMMANDER_PATH=$targetPath
-    Log "[TC] Total Commander upgraded successfully in the original directory to $after: $targetPath"
+    Log "[TC] Total Commander upgraded successfully in the original directory to ${after}: $targetPath"
     if ($wasRunning) { $script:TcWasRunningBeforeInstall=$true }
     return $targetTc
 }
