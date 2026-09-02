@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-set "INSTALL_REV=1.05"
+set "INSTALL_REV=1.06"
 cd /d "%~dp0"
 echo FolderHeatMap install %INSTALL_REV%
 
@@ -54,4 +54,22 @@ for /f "usebackq delims=" %%P in (`powershell.exe -NoProfile -Command "$p=Get-Pr
 :tc_path_ready
 if defined COMMANDER_PATH echo [TC] Executable directory: %COMMANDER_PATH%
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
-exit /b %ERRORLEVEL%
+set "INSTALL_RC=%ERRORLEVEL%"
+if not "%INSTALL_RC%"=="0" exit /b %INSTALL_RC%
+
+set "CUSTOM_COLUMNS_REPAIR=%~dp0repair_custom_columns.ps1"
+if not exist "%CUSTOM_COLUMNS_REPAIR%" if exist "%~dp0..\repair_custom_columns.ps1" set "CUSTOM_COLUMNS_REPAIR=%~dp0..\repair_custom_columns.ps1"
+if not exist "%CUSTOM_COLUMNS_REPAIR%" (
+    echo ERROR: repair_custom_columns.ps1 was not found; duplicate FolderHeatMap views cannot be repaired safely.
+    exit /b 1
+)
+
+echo [TC] Verifying that exactly one FolderHeatMap custom-column view exists...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%CUSTOM_COLUMNS_REPAIR%"
+set "REPAIR_RC=%ERRORLEVEL%"
+if not "%REPAIR_RC%"=="0" (
+    echo ERROR: FolderHeatMap custom-column de-duplication failed with exit code %REPAIR_RC%.
+    exit /b %REPAIR_RC%
+)
+
+exit /b 0
