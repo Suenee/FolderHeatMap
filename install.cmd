@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-set "INSTALL_REV=1.04"
+set "INSTALL_REV=1.05"
 cd /d "%~dp0"
 echo FolderHeatMap install %INSTALL_REV%
 
