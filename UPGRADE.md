@@ -118,6 +118,7 @@ This section is a mandatory pre-flight checklist when creating or modifying an u
 - **PowerShell `param()` bootstrap collisions:** parameter names can collide with PowerShell automatic/common semantics, and mandatory parameters can trigger interactive `Supply values...` prompts. Prevention: do not use complex PowerShell parameter binding as a self-update transport; use controlled environment variables for bootstrap state.
 - **Trailing backslash in a quoted path:** a repository path ending in `\` can damage quoting when transported through multiple interpreters. Prevention: normalize repository paths and trim the trailing separator before transport.
 - **Native argument-array binding:** a wrapper can accidentally invoke `git.exe` without `fetch origin` if its argument-list parameter is ambiguously bound. Symptom: Git prints its generic usage page. Prevention: explicit named PowerShell parameters and a dedicated native-command helper; test the exact resulting invocation.
+- **Interactive child prompt interleaved with captured output:** a nested helper that uses `Read-Host` while the parent redirects/pipes stdout/stderr can display its prompt before earlier buffered status lines, making it look frozen or hiding what input is required. Prevention: emit complete ordered `ACTION REQUIRED` lines before waiting for input; prefer console key input for interactive helpers, and provide visible liveness/progress while long child operations run.
 
 ### Git and self-update bugs
 
@@ -153,6 +154,8 @@ This section is a mandatory pre-flight checklist when creating or modifying an u
 - **Runtime configuration tracked accidentally:** `%APPDATA%`, logs, DB files, or generated local configuration must not enter Git merely because a script used a wrong relative path.
 - **Environment variable text used as a literal path:** strings such as `%APPDATA%/...` can accidentally become repository-relative filenames if expansion occurs in the wrong interpreter. Resolve runtime paths in one authoritative layer and validate that they are absolute where required.
 - **Default config overwrites user config:** copy defaults only when missing; migrate existing config explicitly.
+- **Third-party updater installs into a different directory:** never assume an external installer will preserve the detected installation path merely because it found an older version. Symptom: the update succeeds but creates/updates a second copy elsewhere. Prevention: capture the exact existing executable directory, pass it explicitly using the third-party installer's documented target-path mechanism, and verify the expected new version in that same directory before accepting success.
+- **Third-party updater resets host configuration:** external application upgrades can rewrite user-facing settings such as fonts, DPI/scaling, plugin paths, or other integration state. Prevention: back up the host configuration before launching the third-party installer, re-apply project-required settings afterwards, and verify the resulting values before restarting the host.
 - **Database/schema migration is not idempotent:** every migration must detect whether it has already run.
 - **Upgrade log stored in user profile:** project upgrade diagnostics belong in the repository root unless a project explicitly specifies otherwise. Keep `upgrade.log` ignored and single-run.
 
@@ -194,7 +197,7 @@ UPGRADE.md             protocol + buglist + project-specific notes
 
 ## 20. Minimum acceptance test
 
-Before declaring an upgrader stable, test: clean repo/app stopped; clean repo/app running; old local updater; no update; remote update; build failure; locked deployment target; graceful shutdown timeout; existing runtime config/log/database; tracked local modification; untracked runtime file; repository path with spaces; repository on a mapped/UNC network path that triggers Git `dubious ownership`; immediate second run; final log status and exit code for success/warning/failure.
+Before declaring an upgrader stable, test: clean repo/app stopped; clean repo/app running; old local updater; no update; remote update; build failure; locked deployment target; graceful shutdown timeout; existing runtime config/log/database; tracked local modification; untracked runtime file; repository path with spaces; repository on a mapped/UNC network path that triggers Git `dubious ownership`; optional third-party host update preserving the exact existing installation directory and required host configuration; immediate second run; final log status and exit code for success/warning/failure.
 
 Also deliberately test at least one harmless native stderr warning and verify that it remains a warning rather than becoming a failed upgrade.
 
