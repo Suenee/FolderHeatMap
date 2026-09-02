@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$Version = '1.03'
+$Version = '1.05'
 $Repo = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $LogsDir = Join-Path $Repo 'logs'
 New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
@@ -36,6 +36,15 @@ function Get-TcInstalledVersion([object]$tc) {
     return $null
 }
 
+function Get-TcExeInDirectory([string]$path) {
+    if (-not $path) { return $null }
+    foreach ($name in @('TOTALCMD64.EXE','TOTALCMD.EXE')) {
+        $candidate=Join-Path $path $name
+        if (Test-Path -LiteralPath $candidate) { return [IO.Path]::GetFullPath($candidate) }
+    }
+    return $null
+}
+
 function Get-LatestTcRelease {
     $url='https://www.ghisler.com/download.htm'
     try {
@@ -60,6 +69,51 @@ function Get-LatestTcRelease {
     }
 }
 
+function Read-YesNo([string]$question) {
+    Write-Host ''
+    Write-Host $question -ForegroundColor Yellow
+    Write-Host 'ACTION REQUIRED: press Y to upgrade, or N to continue without upgrading.' -ForegroundColor Yellow
+    if ([Console]::IsInputRedirected) {
+        $answer=Read-Host 'Y/N'
+        return ($answer -match '^(?i)y(?:es)?$')
+    }
+    while ($true) {
+        $key=[Console]::ReadKey($true)
+        if ($key.Key -eq [ConsoleKey]::Y) { Write-Host 'Y'; return $true }
+        if ($key.Key -eq [ConsoleKey]::N) { Write-Host 'N'; return $false }
+    }
+}
+
+function Wait-JobWithSpinner([System.Management.Automation.Job]$job,[string]$text) {
+    $frames=@('|','/','-','\')
+    $i=0
+    while ($job.State -in @('NotStarted','Running')) {
+        Write-Host ("[TC] $text " + $frames[$i % $frames.Count])
+        Start-Sleep -Seconds 1
+        $i++
+    }
+    if ($job.State -ne 'Completed') {
+        $reason=$null
+        try { $reason=$job.ChildJobs[0].JobStateInfo.Reason.Message } catch {}
+        if (-not $reason) { $reason="job state $($job.State)" }
+        throw $reason
+    }
+    Receive-Job -Job $job -ErrorAction Stop | Out-Null
+    Write-Host "[TC] $text done."
+}
+
+function Wait-ProcessWithSpinner([Diagnostics.Process]$process,[string]$text) {
+    $frames=@('|','/','-','\')
+    $i=0
+    while (-not $process.HasExited) {
+        Write-Host ("[TC] $text " + $frames[$i % $frames.Count])
+        Start-Sleep -Seconds 1
+        $process.Refresh()
+        $i++
+    }
+    Write-Host "[TC] $text done."
+}
+
 function Offer-TcUpdate([object]$tc) {
     $installed=Get-TcInstalledVersion $tc
     if (-not $installed) { Warn 'Installed Total Commander version could not be determined; online update check skipped.'; return $tc }
@@ -69,35 +123,66 @@ function Offer-TcUpdate([object]$tc) {
     Log "[TC] Latest stable version: $($latest.VersionText) (official Ghisler download page)"
     if ($installed -ge $latest.Version) { Log '[TC] Total Commander is up to date.'; return $tc }
 
-    Write-Host ''
-    Write-Host "A newer stable Total Commander is available: $installed -> $($latest.VersionText)" -ForegroundColor Yellow
-    $answer=Read-Host 'Upgrade Total Commander now? [Y/N]'
-    if ($answer -notmatch '^(?i)y(?:es)?$') { Log '[TC] Total Commander update declined; continuing FolderHeatMap installation.'; return $tc }
+    if (-not (Read-YesNo "A newer stable Total Commander is available: $installed -> $($latest.VersionText)")) {
+        Log '[TC] Total Commander update declined; continuing FolderHeatMap installation.'
+        return $tc
+    }
+
+    if (-not $tc.Path -or -not $tc.Exe) { Fail 'Total Commander update was accepted, but the existing installation directory could not be resolved safely.' }
+    $targetPath=[IO.Path]::GetFullPath($tc.Path).TrimEnd('\')
+    $originalExe=[IO.Path]::GetFullPath($tc.Exe)
+    if (-not (Test-Path -LiteralPath $originalExe)) { Fail "Existing Total Commander executable disappeared before update: $originalExe" }
+    $originalExeDir=[IO.Path]::GetFullPath((Split-Path -Parent $originalExe)).TrimEnd('\')
+    if (-not [string]::Equals($targetPath,$originalExeDir,[StringComparison]::OrdinalIgnoreCase)) {
+        Fail "Resolved Total Commander target directory does not match the executable directory. Target='$targetPath', executable='$originalExe'."
+    }
+    Log "[TC] Existing installation directory is locked as the update target: $targetPath"
+
+    if ($tc.Ini -and (Test-Path -LiteralPath $tc.Ini)) {
+        $preBackup="$($tc.Ini).fhm-before-tc-update-$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"
+        Copy-Item -LiteralPath $tc.Ini -Destination $preBackup -Force
+        Log "[TC] Pre-update configuration backup: $preBackup"
+    }
 
     $wasRunning=@(Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue).Count -gt 0
     if ($wasRunning) { [void](Stop-TC $tc) }
     $installer=Join-Path $env:TEMP ("FolderHeatMap-tcmd-$($latest.VersionText)-x64.exe")
+    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
     Log "[TC] Downloading official Total Commander $($latest.VersionText) installer..."
-    try { Invoke-WebRequest -UseBasicParsing -Uri $latest.DownloadUrl -OutFile $installer -TimeoutSec 120 }
-    catch { Fail "Could not download the official Total Commander installer: $($_.Exception.Message)" }
+    $downloadJob=Start-Job -ScriptBlock {
+        param($url,$file)
+        $ErrorActionPreference='Stop'
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $file -TimeoutSec 120
+    } -ArgumentList $latest.DownloadUrl,$installer
+    try { Wait-JobWithSpinner $downloadJob "Downloading Total Commander $($latest.VersionText)" }
+    catch { Remove-Job -Job $downloadJob -Force -ErrorAction SilentlyContinue; Fail "Could not download the official Total Commander installer: $($_.Exception.Message)" }
+    finally { if ($downloadJob) { Remove-Job -Job $downloadJob -Force -ErrorAction SilentlyContinue } }
     if (-not (Test-Path -LiteralPath $installer)) { Fail 'Total Commander installer download did not produce a file.' }
+
     $signature=Get-AuthenticodeSignature -FilePath $installer
     if ($signature.Status -ne 'Valid') { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue; Fail "Downloaded Total Commander installer has invalid Authenticode signature: $($signature.Status)." }
     $signer=[string]$signature.SignerCertificate.Subject
     if ($signer -notmatch '(?i)Ghisler Software GmbH') { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue; Fail "Downloaded Total Commander installer is not signed by Ghisler Software GmbH. Signer: $signer" }
     Log "[TC] Installer signature valid: $signer"
-    Log '[TC] Starting Total Commander upgrade installer. Existing Total Commander configuration is preserved by the official installer.'
-    $process=Start-Process -FilePath $installer -Wait -PassThru
+    Log "[TC] Starting official Total Commander installer with forced existing target: $targetPath"
+    Log '[TC] The /F target parameter is used so the update cannot silently switch to a different installation directory.'
+    $arguments='/F "' + $targetPath + '"'
+    $process=Start-Process -FilePath $installer -ArgumentList $arguments -PassThru
+    Wait-ProcessWithSpinner $process 'Waiting for Total Commander installer to finish'
     $rc=$process.ExitCode
     Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
     if ($rc -ne 0) { Fail "Total Commander installer returned exit code $rc." }
-    $refreshed=Find-TC
-    $after=Get-TcInstalledVersion $refreshed
-    if (-not $after) { Fail 'Total Commander upgrade completed, but the installed version could not be verified.' }
-    if ($after -lt $latest.Version) { Fail "Total Commander upgrade completed, but version $after is still older than $($latest.VersionText)." }
-    Log "[TC] Total Commander upgraded successfully to $after."
+
+    $targetExe=Get-TcExeInDirectory $targetPath
+    if (-not $targetExe) { Fail "Total Commander upgrade completed, but no TOTALCMD64.EXE/TOTALCMD.EXE exists in the original installation directory '$targetPath'." }
+    $targetTc=[pscustomobject]@{Path=$targetPath;Ini=$tc.Ini;Exe=$targetExe}
+    $after=Get-TcInstalledVersion $targetTc
+    if (-not $after) { Fail "Total Commander upgrade completed, but the version in the original installation directory '$targetPath' could not be verified." }
+    if ($after -lt $latest.Version) { Fail "Total Commander upgrade completed, but the original installation directory still contains version $after instead of $($latest.VersionText)." }
+    $env:COMMANDER_PATH=$targetPath
+    Log "[TC] Total Commander upgraded successfully in the original directory to $after: $targetPath"
     if ($wasRunning) { $script:TcWasRunningBeforeInstall=$true }
-    return $refreshed
+    return $targetTc
 }
 
 Add-Type @'
@@ -123,6 +208,44 @@ function Stop-TC([object]$tc) {
     if (Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) { Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue | Stop-Process -Force }
     if (Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) { Fail 'Total Commander could not be stopped for configuration repair.' }
     return $true
+}
+
+function Get-TcFontSections([string]$ini) {
+    $sections=[Collections.Generic.List[string]]::new()
+    if (Test-Path -LiteralPath $ini) {
+        foreach ($line in Get-Content -LiteralPath $ini -ErrorAction SilentlyContinue) {
+            if ($line -match '^\[(AllResolutions|\d+x\d+\s+\(\d+x\d+\))\]\s*$') {
+                $section=$matches[1]
+                if (-not $sections.Contains($section)) { [void]$sections.Add($section) }
+            }
+        }
+    }
+    $resolutionSpecific=Read-Ini $ini 'Configuration' 'ResolutionSpecific' '1'
+    if ($resolutionSpecific -eq '0') {
+        if (-not $sections.Contains('AllResolutions')) { [void]$sections.Add('AllResolutions') }
+        return @('AllResolutions')
+    }
+    if ($sections.Count -eq 0) { [void]$sections.Add('AllResolutions') }
+    return @($sections)
+}
+
+function Ensure-TcFontProfile([string]$ini) {
+    Write-Ini $ini 'Configuration' 'AutoSizeDialogs' '1'
+    $sections=Get-TcFontSections $ini
+    foreach ($section in $sections) {
+        Write-Ini $ini $section 'FontName' 'Microsoft Sans Serif'
+        Write-Ini $ini $section 'FontSize' '8'
+        Write-Ini $ini $section 'FontWeight' '700'
+        Write-Ini $ini $section 'FontCharset' '238'
+        Write-Ini $ini $section 'FontNameWindow' 'Microsoft Sans Serif'
+        Write-Ini $ini $section 'FontSizeWindow' '8'
+        Write-Ini $ini $section 'FontWeightWindow' '700'
+        Write-Ini $ini $section 'FontCharsetWindow' '238'
+        Write-Ini $ini $section 'FontNameDialog' 'Microsoft Sans Serif'
+        Write-Ini $ini $section 'FontSizeDialog' '8'
+        Write-Ini $ini $section 'FontCharsetDialog' '238'
+    }
+    Log "[TC] Font profile enforced in $($sections.Count) active/existing resolution section(s): Microsoft Sans Serif 8 bold for file lists/main window, Microsoft Sans Serif 8 regular for dialogs, charset 238, automatic dialog sizing ON."
 }
 
 function Ensure-WdxRegistration([string]$ini,[string]$wdx) {
@@ -255,6 +378,7 @@ try {
     Copy-Item -LiteralPath $ini -Destination $backup -Force
     Log "[TC] Backup:        $backup"
 
+    Ensure-TcFontProfile $ini
     [void](Ensure-WdxRegistration $ini $wdx)
     [void](Ensure-CustomColumns $ini)
     [void](Install-ColorRules $ini $settings)
