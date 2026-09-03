@@ -5,11 +5,29 @@
 #include <algorithm>
 #include <array>
 #include <cwctype>
+#include <iomanip>
 #include <sstream>
 #include <vector>
 
 namespace fhm {
 namespace {
+
+constexpr ULONG kFileFsObjectIdInformation = 8;
+
+struct IoStatusBlockCompat {
+    union {
+        LONG status;
+        void* pointer;
+    };
+    ULONG_PTR information;
+};
+
+struct FsObjectIdInformationCompat {
+    unsigned char objectId[16];
+    unsigned char extendedInfo[48];
+};
+
+using NtQueryVolumeInformationFileFn = LONG(NTAPI*)(HANDLE, IoStatusBlockCompat*, void*, ULONG, ULONG);
 
 std::wstring TrimTrailingSeparators(std::wstring value) {
     while (value.size() > 3 && (value.back() == L'\\' || value.back() == L'/')) value.pop_back();
@@ -25,32 +43,20 @@ std::wstring NormalizeForKey(std::wstring value) {
     return value;
 }
 
-std::optional<FolderIdentity> ResolveUncIdentity(const std::wstring& originalPath) {
-    std::wstring path = originalPath;
-    std::replace(path.begin(), path.end(), L'/', L'\\');
-    if (!path.starts_with(L"\\\\")) return std::nullopt;
-    const size_t serverEnd = path.find(L'\\', 2);
-    if (serverEnd == std::wstring::npos) return std::nullopt;
-    const size_t shareEnd = path.find(L'\\', serverEnd + 1);
-    const std::wstring shareRoot = shareEnd == std::wstring::npos ? path : path.substr(0, shareEnd);
-    const std::wstring relative = shareEnd == std::wstring::npos ? L"" : path.substr(shareEnd + 1);
-    FolderIdentity result;
-    result.volumeId = L"UNC:" + NormalizeForKey(shareRoot);
-    result.relativePath = NormalizeForKey(relative);
-    result.mountPoint = shareRoot;
-    result.storageKey = result.volumeId + L"|" + result.relativePath;
-    return result;
-}
-
-std::wstring EncodeBytes(const std::array<unsigned char, 16>& bytes) {
+std::wstring EncodeBytes(const unsigned char* bytes, size_t count) {
     static constexpr wchar_t hex[] = L"0123456789abcdef";
     std::wstring out;
-    out.reserve(32);
-    for (unsigned char value : bytes) {
+    out.reserve(count * 2);
+    for (size_t i = 0; i < count; ++i) {
+        const unsigned char value = bytes[i];
         out.push_back(hex[(value >> 4) & 0x0f]);
         out.push_back(hex[value & 0x0f]);
     }
     return out;
+}
+
+std::wstring EncodeBytes(const std::array<unsigned char, 16>& bytes) {
+    return EncodeBytes(bytes.data(), bytes.size());
 }
 
 std::optional<std::array<unsigned char, 16>> DecodeObjectId(const std::wstring& text) {
@@ -71,6 +77,126 @@ std::optional<std::array<unsigned char, 16>> DecodeObjectId(const std::wstring& 
     return bytes;
 }
 
+std::wstring GetFinalPath(HANDLE handle) {
+    std::vector<wchar_t> buffer(32768, L'\0');
+    const DWORD length = GetFinalPathNameByHandleW(handle, buffer.data(), static_cast<DWORD>(buffer.size()),
+                                                   FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (!length || length >= buffer.size()) return {};
+    std::wstring path(buffer.data(), length);
+    if (path.rfind(L"\\\\?\\UNC\\", 0) == 0) return L"\\\\" + path.substr(8);
+    if (path.rfind(L"\\\\?\\", 0) == 0) return path.substr(4);
+    return path;
+}
+
+bool IsRemoteHandle(HANDLE handle) {
+    FILE_REMOTE_PROTOCOL_INFO remote{};
+    return GetFileInformationByHandleEx(handle, FileRemoteProtocolInfo, &remote, sizeof(remote)) != FALSE;
+}
+
+std::optional<std::array<unsigned char, 16>> QueryVolumeObjectId(HANDLE handle) {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto query = ntdll ? reinterpret_cast<NtQueryVolumeInformationFileFn>(
+                                   GetProcAddress(ntdll, "NtQueryVolumeInformationFile"))
+                             : nullptr;
+    if (!query) return std::nullopt;
+
+    IoStatusBlockCompat iosb{};
+    FsObjectIdInformationCompat info{};
+    const LONG status = query(handle, &iosb, &info, sizeof(info), kFileFsObjectIdInformation);
+    if (status < 0) return std::nullopt;
+
+    std::array<unsigned char, 16> id{};
+    bool any = false;
+    for (size_t i = 0; i < id.size(); ++i) {
+        id[i] = info.objectId[i];
+        any = any || id[i] != 0;
+    }
+    return any ? std::optional{id} : std::nullopt;
+}
+
+std::optional<std::uint64_t> QueryLegacyFileIndex(const std::wstring& path) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) return std::nullopt;
+    const DWORD flags = (attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL;
+    HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, flags, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
+    BY_HANDLE_FILE_INFORMATION info{};
+    const BOOL ok = GetFileInformationByHandle(handle, &info);
+    CloseHandle(handle);
+    if (!ok) return std::nullopt;
+    const std::uint64_t index = (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32) |
+                                static_cast<std::uint64_t>(info.nFileIndexLow);
+    return index ? std::optional{index} : std::nullopt;
+}
+
+std::wstring EncodeUint64(std::uint64_t value) {
+    std::wostringstream out;
+    out << std::hex << std::setw(16) << std::setfill(L'0') << value;
+    return out.str();
+}
+
+bool SplitUncPath(const std::wstring& originalPath,
+                  std::wstring& shareRoot,
+                  std::wstring& shareName,
+                  std::wstring& relative) {
+    std::wstring path = originalPath;
+    std::replace(path.begin(), path.end(), L'/', L'\\');
+    if (!path.starts_with(L"\\\\")) return false;
+    const size_t serverEnd = path.find(L'\\', 2);
+    if (serverEnd == std::wstring::npos) return false;
+    const size_t shareEnd = path.find(L'\\', serverEnd + 1);
+    shareRoot = shareEnd == std::wstring::npos ? path : path.substr(0, shareEnd);
+    shareName = shareEnd == std::wstring::npos ? path.substr(serverEnd + 1)
+                                                : path.substr(serverEnd + 1, shareEnd - serverEnd - 1);
+    relative = shareEnd == std::wstring::npos ? L"" : path.substr(shareEnd + 1);
+    return !shareName.empty();
+}
+
+std::optional<FolderIdentity> ResolveUncIdentity(const std::wstring& originalPath) {
+    std::wstring shareRoot;
+    std::wstring shareName;
+    std::wstring relative;
+    if (!SplitUncPath(originalPath, shareRoot, shareName, relative)) return std::nullopt;
+    FolderIdentity result;
+    result.volumeId = L"UNC:" + NormalizeForKey(shareRoot);
+    result.relativePath = NormalizeForKey(relative);
+    result.mountPoint = shareRoot;
+    result.storageKey = result.volumeId + L"|" + result.relativePath;
+    return result;
+}
+
+std::optional<FolderIdentity> ResolveRemoteIdentity(HANDLE handle) {
+    const std::wstring finalPath = GetFinalPath(handle);
+    if (finalPath.empty()) return std::nullopt;
+
+    std::wstring shareRoot;
+    std::wstring shareName;
+    std::wstring relative;
+    if (!SplitUncPath(finalPath, shareRoot, shareName, relative)) return std::nullopt;
+
+    const auto volumeObjectId = QueryVolumeObjectId(handle);
+    if (!volumeObjectId) return ResolveUncIdentity(finalPath);
+
+    // The volume Object ID identifies the underlying SMB filesystem independently
+    // of drive letter, IP address and server name. Add the exported root directory
+    // file index when available so two different shares on the same volume cannot
+    // collide merely because they contain the same relative path.
+    std::wstring namespaceId;
+    if (const auto rootIndex = QueryLegacyFileIndex(shareRoot))
+        namespaceId = L":root:" + EncodeUint64(*rootIndex);
+    else
+        namespaceId = L":share:" + NormalizeForKey(shareName);
+
+    FolderIdentity result;
+    result.volumeId = L"SMB:" + EncodeBytes(volumeObjectId->data(), volumeObjectId->size()) + namespaceId;
+    result.relativePath = NormalizeForKey(relative);
+    result.mountPoint = shareRoot;
+    result.storageKey = result.volumeId + L"|" + result.relativePath;
+    return result;
+}
+
 std::wstring VolumeHandlePath(const FolderIdentity& identity) {
     if (identity.mountPoint.size() >= 2 && identity.mountPoint[1] == L':')
         return L"\\\\.\\" + identity.mountPoint.substr(0, 2);
@@ -88,7 +214,26 @@ bool IsDirectory(const std::wstring& path) {
 
 std::optional<FolderIdentity> ResolveFolderIdentity(const std::wstring& originalPath) {
     if (originalPath.empty()) return std::nullopt;
+
+    const DWORD attributes = GetFileAttributesW(originalPath.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        const DWORD flags = (attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL;
+        HANDLE handle = CreateFileW(originalPath.c_str(), FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, flags, nullptr);
+        if (handle != INVALID_HANDLE_VALUE) {
+            if (IsRemoteHandle(handle)) {
+                const auto remote = ResolveRemoteIdentity(handle);
+                CloseHandle(handle);
+                if (remote) return remote;
+            } else {
+                CloseHandle(handle);
+            }
+        }
+    }
+
     if (originalPath.starts_with(L"\\\\")) return ResolveUncIdentity(originalPath);
+
     std::vector<wchar_t> volumePath(MAX_PATH + 1, L'\0');
     if (!GetVolumePathNameW(originalPath.c_str(), volumePath.data(), static_cast<DWORD>(volumePath.size()))) return std::nullopt;
     std::vector<wchar_t> volumeName(MAX_PATH + 1, L'\0');
@@ -154,7 +299,8 @@ std::optional<std::wstring> ResolveFilesystemObjectId(const std::wstring& path, 
 std::optional<std::wstring> ResolveFilesystemPathByObjectId(const FolderIdentity& volumeIdentity,
                                                             const std::wstring& objectId,
                                                             bool isDirectory) {
-    if (volumeIdentity.volumeId.starts_with(L"unc:")) return std::nullopt;
+    if (volumeIdentity.volumeId.starts_with(L"unc:") || volumeIdentity.volumeId.starts_with(L"smb:"))
+        return std::nullopt;
     const auto bytes = DecodeObjectId(objectId);
     if (!bytes) return std::nullopt;
     const std::wstring volumePath = VolumeHandlePath(volumeIdentity);
