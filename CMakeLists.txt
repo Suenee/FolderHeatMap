@@ -94,3 +94,7 @@ add_executable(FolderHeatMapHeatReferenceTest tests/HeatModelReferenceTest.cpp s
 target_include_directories(FolderHeatMapHeatReferenceTest PRIVATE tests src)
 target_compile_features(FolderHeatMapHeatReferenceTest PRIVATE cxx_std_20)
 add_dependencies(FolderHeatMap FolderHeatMapHeatReferenceTest)
+
+add_executable(FolderHeatMapNasIdTest tools/FolderHeatMapNasIdTest.cpp)
+target_compile_features(FolderHeatMapNasIdTest PRIVATE cxx_std_20)
+target_compile_definitions(FolderHeatMapNasIdTest PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
