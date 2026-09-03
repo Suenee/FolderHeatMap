@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.51'
-$Revision = '1.51-tc-detection-dirty-tree-repair'
+$Version = '1.52'
+$Revision = '1.52-version-status'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -195,7 +195,7 @@ try {
 
     $FailPhase='BUILD'; Info '[3/7] Preparing build...'; $build=Join-Path $Repo 'build'; if (Test-Path $build) { Remove-Item $build -Recurse -Force }
     Info '[4/7] Configuring x64 Release build...'; Run-Native -Phase 'CMAKE-CONFIGURE' -Exe $cmake -ArgumentList @('-S','.','-B','build','-A','x64')|Out-Null
-    Info '[5/7] Building FolderHeatMap 1.51 and tools...'; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset')|Out-Null
+    Info "[5/7] Building FolderHeatMap $Version and tools..."; Run-Native -Phase 'BUILD' -Exe $cmake -ArgumentList @('--build','build','--config','Release','--target','FolderHeatMap','FolderHeatMapEngine','FolderHeatMapConfig','FolderHeatMapReset')|Out-Null
     $artifacts=@('FolderHeatMap.wdx64','FolderHeatMapEngine.exe','FolderHeatMapConfig.exe','FolderHeatMapReset.exe'); foreach ($f in $artifacts) { if (-not (Test-Path (Join-Path "$build\Release" $f))) { Fail 'BUILD' "$f is missing after build." } }
 
     $FailPhase='DIST'; Info '[6/7] Preparing isolated package staging...'; $package=Join-Path $build 'package'; if (Test-Path $package) { Remove-Item $package -Recurse -Force }; New-Item -ItemType Directory -Path $package -Force|Out-Null
@@ -234,6 +234,14 @@ try {
     if ($tcWasRunning -and $tc.Exe) { Info '[TC] Restarting Total Commander once after successful deployment and integration repair.'; Start-Process -FilePath $tc.Exe|Out-Null }
 
     Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green; Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $LogsDir\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
-    if ($HadWarning) { Write-Line 'STATUS: WARNING - phase=COMPLETE' Yellow } else { Write-Line 'STATUS: SUCCESS - phase=COMPLETE' Green }; exit 0
+    if ($HadWarning) { Write-Line 'STATUS: WARNING - phase=COMPLETE' Yellow } else { Write-Line 'STATUS: SUCCESS - phase=COMPLETE' Green }
+    Write-Line ("VERSION: $Version") Green
+    exit 0
 }
-catch { if ($FailPhase -eq 'UNKNOWN') { $FailPhase='UNEXPECTED' }; if (-not ($_.Exception -is [InvalidOperationException])) { Write-Line ('ERROR: '+$_.Exception.Message) Red }; Write-Line ("STATUS: FAILED - phase=$FailPhase") Red; exit 1 }
+catch {
+    if ($FailPhase -eq 'UNKNOWN') { $FailPhase='UNEXPECTED' }
+    if (-not ($_.Exception -is [InvalidOperationException])) { Write-Line ('ERROR: '+$_.Exception.Message) Red }
+    Write-Line ("STATUS: FAILED - phase=$FailPhase") Red
+    Write-Line ("VERSION: $Version") Red
+    exit 1
+}
