@@ -9,7 +9,11 @@
 namespace {
 constexpr int kFieldHeat = 0;
 constexpr int kFieldVisits = 1;
-constexpr int kFieldWrites = 2;
+constexpr int kFieldLastVisit = 2;
+constexpr int kFieldHeatLevel = 3;
+constexpr int kFieldColorStep = 4;
+constexpr int kFieldWrites = 5;
+constexpr int kFieldLastWrite = 6;
 
 HMODULE g_module = nullptr;
 HANDLE g_mapping = nullptr;
@@ -93,26 +97,83 @@ void LaunchEngine(const ContentDefaultParamStruct* dps) {
     }
 }
 
+int StableZeroValue(int fieldIndex, void* fieldValue) {
+    switch (fieldIndex) {
+        case kFieldHeat:
+            *static_cast<double*>(fieldValue) = 0.0;
+            return ft_numeric_floating;
+        case kFieldVisits:
+        case kFieldWrites:
+            *static_cast<__int64*>(fieldValue) = 0;
+            return ft_numeric_64;
+        case kFieldHeatLevel:
+        case kFieldColorStep:
+            *static_cast<int*>(fieldValue) = 0;
+            return ft_numeric_32;
+        case kFieldLastVisit:
+        case kFieldLastWrite:
+            return ft_fieldempty;
+        default:
+            return ft_nosuchfield;
+    }
+}
+
+int ValueFromEntry(const fhm::runtime::CacheEntry& entry, int fieldIndex, void* fieldValue) {
+    switch (fieldIndex) {
+        case kFieldHeat:
+            *static_cast<double*>(fieldValue) = entry.heat;
+            return ft_numeric_floating;
+        case kFieldVisits:
+            *static_cast<__int64*>(fieldValue) = entry.visits;
+            return ft_numeric_64;
+        case kFieldLastVisit:
+            if ((entry.flags & fhm::runtime::kFlagLastVisit) == 0) return ft_fieldempty;
+            *static_cast<FILETIME*>(fieldValue) = entry.lastVisit;
+            return ft_datetime;
+        case kFieldHeatLevel:
+            *static_cast<int*>(fieldValue) = entry.heatLevel;
+            return ft_numeric_32;
+        case kFieldColorStep:
+            *static_cast<int*>(fieldValue) = entry.colorStep;
+            return ft_numeric_32;
+        case kFieldWrites:
+            *static_cast<__int64*>(fieldValue) = entry.writes;
+            return ft_numeric_64;
+        case kFieldLastWrite:
+            if ((entry.flags & fhm::runtime::kFlagLastWrite) == 0) return ft_fieldempty;
+            *static_cast<FILETIME*>(fieldValue) = entry.lastWrite;
+            return ft_datetime;
+        default:
+            return ft_nosuchfield;
+    }
+}
+
 int ReadRamValue(const wchar_t* fileName, int fieldIndex, void* fieldValue) {
-    if (fieldIndex == kFieldHeat) *static_cast<double*>(fieldValue) = 0.0;
-    else if (fieldIndex == kFieldVisits || fieldIndex == kFieldWrites) *static_cast<__int64*>(fieldValue) = 0;
-    else return ft_nosuchfield;
-    const int type = fieldIndex == kFieldHeat ? ft_numeric_floating : ft_numeric_64;
-    if (!g_shared || g_shared->magic != fhm::runtime::kMagic || g_shared->version != fhm::runtime::kVersion) return type;
+    if (!g_shared || g_shared->magic != fhm::runtime::kMagic || g_shared->version != fhm::runtime::kVersion)
+        return StableZeroValue(fieldIndex, fieldValue);
+
     std::uint32_t pathLength = 0;
     const std::uint64_t pathHash = fhm::runtime::HashNormalizedPath(fileName, pathLength);
-    if (!pathHash) return type;
-    const LONG active = InterlockedCompareExchange(&g_shared->activeBuffer, 0, 0) & 1;
-    auto& buffer = g_shared->buffers[active];
-    InterlockedIncrement(&buffer.readers); MemoryBarrier();
-    const auto* entry = fhm::runtime::FindEntry(buffer, pathHash, pathLength);
-    if (entry) {
-        if (fieldIndex == kFieldHeat) *static_cast<double*>(fieldValue) = entry->heat;
-        else if (fieldIndex == kFieldVisits) *static_cast<__int64*>(fieldValue) = entry->visits;
-        else *static_cast<__int64*>(fieldValue) = entry->writes;
+    if (!pathHash) return StableZeroValue(fieldIndex, fieldValue);
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const LONG active = InterlockedCompareExchange(&g_shared->activeBuffer, 0, 0) & 1;
+        auto& buffer = g_shared->buffers[active];
+        InterlockedIncrement(&buffer.readers);
+        MemoryBarrier();
+        if ((InterlockedCompareExchange(&g_shared->activeBuffer, 0, 0) & 1) != active) {
+            InterlockedDecrement(&buffer.readers);
+            continue;
+        }
+
+        const auto* entry = fhm::runtime::FindEntry(buffer, pathHash, pathLength);
+        const int result = entry ? ValueFromEntry(*entry, fieldIndex, fieldValue)
+                                 : StableZeroValue(fieldIndex, fieldValue);
+        InterlockedDecrement(&buffer.readers);
+        return result;
     }
-    InterlockedDecrement(&buffer.readers);
-    return type;
+
+    return StableZeroValue(fieldIndex, fieldValue);
 }
 
 void PublishStateEvent(int state, const wchar_t* path) {
@@ -151,16 +212,24 @@ extern "C" __declspec(dllexport) void __stdcall ContentSetDefaultParams(ContentD
         InterlockedExchange(&g_shared->shutdownRequested, 0);
         g_clientRegistered = true;
     }
-    // Backup launcher only: normal 1.22 lifetime comes from start_engine.ps1.
+    // Total Commander reload is also a settings-reload boundary for the independently running engine.
+    if (g_shared) InterlockedIncrement(&g_shared->settingsSeq);
+    // Backup launcher only: normal 1.22+ lifetime comes from start_engine.ps1.
     LaunchEngine(dps);
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetSupportedField(int fieldIndex, char* fieldName, char* units, int maxlen) {
     if (units && maxlen > 0) units[0] = '\0';
-    if (fieldIndex == kFieldHeat) { CopyAnsi(fieldName, maxlen, "Heat"); return ft_numeric_floating; }
-    if (fieldIndex == kFieldVisits) { CopyAnsi(fieldName, maxlen, "Visits"); return ft_numeric_64; }
-    if (fieldIndex == kFieldWrites) { CopyAnsi(fieldName, maxlen, "Writes"); return ft_numeric_64; }
-    return ft_nomorefields;
+    switch (fieldIndex) {
+        case kFieldHeat: CopyAnsi(fieldName, maxlen, "Heat"); return ft_numeric_floating;
+        case kFieldVisits: CopyAnsi(fieldName, maxlen, "Visits"); return ft_numeric_64;
+        case kFieldLastVisit: CopyAnsi(fieldName, maxlen, "Last Visit"); return ft_datetime;
+        case kFieldHeatLevel: CopyAnsi(fieldName, maxlen, "Heat Level"); return ft_numeric_32;
+        case kFieldColorStep: CopyAnsi(fieldName, maxlen, "Heat Color Step"); return ft_numeric_32;
+        case kFieldWrites: CopyAnsi(fieldName, maxlen, "Writes"); return ft_numeric_64;
+        case kFieldLastWrite: CopyAnsi(fieldName, maxlen, "Last Write"); return ft_datetime;
+        default: return ft_nomorefields;
+    }
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetValueW(WCHAR* fileName, int fieldIndex, int, void* fieldValue, int, int) {
@@ -175,11 +244,11 @@ extern "C" __declspec(dllexport) int __stdcall ContentGetValue(char* fileName, i
 }
 
 extern "C" __declspec(dllexport) int __stdcall ContentGetDefaultSortOrder(int fieldIndex) {
-    return (fieldIndex == kFieldHeat || fieldIndex == kFieldVisits || fieldIndex == kFieldWrites) ? -1 : 1;
+    return (fieldIndex >= kFieldHeat && fieldIndex <= kFieldLastWrite) ? -1 : 1;
 }
 
 extern "C" __declspec(dllexport) void __stdcall ContentSendStateInformationW(int state, WCHAR* path) {
-    // Diagnostic/reference channel only. It never creates a visit in 1.22.
+    // Diagnostic/reference channel only. It never creates a visit in 1.22+.
     PublishStateEvent(state, path);
 }
 
