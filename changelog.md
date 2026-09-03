@@ -2,6 +2,7 @@
 
 ## Unreleased - Heat model object refactor
 
+- Fixed the 1.52 runtime-diagnostics build-order regression: `InjectRuntimeSettingsDiagnostics.cmake` no longer rewrites the engine version banner before `InjectDeletionDiagnostics.cmake` consumes its guarded `FolderHeatMap 1.11 engine starting` anchor. Runtime path diagnostics and live logger reinitialization remain enabled, while the existing lifecycle patch pipeline keeps its established ordering.
 - Updated `install.cmd` / `install.ps1` to version 1.07 and fixed the PowerShell parser failure `InvalidVariableReferenceWithDrive` introduced by the Total Commander update-status log line. The ambiguous `$after:` interpolation is now written as `${after}:`.
 - Added a mandatory parser preflight in `install.cmd` for both `install.ps1` and `repair_custom_columns.ps1`. Parser errors are now reported with the exact script, line, column and message before either helper can run, preventing a syntax defect from reaching the DEPLOY phase as an opaque child-process failure.
 - Updated the installer launcher to 1.06 and added an idempotent Total Commander custom-column repair pass. Every `install.cmd` / `upgrade.cmd` run now verifies that exactly one `FolderHeatMap` custom-column view remains, removes duplicate FolderHeatMap entries, compacts the surviving custom-column definitions, and preserves unrelated user-defined custom-column views.
