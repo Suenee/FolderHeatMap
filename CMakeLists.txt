@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(FolderHeatMap VERSION 1.52 LANGUAGES C CXX)
+project(FolderHeatMap VERSION 1.53 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "FolderHeatMap is a Windows Total Commander plugin.")
@@ -94,8 +94,3 @@ add_executable(FolderHeatMapHeatReferenceTest tests/HeatModelReferenceTest.cpp s
 target_include_directories(FolderHeatMapHeatReferenceTest PRIVATE tests src)
 target_compile_features(FolderHeatMapHeatReferenceTest PRIVATE cxx_std_20)
 add_dependencies(FolderHeatMap FolderHeatMapHeatReferenceTest)
-
-add_executable(FolderHeatMapNasIdTest tools/FolderHeatMapNasIdTest.cpp)
-target_compile_features(FolderHeatMapNasIdTest PRIVATE cxx_std_20)
-target_compile_definitions(FolderHeatMapNasIdTest PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-add_dependencies(FolderHeatMap FolderHeatMapNasIdTest)
