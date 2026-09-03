@@ -55,6 +55,15 @@
 - Kept the shared fixture source independent from the current model so the same dataset can later compare additional heat models without changing activity inputs.
 - Runtime heat semantics are intentionally unchanged; FolderHeatMap remains version 1.51 until a user-visible model-selection feature is introduced.
 
+## 1.52 - 03.09.2026
+
+- Fixed the deployed WDX display client exposing only `Heat`, `Visits` and `Writes` while the installer and Total Commander integration referenced `Last Visit`, `Last Write`, `Heat Level` and `Heat Color Step` as well. The active WDX now exposes and reads the complete seven-field runtime cache surface again.
+- Restored `Last Visit` and `Last Write` custom-column values and the hidden `Heat Level` / `Heat Color Step` fields used by Total Commander heat-color and folder-icon rules.
+- A Total Commander WDX reload now increments the shared settings sequence so the independently running engine treats the reload as a settings boundary instead of continuing indefinitely with startup-time settings.
+- Added a guarded build-stage runtime settings patch. When settings are reloaded, the engine now reinitializes the file logger too, so changing Logging mode to `single` or `all` takes effect without requiring the persistent engine process to be killed manually.
+- Runtime logs now record the resolved settings and database paths after startup/reload, making mapped-drive and active-INI path problems directly diagnosable from `FolderHeatMap.log`.
+- Runtime/project version is now 1.52. Heat mathematics and lifecycle semantics are unchanged.
+
 ## 1.51 - 30.08.2026
 
 - Fixed the regression where FolderHeatMap text colors still followed Heat, but Total Commander folder icons remained at the normal yellow icon instead of using the heat-colored icon map.
