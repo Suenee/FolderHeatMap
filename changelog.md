@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.53 - 04.09.2026
+
+- Added stable SMB/NAS path identity for mapped drives and UNC paths. Remote paths are opened once, resolved through `GetFinalPathNameByHandleW`, and identified by the native `FileFsObjectIdInformation` volume Object ID validated on the target NAS devices.
+- SMB identity no longer depends on a mapped drive letter, IP address or server name. The exported share root is additionally distinguished by its root directory file index when available, with the normalized share name used only as a non-server fallback namespace discriminator.
+- Fixed the mapped-network-drive failure where `ResolveFolderIdentity()` fell through the local `GetVolumeNameForVolumeMountPointW` path, causing `BuildSnapshot()` to discard every NAS item and log `FAST prepared hidden batch items=0`.
+- Network paths now participate in normal FolderHeatMap heat, Visits/Last Visit and file-write activity through the same database and cache pipeline as local paths.
+- Destructive MOVE/DELETE lifecycle reconciliation remains deliberately disabled for SMB identities until a network object-ID/open-by-ID contract is proven safe end-to-end. This prevents an unsupported SMB `FILE_ID_INFO` implementation from being misinterpreted as deletion evidence.
+- Removed the temporary `test-nas-id.cmd` / `FolderHeatMapNasIdTest.exe` diagnostic and its CMake target after the NAS volume-identity behavior was established on both tested SMB servers.
+- Project/runtime release version is now 1.53. Heat mathematics are unchanged.
+
 ## Unreleased - Heat model object refactor
 
 - Added the read-only `test-nas-id.cmd` / `FolderHeatMapNasIdTest.exe` diagnostic for comparing mapped-drive and UNC access to the same NAS object. It reports `FileFsObjectIdInformation` volume Object ID, `FILE_ID_INFO` volume serial and 128-bit File ID, `FileFsVolumeInformation` serial/label, remote protocol metadata and the final handle path, then classifies whether both paths expose the same volume and filesystem object. The diagnostic is built automatically whenever the normal FolderHeatMap target is built and does not modify filesystem metadata.
