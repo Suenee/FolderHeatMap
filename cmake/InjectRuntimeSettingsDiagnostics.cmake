@@ -18,7 +18,7 @@ fhm_replace_once([=[    ReloadSettings();
     g_log.Write("ENGINE", "FolderHeatMap 1.11 engine starting");]=]
 [=[    ReloadSettings();
     g_log.Initialize(g_settingsPath);
-    g_log.Write("ENGINE", "FolderHeatMap 1.52 engine starting");
+    g_log.Write("ENGINE", "FolderHeatMap 1.11 engine starting");
     g_log.WriteWide("ENGINE", L"settings=" + g_settingsPath);
     g_log.WriteWide("ENGINE", L"database=" + databasePath);]=]
 "startup logging and resolved runtime paths")
