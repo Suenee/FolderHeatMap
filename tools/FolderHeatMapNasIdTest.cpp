@@ -3,10 +3,10 @@
 #include <windows.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -125,7 +125,7 @@ IdentityResult QueryIdentity(const std::wstring& path) {
     IdentityResult result;
     result.inputPath = path;
 
-    DWORD attributes = GetFileAttributesW(path.c_str());
+    const DWORD attributes = GetFileAttributesW(path.c_str());
     const bool directory = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     const DWORD flags = directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL;
 
@@ -291,6 +291,7 @@ int wmain(int argc, wchar_t** argv) {
         const IdentityResult b = QueryIdentity(argv[2]);
         PrintOne(L"PATH B", b);
         PrintComparison(a, b);
+        return (a.opened && b.opened) ? 0 : 1;
     }
 
     return a.opened ? 0 : 1;
