@@ -57,9 +57,15 @@ std::wstring VolumeHandlePath(const FolderIdentity& identity) {
     return out;
 }
 
+bool IsNetworkVolume(const FolderIdentity& identity) {
+    const std::wstring volume = Lower(identity.volumeId);
+    return volume.starts_with(L"unc:") || volume.starts_with(L"smb:");
+}
+
 std::optional<std::wstring> ResolveCurrentPathByObjectId(const FolderIdentity& volumeIdentity,
                                                          const std::wstring& objectId,
                                                          bool isDirectory) {
+    if (IsNetworkVolume(volumeIdentity)) return std::nullopt;
     const auto bytes = DecodeObjectId(objectId);
     if (!bytes) return std::nullopt;
     const std::wstring volumePath = VolumeHandlePath(volumeIdentity);
@@ -97,7 +103,10 @@ bool IsRecycleBinPath(const FolderIdentity& identity) {
 LifecycleResult ReconcileDirectoryLifecycle(Database& database, const std::wstring& directory) {
     LifecycleResult result;
     const auto directoryIdentity = ResolveFolderIdentity(directory);
-    if (!directoryIdentity || directoryIdentity->volumeId.starts_with(L"unc:")) return result;
+    // Network shares now have a stable SMB volume/namespace identity for heat,
+    // visits and writes, but lifecycle deletion/move decisions remain disabled
+    // until a network object-ID/open-by-ID contract is proven safe end-to-end.
+    if (!directoryIdentity || IsNetworkVolume(*directoryIdentity)) return result;
 
     if (directoryIdentity->relativePath.empty())
         database.DeleteTrackedIdentityOnlyAtPath(directoryIdentity->volumeId, L"");
