@@ -6,7 +6,9 @@
 #include <array>
 #include <cwctype>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 namespace fhm {
@@ -28,6 +30,14 @@ struct FsObjectIdInformationCompat {
 };
 
 using NtQueryVolumeInformationFileFn = LONG(NTAPI*)(HANDLE, IoStatusBlockCompat*, void*, ULONG, ULONG);
+
+struct RemoteRootIdentity {
+    std::wstring volumeId;
+    std::wstring shareRoot;
+};
+
+std::mutex g_remoteRootCacheMutex;
+std::unordered_map<std::wstring, RemoteRootIdentity> g_remoteRootCache;
 
 std::wstring TrimTrailingSeparators(std::wstring value) {
     while (value.size() > 3 && (value.back() == L'\\' || value.back() == L'/')) value.pop_back();
@@ -88,11 +98,6 @@ std::wstring GetFinalPath(HANDLE handle) {
     return path;
 }
 
-bool IsRemoteHandle(HANDLE handle) {
-    FILE_REMOTE_PROTOCOL_INFO remote{};
-    return GetFileInformationByHandleEx(handle, FileRemoteProtocolInfo, &remote, sizeof(remote)) != FALSE;
-}
-
 std::optional<std::array<unsigned char, 16>> QueryVolumeObjectId(HANDLE handle) {
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     const auto query = ntdll ? reinterpret_cast<NtQueryVolumeInformationFileFn>(
@@ -114,18 +119,9 @@ std::optional<std::array<unsigned char, 16>> QueryVolumeObjectId(HANDLE handle) 
     return any ? std::optional{id} : std::nullopt;
 }
 
-std::optional<std::uint64_t> QueryLegacyFileIndex(const std::wstring& path) {
-    const DWORD attributes = GetFileAttributesW(path.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES) return std::nullopt;
-    const DWORD flags = (attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL;
-    HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                nullptr, OPEN_EXISTING, flags, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
+std::optional<std::uint64_t> QueryLegacyFileIndex(HANDLE handle) {
     BY_HANDLE_FILE_INFORMATION info{};
-    const BOOL ok = GetFileInformationByHandle(handle, &info);
-    CloseHandle(handle);
-    if (!ok) return std::nullopt;
+    if (!GetFileInformationByHandle(handle, &info)) return std::nullopt;
     const std::uint64_t index = (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32) |
                                 static_cast<std::uint64_t>(info.nFileIndexLow);
     return index ? std::optional{index} : std::nullopt;
@@ -167,32 +163,91 @@ std::optional<FolderIdentity> ResolveUncIdentity(const std::wstring& originalPat
     return result;
 }
 
-std::optional<FolderIdentity> ResolveRemoteIdentity(HANDLE handle) {
-    const std::wstring finalPath = GetFinalPath(handle);
-    if (finalPath.empty()) return std::nullopt;
+std::optional<RemoteRootIdentity> ResolveRemoteRootUncached(const std::wstring& accessRoot) {
+    HANDLE handle = CreateFileW(accessRoot.c_str(), FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return std::nullopt;
 
+    FILE_REMOTE_PROTOCOL_INFO remote{};
+    if (!GetFileInformationByHandleEx(handle, FileRemoteProtocolInfo, &remote, sizeof(remote))) {
+        CloseHandle(handle);
+        return std::nullopt;
+    }
+
+    const std::wstring finalRoot = GetFinalPath(handle);
     std::wstring shareRoot;
     std::wstring shareName;
-    std::wstring relative;
-    if (!SplitUncPath(finalPath, shareRoot, shareName, relative)) return std::nullopt;
+    std::wstring ignoredRelative;
+    if (finalRoot.empty() || !SplitUncPath(finalRoot, shareRoot, shareName, ignoredRelative)) {
+        CloseHandle(handle);
+        return std::nullopt;
+    }
 
     const auto volumeObjectId = QueryVolumeObjectId(handle);
-    if (!volumeObjectId) return ResolveUncIdentity(finalPath);
+    const auto rootIndex = QueryLegacyFileIndex(handle);
+    CloseHandle(handle);
 
-    // The volume Object ID identifies the underlying SMB filesystem independently
-    // of drive letter, IP address and server name. Add the exported root directory
-    // file index when available so two different shares on the same volume cannot
-    // collide merely because they contain the same relative path.
-    std::wstring namespaceId;
-    if (const auto rootIndex = QueryLegacyFileIndex(shareRoot))
-        namespaceId = L":root:" + EncodeUint64(*rootIndex);
-    else
-        namespaceId = L":share:" + NormalizeForKey(shareName);
+    RemoteRootIdentity result;
+    result.shareRoot = shareRoot;
+    if (volumeObjectId) {
+        // The volume Object ID identifies the underlying SMB filesystem independently
+        // of drive letter, IP address and server name. The exported root directory
+        // file index keeps distinct shares on the same volume from colliding.
+        result.volumeId = L"SMB:" + EncodeBytes(volumeObjectId->data(), volumeObjectId->size());
+        if (rootIndex)
+            result.volumeId += L":root:" + EncodeUint64(*rootIndex);
+        else
+            result.volumeId += L":share:" + NormalizeForKey(shareName);
+    } else {
+        // Compatibility fallback for SMB servers that do not expose a volume Object ID.
+        // It still makes mapped-drive access usable, but remains server/share-name based.
+        result.volumeId = L"UNC:" + NormalizeForKey(shareRoot);
+    }
+    return result;
+}
+
+std::optional<RemoteRootIdentity> ResolveRemoteRoot(const std::wstring& accessRoot) {
+    const std::wstring cacheKey = NormalizeForKey(accessRoot);
+    {
+        std::scoped_lock lock(g_remoteRootCacheMutex);
+        const auto it = g_remoteRootCache.find(cacheKey);
+        if (it != g_remoteRootCache.end()) return it->second;
+    }
+
+    const auto resolved = ResolveRemoteRootUncached(accessRoot);
+    if (!resolved) return std::nullopt;
+    {
+        std::scoped_lock lock(g_remoteRootCacheMutex);
+        g_remoteRootCache[cacheKey] = *resolved;
+    }
+    return resolved;
+}
+
+std::optional<FolderIdentity> ResolveRemoteIdentity(const std::wstring& originalPath) {
+    std::wstring path = originalPath;
+    std::replace(path.begin(), path.end(), L'/', L'\\');
+
+    std::wstring accessRoot;
+    std::wstring relative;
+    if (path.starts_with(L"\\\\")) {
+        std::wstring shareName;
+        if (!SplitUncPath(path, accessRoot, shareName, relative)) return std::nullopt;
+    } else if (path.size() >= 3 && path[1] == L':' && path[2] == L'\\') {
+        accessRoot = path.substr(0, 3);
+        if (GetDriveTypeW(accessRoot.c_str()) != DRIVE_REMOTE) return std::nullopt;
+        relative = path.substr(3);
+    } else {
+        return std::nullopt;
+    }
+
+    const auto root = ResolveRemoteRoot(accessRoot);
+    if (!root) return std::nullopt;
 
     FolderIdentity result;
-    result.volumeId = L"SMB:" + EncodeBytes(volumeObjectId->data(), volumeObjectId->size()) + namespaceId;
+    result.volumeId = root->volumeId;
     result.relativePath = NormalizeForKey(relative);
-    result.mountPoint = shareRoot;
+    result.mountPoint = root->shareRoot;
     result.storageKey = result.volumeId + L"|" + result.relativePath;
     return result;
 }
@@ -215,23 +270,7 @@ bool IsDirectory(const std::wstring& path) {
 std::optional<FolderIdentity> ResolveFolderIdentity(const std::wstring& originalPath) {
     if (originalPath.empty()) return std::nullopt;
 
-    const DWORD attributes = GetFileAttributesW(originalPath.c_str());
-    if (attributes != INVALID_FILE_ATTRIBUTES) {
-        const DWORD flags = (attributes & FILE_ATTRIBUTE_DIRECTORY) ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL;
-        HANDLE handle = CreateFileW(originalPath.c_str(), FILE_READ_ATTRIBUTES,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                    nullptr, OPEN_EXISTING, flags, nullptr);
-        if (handle != INVALID_HANDLE_VALUE) {
-            if (IsRemoteHandle(handle)) {
-                const auto remote = ResolveRemoteIdentity(handle);
-                CloseHandle(handle);
-                if (remote) return remote;
-            } else {
-                CloseHandle(handle);
-            }
-        }
-    }
-
+    if (const auto remote = ResolveRemoteIdentity(originalPath)) return remote;
     if (originalPath.starts_with(L"\\\\")) return ResolveUncIdentity(originalPath);
 
     std::vector<wchar_t> volumePath(MAX_PATH + 1, L'\0');
@@ -299,8 +338,11 @@ std::optional<std::wstring> ResolveFilesystemObjectId(const std::wstring& path, 
 std::optional<std::wstring> ResolveFilesystemPathByObjectId(const FolderIdentity& volumeIdentity,
                                                             const std::wstring& objectId,
                                                             bool isDirectory) {
-    if (volumeIdentity.volumeId.starts_with(L"unc:") || volumeIdentity.volumeId.starts_with(L"smb:"))
-        return std::nullopt;
+    std::wstring volumeId = volumeIdentity.volumeId;
+    std::transform(volumeId.begin(), volumeId.end(), volumeId.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    if (volumeId.starts_with(L"unc:") || volumeId.starts_with(L"smb:")) return std::nullopt;
     const auto bytes = DecodeObjectId(objectId);
     if (!bytes) return std::nullopt;
     const std::wstring volumePath = VolumeHandlePath(volumeIdentity);
