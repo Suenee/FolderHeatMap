@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$Version = '1.07'
+$Version = '1.08'
 $Repo = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $LogsDir = Join-Path $Repo 'logs'
 New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
@@ -249,23 +249,43 @@ function Ensure-TcFontProfile([string]$ini) {
 }
 
 function Ensure-WdxRegistration([string]$ini,[string]$wdx) {
-    $foundKey=$null; $foundPath=$null; $freeKey=$null
+    $foundKey=$null; $foundPath=$null; $freeKey=$null; $changed=$false
     for ($i=0; $i -le 999; $i++) {
         $key=[string]$i; $value=Read-Ini $ini 'ContentPlugins' $key
         if (-not $value) { if ($null -eq $freeKey) { $freeKey=$key }; continue }
         $expanded=Expand-Value $value
         if ([IO.Path]::GetFileName($expanded) -ieq 'FolderHeatMap.wdx64') { $foundKey=$key; $foundPath=$expanded; break }
     }
-    if ($null -ne $foundKey) {
-        if (Same-Path $foundPath $wdx) { Log "[TC] FolderHeatMap WDX already points to dist in [ContentPlugins] $foundKey."; return $false }
+    if ($null -eq $foundKey) {
+        if ($null -eq $freeKey) { Fail 'No free [ContentPlugins] slot (0..999) was found.' }
+        $foundKey=$freeKey
+        Write-Ini $ini 'ContentPlugins' $foundKey $wdx
+        Log "[TC] Registered FolderHeatMap WDX: $foundKey=$wdx"
+        $changed=$true
+    } elseif (-not (Same-Path $foundPath $wdx)) {
         Write-Ini $ini 'ContentPlugins' $foundKey $wdx
         Log "[TC] Repaired FolderHeatMap WDX registration: $foundKey=$wdx"
-        return $true
+        $changed=$true
+    } else {
+        Log "[TC] FolderHeatMap WDX already points to dist in [ContentPlugins] $foundKey."
     }
-    if ($null -eq $freeKey) { Fail 'No free [ContentPlugins] slot (0..999) was found.' }
-    Write-Ini $ini 'ContentPlugins' $freeKey $wdx
-    Log "[TC] Registered FolderHeatMap WDX: $freeKey=$wdx"
-    return $true
+
+    $x64Value=Read-Ini $ini 'ContentPlugins64' $foundKey
+    if ($x64Value -ne '1') {
+        Write-Ini $ini 'ContentPlugins64' $foundKey '1'
+        Log "[TC] Repaired 64-bit WDX registration: [ContentPlugins64] $foundKey=1"
+        $changed=$true
+    } else {
+        Log "[TC] 64-bit WDX registration already valid: [ContentPlugins64] $foundKey=1"
+    }
+
+    $verifyPath=Expand-Value (Read-Ini $ini 'ContentPlugins' $foundKey)
+    $verify64=Read-Ini $ini 'ContentPlugins64' $foundKey
+    if (-not (Same-Path $verifyPath $wdx) -or $verify64 -ne '1') {
+        Fail "FolderHeatMap WDX registration verification failed. Expected [ContentPlugins] $foundKey=$wdx and [ContentPlugins64] $foundKey=1."
+    }
+    Log "[TC] WDX registration verified as a consistent 64-bit pair in slot $foundKey."
+    return $changed
 }
 
 function Ensure-CustomColumns([string]$ini) {
