@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$Version = '1.53'
-$Revision = '1.53-smb-runtime-identity'
+$Version = '1.54'
+$Revision = '1.54-local-wdx-runtime'
 $Repo = $env:FHM_UPGRADE_REPO
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).ProviderPath }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
@@ -200,40 +200,58 @@ try {
 
     $FailPhase='DIST'; Info '[6/7] Preparing isolated package staging...'; $package=Join-Path $build 'package'; if (Test-Path $package) { Remove-Item $package -Recurse -Force }; New-Item -ItemType Directory -Path $package -Force|Out-Null
     foreach ($f in $artifacts) { Copy-Item -LiteralPath (Join-Path "$build\Release" $f) -Destination (Join-Path $package $f) -Force }
-    $supportFiles=@('configure.cmd','README.md','TESTING.md','STRESS_TESTING.md','test.cmd','test.ps1','test_stress.ps1','test_lifecycle_diag.ps1','install.cmd','install.ps1','setup_icons.cmd','setup_icons.ps1')
+    $supportFiles=@('configure.cmd','README.md','TESTING.md','STRESS_TESTING.md','test.cmd','test.ps1','test_stress.ps1','test_lifecycle_diag.ps1','install.ps1','repair_custom_columns.ps1','deploy_local_wdx.ps1','setup_icons.cmd','setup_icons.ps1')
     foreach ($f in $supportFiles) { if (Test-Path (Join-Path $Repo $f)) { Copy-Item -LiteralPath (Join-Path $Repo $f) -Destination (Join-Path $package $f) -Force } }
     Info ("[DIST] Package staging ready: $package")
 
-    $FailPhase='DEPLOY'; Info '[7/7] Deploying staged package to stable dist and repairing Total Commander integration...'; Stop-TotalCommanderForDeploy -Reason 'pre-deploy guard'; Stop-EngineForDeploy -Reason 'pre-deploy guard'
+    $FailPhase='DEPLOY'; Info '[7/7] Deploying staged package, repairing Total Commander integration and installing the live WDX locally...'; Stop-TotalCommanderForDeploy -Reason 'pre-deploy guard'; Stop-EngineForDeploy -Reason 'pre-deploy guard'
     $dist=Join-Path $Repo 'dist'; New-Item -ItemType Directory -Path $dist -Force|Out-Null
     foreach ($f in $artifacts) { $guardTc=($f -eq 'FolderHeatMap.wdx64'); $guardEngine=($f -eq 'FolderHeatMapEngine.exe'); Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' -GuardTotalCommander:$guardTc -GuardEngine:$guardEngine }
     foreach ($f in $supportFiles) { if (Test-Path (Join-Path $package $f)) { Copy-FileWithRetry -Source (Join-Path $package $f) -Destination (Join-Path $dist $f) -Phase 'DEPLOY' } }
 
-    $distPlugin=[IO.Path]::GetFullPath((Join-Path $dist 'FolderHeatMap.wdx64'))
-    if ($tc.Plugin) {
-        $pluginFull=[IO.Path]::GetFullPath($tc.Plugin)
-        if (-not $pluginFull.Equals($distPlugin,[StringComparison]::OrdinalIgnoreCase)) {
-            Info ("[TC] Registered WDX uses a non-stable path and will be migrated to dist by install.cmd: $pluginFull")
-        } else { Info '[TC] Registered plugin already points to stable dist.' }
-    } else { Info '[TC] FolderHeatMap WDX is not registered yet; install.cmd will register stable dist.' }
-
-    Stop-TotalCommanderForDeploy -Reason 'integration repair'; Stop-EngineForDeploy -Reason 'integration repair'
-    $installer=Join-Path $Repo 'install.cmd'
-    if (-not (Test-Path -LiteralPath $installer)) { Fail 'DEPLOY' 'install.cmd is missing; Total Commander integration cannot be repaired.' }
-    Info '[TC] Running install.cmd to repair WDX registration, custom columns, text colors and folder icons...'
+    $integration=Join-Path $Repo 'install.ps1'
+    if (-not (Test-Path -LiteralPath $integration)) { Fail 'DEPLOY' 'Internal Total Commander integration helper install.ps1 is missing.' }
+    Info '[TC] Repairing WDX registration, custom columns, text colors and folder icons as part of upgrade...'
     $savedPreference=$ErrorActionPreference
     try {
         $ErrorActionPreference='Continue'
-        & $installer 2>&1 | ForEach-Object { Info ([string]$_) }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $integration 2>&1 | ForEach-Object { Info ([string]$_) }
         $installRc=$LASTEXITCODE
     } finally { $ErrorActionPreference=$savedPreference }
-    if ($installRc -ne 0) { Fail 'DEPLOY' "install.cmd failed with exit code $installRc. See logs\install.log." }
-    Info '[TC] Total Commander integration repaired successfully. Stable WDX registration is dist\FolderHeatMap.wdx64.'
+    if ($installRc -ne 0) { Fail 'DEPLOY' "Internal Total Commander integration repair failed with exit code $installRc. See logs\install.log." }
+
+    $columnRepair=Join-Path $Repo 'repair_custom_columns.ps1'
+    if (-not (Test-Path -LiteralPath $columnRepair)) { Fail 'DEPLOY' 'repair_custom_columns.ps1 is missing.' }
+    Info '[TC] Verifying that exactly one FolderHeatMap custom-column view exists...'
+    $savedPreference=$ErrorActionPreference
+    try {
+        $ErrorActionPreference='Continue'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $columnRepair 2>&1 | ForEach-Object { Info ([string]$_) }
+        $repairRc=$LASTEXITCODE
+    } finally { $ErrorActionPreference=$savedPreference }
+    if ($repairRc -ne 0) { Fail 'DEPLOY' "FolderHeatMap custom-column repair failed with exit code $repairRc." }
+
+    $wdxDeploy=Join-Path $Repo 'deploy_local_wdx.ps1'
+    if (-not (Test-Path -LiteralPath $wdxDeploy)) { Fail 'DEPLOY' 'deploy_local_wdx.ps1 is missing; stable local WDX deployment cannot continue.' }
+    Info '[WDX] Deploying FolderHeatMap.wdx64 from dist to the stable local Total Commander runtime...'
+    $savedPreference=$ErrorActionPreference
+    try {
+        $ErrorActionPreference='Continue'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wdxDeploy 2>&1 | ForEach-Object { Info ([string]$_) }
+        $wdxRc=$LASTEXITCODE
+    } finally { $ErrorActionPreference=$savedPreference }
+    if ($wdxRc -ne 0) { Fail 'DEPLOY' "Stable local WDX deployment failed with exit code $wdxRc. See logs\wdx_deploy.log." }
+
+    $tcAfter=Resolve-TC
+    if (-not $tcAfter.Plugin -or -not (Test-Path -LiteralPath $tcAfter.Plugin)) { Fail 'VERIFY' 'FolderHeatMap WDX registration does not point to an existing local runtime file after deployment.' }
+    $runtimeDriveType=[IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($tcAfter.Plugin))).DriveType
+    if ($runtimeDriveType -eq [IO.DriveType]::Network) { Fail 'VERIFY' "FolderHeatMap live WDX is still registered on a network drive: $($tcAfter.Plugin)" }
+    Info ("[WDX] Stable live runtime verified: $($tcAfter.Plugin)")
 
     $engineLauncher=Join-Path $Repo 'start_engine.ps1'; if (Test-Path $engineLauncher) { Info '[FHM] Starting FolderHeatMap engine after successful deployment.'; Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$engineLauncher) -WindowStyle Hidden|Out-Null }
     if ($tcWasRunning -and $tc.Exe) { Info '[TC] Restarting Total Commander once after successful deployment and integration repair.'; Start-Process -FilePath $tc.Exe|Out-Null }
 
-    Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green; Info ("WDX:         $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $LogsDir\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
+    Write-Line '' Gray; Write-Line "SUCCESS - FolderHeatMap $Version installed." Green; Info ("WDX runtime: $($tcAfter.Plugin)"); Info ("Dist WDX:    $dist\FolderHeatMap.wdx64"); Info ("Engine:      $dist\FolderHeatMapEngine.exe"); Info ("Config:      $dist\FolderHeatMapConfig.exe"); Info ("Engine log:  $LogsDir\FolderHeatMap.log"); Info ("Upgrade log: $Log"); Write-Line '' Gray
     if ($HadWarning) { Write-Line 'STATUS: WARNING - phase=COMPLETE' Yellow } else { Write-Line 'STATUS: SUCCESS - phase=COMPLETE' Green }
     Write-Line ("VERSION: $Version") Green
     exit 0
