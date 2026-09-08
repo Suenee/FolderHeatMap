@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.54 - 09.09.2026
+
+- Moved the live Total Commander WDX out of the repository runtime path. `upgrade.cmd` / `upgrade.ps1` now keep `build` and `dist` as build/distribution artifacts and deploy the verified `FolderHeatMap.wdx64` to a stable local runtime after every successful build.
+- The preferred runtime is `%COMMANDER_PATH%\Plugins\wdx\FolderHeatMap\FolderHeatMap.wdx64` when the Total Commander directory is on a local drive and writable without elevation. Network-hosted or non-writable Total Commander installations automatically fall back to `%LOCALAPPDATA%\FolderHeatMap\Plugins\wdx\FolderHeatMap.wdx64`.
+- Added final deployment verification that the registered FolderHeatMap WDX exists and is not loaded from a network drive. `[ContentPlugins64] <slot>=1` remains mandatory.
+- The temporary `D:\Temp\FolderHeatMap\FolderHeatMap.wdx64` loader diagnostic is retired. A successful 1.54 deployment removes only that diagnostic WDX and removes its directory only when otherwise empty.
+- `upgrade.cmd` is now the single user-facing installation/update path. The legacy `install.cmd` launcher is removed; its existing PowerShell integration logic remains an internal upgrade step for Total Commander columns, colors, icons and related settings.
+- Repository and FolderHeatMap data may continue to live on mapped drives or UNC/NAS storage. The 1.53 SMB/NAS identity implementation, Heat mathematics and lifecycle behavior are unchanged.
+- Project/runtime release version is now 1.54.
+
 ## 1.53 - 04.09.2026
 
 - Added stable SMB/NAS path identity for mapped drives and UNC paths. Remote paths are opened once, resolved through `GetFinalPathNameByHandleW`, and identified by the native `FileFsObjectIdInformation` volume Object ID validated on the target NAS devices.
