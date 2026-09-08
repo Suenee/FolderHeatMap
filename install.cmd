@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-set "INSTALL_REV=1.08"
+set "INSTALL_REV=1.09"
 cd /d "%~dp0"
 echo FolderHeatMap install %INSTALL_REV%
 
@@ -61,8 +61,15 @@ if not exist "%CUSTOM_COLUMNS_REPAIR%" (
     exit /b 1
 )
 
+set "LOCAL_WDX_DEPLOY=%~dp0deploy_local_wdx.ps1"
+if not exist "%LOCAL_WDX_DEPLOY%" if exist "%~dp0..\deploy_local_wdx.ps1" set "LOCAL_WDX_DEPLOY=%~dp0..\deploy_local_wdx.ps1"
+if not exist "%LOCAL_WDX_DEPLOY%" (
+    echo ERROR: deploy_local_wdx.ps1 was not found; the local WDX test deployment cannot be performed.
+    exit /b 1
+)
+
 echo [PRECHECK] Validating PowerShell installer scripts...
-powershell.exe -NoProfile -Command "$files=@('%~dp0install.ps1','%CUSTOM_COLUMNS_REPAIR%'); $failed=$false; foreach($file in $files){$tokens=$null;$errors=$null;[void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors); if($errors.Count -gt 0){$failed=$true; foreach($e in $errors){Write-Host ('ERROR: PowerShell parser error in ' + $file + ' line ' + $e.Extent.StartLineNumber + ', column ' + $e.Extent.StartColumnNumber + ': ' + $e.Message)}}}; if($failed){exit 2}else{Write-Host '[PRECHECK] PowerShell syntax OK.';exit 0}"
+powershell.exe -NoProfile -Command "$files=@('%~dp0install.ps1','%CUSTOM_COLUMNS_REPAIR%','%LOCAL_WDX_DEPLOY%'); $failed=$false; foreach($file in $files){$tokens=$null;$errors=$null;[void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors); if($errors.Count -gt 0){$failed=$true; foreach($e in $errors){Write-Host ('ERROR: PowerShell parser error in ' + $file + ' line ' + $e.Extent.StartLineNumber + ', column ' + $e.Extent.StartColumnNumber + ': ' + $e.Message)}}}; if($failed){exit 2}else{Write-Host '[PRECHECK] PowerShell syntax OK.';exit 0}"
 if not "%ERRORLEVEL%"=="0" exit /b %ERRORLEVEL%
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
@@ -75,6 +82,14 @@ set "REPAIR_RC=%ERRORLEVEL%"
 if not "%REPAIR_RC%"=="0" (
     echo ERROR: FolderHeatMap custom-column de-duplication failed with exit code %REPAIR_RC%.
     exit /b %REPAIR_RC%
+)
+
+echo [WDX] Deploying FolderHeatMap.wdx64 to local D:\Temp test runtime...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LOCAL_WDX_DEPLOY%"
+set "LOCAL_WDX_RC=%ERRORLEVEL%"
+if not "%LOCAL_WDX_RC%"=="0" (
+    echo ERROR: Local FolderHeatMap WDX test deployment failed with exit code %LOCAL_WDX_RC%.
+    exit /b %LOCAL_WDX_RC%
 )
 
 exit /b 0
