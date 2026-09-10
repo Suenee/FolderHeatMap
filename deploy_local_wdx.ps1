@@ -81,13 +81,35 @@ function Resolve-RuntimeTarget([object]$Tc) {
 function Stop-TC {
     $running=@(Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue)
     if ($running.Count -eq 0) { return $false }
-    Log ('[TC] Stopping Total Commander before WDX runtime deployment. PID(s): ' + (($running | ForEach-Object {$_.Id}) -join ','))
+    Log ('[TC] Stopping Total Commander before FolderHeatMap runtime deployment. PID(s): ' + (($running | ForEach-Object {$_.Id}) -join ','))
     $running | Stop-Process -ErrorAction SilentlyContinue
     $deadline=[DateTime]::UtcNow.AddSeconds(15)
     while ((Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
     if (Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) { Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue | Stop-Process -Force }
     if (Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue) { Fail 'Total Commander could not be stopped safely.' }
     return $true
+}
+function Stop-Engine {
+    $running=@(Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) { return $false }
+    Log ('[ENGINE] Stopping FolderHeatMapEngine before local runtime replacement. PID(s): ' + (($running | ForEach-Object {$_.Id}) -join ','))
+    $running | Stop-Process -ErrorAction SilentlyContinue
+    $deadline=[DateTime]::UtcNow.AddSeconds(10)
+    while ((Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    if (Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue) { Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue | Stop-Process -Force }
+    if (Get-Process FolderHeatMapEngine -ErrorAction SilentlyContinue) { Fail 'FolderHeatMapEngine could not be stopped safely.' }
+    return $true
+}
+function Start-EngineHidden([string]$Engine,[string]$Ini) {
+    $settingsDir=Split-Path -Parent $Ini
+    $settings=Join-Path $settingsDir 'FolderHeatMap.ini'
+    $db=Join-Path $settingsDir 'FolderHeatMap.db'
+    $arguments='--db "' + $db + '" --settings "' + $settings + '"'
+    $process=Start-Process -FilePath $Engine -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    Start-Sleep -Milliseconds 500
+    $process.Refresh()
+    if ($process.HasExited) { Fail "Local FolderHeatMapEngine failed to stay running after deployment. Exit code: $($process.ExitCode)" }
+    Log "[ENGINE] Local runtime engine started and verified: $Engine"
 }
 function Cleanup-DiagnosticRuntime {
     $oldDir='D:\Temp\FolderHeatMap'
@@ -126,15 +148,23 @@ function Write-Ini([string]$File,[string]$Section,[string]$Key,[AllowNull()][str
 }
 
 try {
-    Log "FolderHeatMap stable local WDX deployment $Version"
-    $sourceCandidates=@(
+    Log "FolderHeatMap stable local runtime deployment $Version"
+    $wdxSourceCandidates=@(
         (Join-Path $Root 'dist\FolderHeatMap.wdx64'),
         (Join-Path $Root 'FolderHeatMap.wdx64'),
         (Join-Path $Repo 'dist\FolderHeatMap.wdx64')
     )
-    $source=$sourceCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $engineSourceCandidates=@(
+        (Join-Path $Root 'dist\FolderHeatMapEngine.exe'),
+        (Join-Path $Root 'FolderHeatMapEngine.exe'),
+        (Join-Path $Repo 'dist\FolderHeatMapEngine.exe')
+    )
+    $source=$wdxSourceCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $engineSource=$engineSourceCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     if (-not $source) { Fail 'FolderHeatMap.wdx64 source was not found in dist or beside the helper.' }
+    if (-not $engineSource) { Fail 'FolderHeatMapEngine.exe source was not found in dist or beside the helper.' }
     $source=[IO.Path]::GetFullPath($source)
+    $engineSource=[IO.Path]::GetFullPath($engineSource)
 
     $tc=Find-TC
     if (-not $tc.Ini -or -not (Test-Path -LiteralPath $tc.Ini)) { Fail 'Active Total Commander WINCMD.INI could not be located.' }
@@ -142,17 +172,31 @@ try {
     $runtime=Resolve-RuntimeTarget $tc
     $targetDir=$runtime.Directory
     $target=Join-Path $targetDir 'FolderHeatMap.wdx64'
+    $targetEngine=Join-Path $targetDir 'FolderHeatMapEngine.exe'
     $wasRunning=Stop-TC
+    $engineWasRunning=Stop-Engine
 
     Log "[WDX] Source: $source"
-    Log "[WDX] Runtime target: $target"
-    Log "[WDX] Runtime selection: $($runtime.Reason)"
+    Log "[ENGINE] Source: $engineSource"
+    Log "[RUNTIME] Directory: $targetDir"
+    Log "[RUNTIME] Selection: $($runtime.Reason)"
+
     Copy-Item -LiteralPath $source -Destination $target -Force
+    Copy-Item -LiteralPath $engineSource -Destination $targetEngine -Force
     if (-not (Test-Path -LiteralPath $target)) { Fail "Local WDX copy was not created: $target" }
+    if (-not (Test-Path -LiteralPath $targetEngine)) { Fail "Local engine copy was not created: $targetEngine" }
+
     $sourceHash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
     $targetHash=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
     if ($sourceHash -ne $targetHash) { Fail 'Local WDX copy hash does not match the deployed dist WDX.' }
     Log "[WDX] SHA256 verified: $targetHash"
+
+    $engineSourceHash=(Get-FileHash -LiteralPath $engineSource -Algorithm SHA256).Hash
+    $engineTargetHash=(Get-FileHash -LiteralPath $targetEngine -Algorithm SHA256).Hash
+    if ($engineSourceHash -ne $engineTargetHash) { Fail 'Local engine copy hash does not match the deployed dist engine.' }
+    Log "[ENGINE] SHA256 verified: $engineTargetHash"
+
+    if ((Get-DriveType $targetDir) -eq [IO.DriveType]::Network) { Fail "FolderHeatMap runtime pair must not be deployed to a network drive: $targetDir" }
 
     $slot=$null
     $free=$null
@@ -179,13 +223,17 @@ try {
     if (-not (Same-Path $verifyPath $target) -or $verify64 -ne '1') { Fail 'Total Commander WDX registration verification failed after local deployment.' }
     Log "[TC] FolderHeatMap WDX registered at stable local runtime: [ContentPlugins] $slot=$target"
     Log "[TC] 64-bit registration verified: [ContentPlugins64] $slot=1"
+    Log "[RUNTIME] Sibling engine verified: $targetEngine"
 
     Cleanup-DiagnosticRuntime
 
+    if ($engineWasRunning) {
+        Start-EngineHidden -Engine $targetEngine -Ini $ini
+    }
     if ($wasRunning) {
         if (-not $tc.Exe -or -not (Test-Path -LiteralPath $tc.Exe)) { Fail 'Total Commander was running, but its executable could not be resolved for restart.' }
         Start-Process -FilePath $tc.Exe | Out-Null
-        Log '[TC] Total Commander restarted with the stable local WDX registration.'
+        Log '[TC] Total Commander restarted with the stable local FolderHeatMap runtime pair.'
     }
 
     Log 'STATUS: SUCCESS'
