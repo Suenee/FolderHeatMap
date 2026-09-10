@@ -1,6 +1,6 @@
 # Upgrade Protocol
 
-This document is the master upgrade standard for Windows repositories in this project family. It consolidates proven practices from FolderHeatMap, VoicePrompter, VoicePrompterBridge / Socket Universe Bridge, VirtualMonitorsUniverse, Companion modules, and related Wipe Codes projects.
+This document is the master upgrade standard for Windows repositories in this project family. It consolidates proven practices from FolderHeatMap, VoicePrompter, VoicePrompterBridge / Socket Universe Bridge, VirtualMonitorsUniverse, Companion modules, WindowsTerminalFlow, and related Wipe Codes projects.
 
 The purpose is not merely to describe one updater. It is a shared engineering memory: once an upgrade failure has been understood and solved, the same class of failure should not be rediscovered in another repository.
 
@@ -23,10 +23,14 @@ The updater owns the complete lifecycle required by the project: bootstrap, repo
 Prefer this architecture:
 
 ```text
-upgrade.cmd -> current temporary upgrade.ps1 -> upgrade lifecycle
+upgrade.cmd -> temporary launcher context -> current temporary upgrade.ps1 -> upgrade lifecycle
 ```
 
 `upgrade.cmd` is a bootstrap launcher, not the main application. Keep it as small and stable as practical. Substantial logic belongs in `upgrade.ps1`.
+
+The repository copy of `upgrade.cmd` should do as little as possible before it makes itself independent from the working tree. A proven pattern is to copy the launcher to a unique `%TEMP%` path first, then let the temporary copy perform repository discovery, fetch/self-update and the handoff to the current `upgrade.ps1`.
+
+This matters because the later repository synchronization may replace `upgrade.cmd` itself. The repository copy must therefore never depend on reading additional lines after a child process that can reset or replace the tracked tree has started.
 
 The launcher may resolve the repository path, make UNC paths usable, bootstrap Git when project policy allows it, fetch the target branch, extract the current runner to `%TEMP%`, establish narrowly scoped environment state, invoke PowerShell, remove the temporary runner, and return exactly its exit code.
 
@@ -38,11 +42,46 @@ Keep an application version in `x.xx` form and, where useful for diagnostics, a 
 
 The updater in the target branch is authoritative. An old local updater must be able to reach and execute the current upgrade implementation before performing the real upgrade.
 
-Never overwrite a running script and then rely on that process continuing to read the same file. The safest general pattern is to fetch the target branch, extract `upgrade.ps1` to a unique temporary path, and execute that copy.
+Never overwrite a running script and then rely on that process continuing to read the same file. `cmd.exe` may continue parsing a replaced batch file at a different byte/line position and execute arbitrary fragments from the new version. Symptoms can look unrelated, for example `'not' is not recognized`, `'f' is not recognized`, empty arguments, or jumping into the wrong label after an otherwise successful build.
 
-If the project still uses a batch implementation as its authoritative updater, extract the remote `upgrade.cmd` to `%TEMP%`, explicitly normalize it to CRLF, and execute the temporary copy synchronously. This is proven to avoid both self-overwrite and LF-only batch-label failures.
+Therefore the repository copy of `upgrade.cmd` must leave the mutable working tree before any operation that can replace tracked files. Prefer one of these designs:
 
-The self-update path must remain deliberately simple and backward-compatible. It is the recovery path for old installations.
+1. copy the current launcher to a unique `%TEMP%` file immediately and transfer control to that copy before Git synchronization; or
+2. use another one-way handoff whose executable script cannot be modified by the repository reset.
+
+The original repository copy must not resume reading later lines after the temporary child returns. A handoff that waits for the child and then continues in the original batch file is unsafe if Git may replace that file while the child runs.
+
+The safest general runner pattern is to fetch the target branch, extract `upgrade.ps1` to a unique temporary path, and execute that copy. The PowerShell runner may then synchronize/reset the repository without changing the code currently executing.
+
+If the project still materializes a remote `.cmd` and executes it, explicitly normalize that temporary executable copy to CRLF before launch. Git blob content may be LF-only even when the working-tree policy is CRLF.
+
+### Self-update compatibility contract
+
+The self-update path is the recovery path for old installations and must remain backward-compatible.
+
+Before changing an internal bootstrap argument, environment variable, label contract, or handoff convention, determine how currently deployed older launchers call the new updater. A new launcher must accept the handoff forms that supported older launchers still use, or provide a deliberate compatibility shim.
+
+Do not assume that updating `upgrade.cmd` in the repository automatically updates the already-running launcher. The old launcher is exactly the component performing the transition to the new one.
+
+When repository identity/path must survive the transition, carry it redundantly when practical: use the explicit command-line argument expected by the current protocol and a stable environment-variable fallback. Validate the resolved value before using it. Never allow an empty repository path to silently fall through into Git/bootstrap operations.
+
+If a temporary launcher is created through `git show` or another transport, verify that the destination path variables used by the conversion/copy command are actually defined in that child process. Do not rely on delayed expansion or a parent-local variable magically becoming an environment variable visible to PowerShell.
+
+Keep internal handoff names stable. If they must change, retain aliases for previously shipped forms until every supported older launcher can reach a newer runner without them.
+
+### Required self-update acceptance tests
+
+A self-update implementation is not considered stable until all of these pass:
+
+- current launcher -> current runner;
+- at least the immediately previous shipped launcher -> current runner;
+- an older launcher whose local `upgrade.cmd` differs from `origin/<branch>` -> current runner;
+- self-update where `git reset --hard` replaces the repository copy of `upgrade.cmd` while the temporary runner is active;
+- repository path containing spaces;
+- mapped network path;
+- immediate second run after successful self-update.
+
+A build that succeeds but is followed by stray CMD errors is still an updater failure. Success is reached only when control returns cleanly to the caller with the correct exit code and no residual batch execution.
 
 ## 4. Repository paths: local, mapped and UNC are all valid
 
@@ -59,6 +98,8 @@ pushd "%REPO_DIR%"
 over `cd /d`. `pushd` works with ordinary paths and maps UNC paths to a temporary drive letter for tools that cannot operate directly on UNC paths. Always pair it with `popd`.
 
 Normalize paths at interpreter boundaries. In particular, trim an unnecessary trailing backslash before transporting a quoted path through CMD/PowerShell arguments or environment variables.
+
+When passing a critical path across a CMD/PowerShell/self-update boundary, validate it immediately on the receiving side. Do not continue if it is empty. If the path is needed after a self-replacement handoff, preserve it in a stable form that survives the transition.
 
 Do not assume that a dependency manager behaves well when its cache is on a network share. Decide cache placement explicitly. Project-owned persistent caches may intentionally stay under a repository `.cache` directory when portability is required; tools known to misbehave on network storage may use a local machine cache. Temporary bootstrap runners belong in `%TEMP%`.
 
@@ -92,6 +133,10 @@ The bootstrap may:
 
 Never initialize over an arbitrary populated directory. A fresh-bootstrap directory must be empty except for explicitly allowed bootstrap files such as `upgrade.cmd` and a log directory.
 
+If the target contains only the bootstrap `upgrade.cmd`, the bootstrap must execute from outside that target (normally `%TEMP%`) before deleting/replacing the target copy and cloning into the exact intended directory. Do not clone a nested repository simply because the initial launcher is standing inside an otherwise empty target folder.
+
+After clone, verify at least `.git`, the expected remote/repository identity, the authoritative updater file, and the target branch before handing off.
+
 If installation is intentionally separate, `upgrade.cmd` must say so clearly and direct a fresh machine to `install.cmd` rather than attempting a partial bootstrap.
 
 When an installer modifies PATH, remember that the already-running `cmd.exe` does not inherit the new environment. Probe known executable locations or update the current process PATH before concluding that installation failed.
@@ -117,6 +162,8 @@ Two acceptable policies are:
 
 - strict: abort and explain that tracked changes must be committed/reverted;
 - managed: preserve explicitly identified tracked changes and report exactly what happened.
+
+Authoritative bootstrap/updater files may legitimately differ locally during self-update, bootstrap handoff, or line-ending materialization. If project policy treats those files as disposable authoritative bootstrap state, exclude only those explicitly named updater files from the local-edit rejection check, then synchronize them deterministically from the target branch. Do not weaken dirty-tree protection for the rest of the repository.
 
 Do not stash untracked runtime data by default. `git stash -u` is dangerous in application repositories.
 
@@ -230,6 +277,8 @@ If the live target may be locked, diagnose the owner, retry for a bounded period
 
 Verify every required artifact before deployment. A successful compiler exit code does not prove that all required executables, DLLs, plugins, generated files, or assets exist.
 
+When the repository or deployment target is on SMB/NAS/mapped storage, do not assume whole-directory rename/move semantics are reliable. Prefer a verified staging tree, backup of the current deployment, file-by-file copy with bounded retries, post-copy verification, and rollback from the backup on failure. Directory creation/removal operations may also need explicit retry/error handling on network storage.
+
 When stale build state has previously caused false results, prefer deterministic cleanup/recreation of known build output over increasingly complicated incremental repair logic.
 
 ## 16. Native commands in PowerShell
@@ -240,7 +289,7 @@ Git, compilers, package managers, and build systems routinely write warnings or 
 
 Use a dedicated native-command helper. Capture `$LASTEXITCODE` immediately after the command being tested, before another native command can overwrite it. Preserve enough stdout/stderr for diagnosis while classifying warnings separately from failures.
 
-Avoid ambiguous PowerShell argument-array binding. A wrapper that accidentally invokes bare `git.exe` instead of `git fetch origin` can produce only Git's usage screen. Use explicit parameter names and test the exact invocation.
+Avoid ambiguous PowerShell argument-array binding. Do not use parameter names that collide with automatic variables such as `$args`. A wrapper that accidentally invokes bare `git.exe` instead of `git fetch origin` can produce only Git's usage screen. Prefer an explicit parameter such as `$ArgumentList`, call it with named parameters, and test the exact invocation.
 
 ## 17. Logging is mandatory
 
@@ -278,6 +327,10 @@ STATUS: FAILED - phase=<PHASE>
 The process exit code and final status must agree. `SUCCESS` and `WARNING` return zero unless a project explicitly defines otherwise; `FAILED` returns non-zero.
 
 Console colors are presentation only: gray/default for normal information, yellow for warning/action required, red for failure, green for successful completion. Logs must remain understandable without color.
+
+For interactive Windows launchers, start with `cls` once at the beginning of the user-invoked `upgrade.cmd`. Do not repeatedly clear the screen during later phases because the visible diagnostics are valuable.
+
+Use a known console/output encoding for both CMD and PowerShell/native tools. UTF-8 is the preferred modern choice where the toolchain supports it. Verify localized output is readable; mojibake is an updater defect because it can hide the actual diagnostic.
 
 ## 18. Interactive operations
 
@@ -327,6 +380,8 @@ On failure:
 
 If the application was stopped before a build that later fails, restoration policy must be explicit. Restarting the old known-good runtime can be appropriate when its deployed files were never modified. Do not restart blindly after a partial deployment.
 
+If the same class of updater failure has already been attempted three times without success, stop producing variations. Preserve the failing log and the last known-good state, research authoritative/maintainer guidance, then implement a different evidence-based design. Add the newly understood failure mode to this document before considering the issue closed.
+
 ## 21. Success semantics
 
 On success:
@@ -336,7 +391,8 @@ On success:
 - print important resulting paths/version;
 - report warnings separately;
 - end with `STATUS: SUCCESS` or `STATUS: WARNING`;
-- return zero.
+- return zero;
+- return cleanly to the invoking shell without stray commands/errors from an older batch context.
 
 A warning means the requested upgrade completed but a non-fatal condition remains. Do not use warning as a euphemism for an unusable installation.
 
@@ -354,199 +410,29 @@ The second run must not:
 - require manual cleanup;
 - fail because a previous temporary/lock file was left behind;
 - reinstall dependencies unnecessarily;
-- start an application that was originally stopped.
+- start an application that was originally stopped;
+- enter a different self-update path merely because the local updater was synchronized on the first run.
 
 Idempotence is an acceptance criterion, not an optional optimization.
 
-## 23. Known traps and proven fixes
+## 23. Notorious updater failures already solved
 
-This buglist is mandatory reading before creating or changing an updater.
+These failure classes have already cost development time and must not be rediscovered:
 
-### Bootstrap / interpreter boundary
+- treating a fresh directory containing only `upgrade.cmd` as an existing checkout and failing because `.git` is absent;
+- interpreting `safe.directory` / dubious-ownership failures as a missing repository and accidentally bootstrapping a nested clone;
+- running Git synchronization from the repository copy of `upgrade.cmd`, replacing that file, then allowing `cmd.exe` to continue reading the changed file;
+- assuming that a successful child build means the updater succeeded even though the parent batch later executes garbage fragments such as `'not' is not recognized` or `'f' is not recognized`;
+- changing internal self-update arguments without retaining compatibility for older launchers, causing `ERROR: Unknown upgrade option` before the new updater can take over;
+- losing the repository path across a launcher self-replacement boundary and reaching the new updater with an empty path;
+- invoking PowerShell with `%TEMP%` path variables that exist only as delayed-expansion batch variables rather than real environment variables, producing empty-path `ReadAllText` / `WriteAllText` failures;
+- executing temporary `.cmd` content taken from Git without CRLF normalization;
+- rejecting authoritative bootstrap files as user dirty-tree changes during the very update that is supposed to replace them;
+- using `$args` or another PowerShell automatic-variable name for a native-command wrapper parameter and accidentally invoking bare `git.exe`;
+- treating native stderr as fatal while the native process exit code is zero;
+- assuming whole-directory rename/move on SMB/network storage is a safe deployment primitive;
+- deleting the old live deployment before staged artifacts have been verified and a rollback path exists;
+- allowing console codepage/encoding mismatch to turn localized diagnostics into unreadable mojibake;
+- failing to run the updater immediately a second time to prove idempotence.
 
-- **Running `.cmd` overwrites itself.** Symptom: one run prints messages from two updater generations or jumps into impossible labels. Root cause: `cmd.exe` continues reading a file Git replaced. Fix: execute the current updater/runner from `%TEMP%`; keep the repository launcher minimal.
-- **LF-only temporary batch file.** Symptom: `The system cannot find the batch label specified`. Root cause: batch content extracted from Git is LF-only. Fix: explicitly normalize executable temporary `.cmd` files to CRLF.
-- **Deep CMD/PowerShell nesting.** Symptom: quoting, trailing slashes, environment expansion, and exit codes fail unpredictably. Fix: one bootstrap layer and one authoritative runner.
-- **PowerShell `param()` bootstrap collision.** Symptom: unexpected `Supply values...` prompt or binding error. Fix: keep bootstrap transport simple; environment variables are often safer than complex mandatory parameter binding.
-- **Trailing backslash in quoted path.** Symptom: a valid repository path is split or quoted incorrectly in a child interpreter. Fix: canonicalize and trim the trailing separator before transport.
-- **Interactive child prompt hidden by buffering.** Symptom: updater appears frozen or asks a question before explaining it. Fix: print ordered `ACTION REQUIRED` text before reading input and avoid redirected interactive helpers.
-
-### Git / working tree
-
-- **`dubious ownership` mistaken for “not a repository”.** Symptom: bootstrap attempts a nested clone/init. Fix: detect Git's actual diagnostic and apply a narrowly scoped exact `safe.directory` exception.
-- **Global `safe.directory=*`.** Symptom: updater works but permanently disables an important Git ownership protection. Fix: use process-scoped exact-repository configuration.
-- **CRLF vs Git blob false mismatch.** Symptom: synchronized `upgrade.cmd` is repeatedly considered modified. Fix: use Git normalization semantics, not raw bytes.
-- **Managed stash still leaves bootstrap dirty.** Symptom: stash reports success, then checkout/pull says local changes would be overwritten. Root cause: updater/line-ending materialization changed the bootstrap file. Fix: treat bootstrap files as authoritative remote state and preserve genuine tracked edits separately.
-- **`git stash -u` captures runtime data.** Fix: do not include untracked files unless their lifecycle is explicitly designed.
-- **`git clean -fd` deletes valuable local data.** Fix: clean only known generated paths.
-- **Wrong branch is built.** Fix: centralize branch selection and verify final `HEAD == origin/<target>`.
-- **Remote URL drift.** Fix: verify/set expected origin where repository policy requires it.
-- **Old launcher cannot reach new updater.** Fix: keep self-update protocol intentionally simple and backward-compatible.
-
-### Network-drive / cache
-
-- **`cd /d` or child tools fail on UNC.** Fix: use `pushd`/`popd` in CMD and pass the resulting active path to tools that require a drive path.
-- **Package cache on network share is slow or lock-prone.** Fix: explicitly choose a local cache for that tool, or a repository `.cache` when portability is more important and the tool is proven safe there.
-- **Persistent project state silently moves to `%LOCALAPPDATA%`.** Fix: define where project-owned persistent state belongs and migrate/remove obsolete cache locations intentionally.
-
-### Process / runtime
-
-- **Blindly killing `node.exe`, `dotnet.exe`, etc.** Symptom: unrelated applications die. Fix: identify project-owned processes by path/command line/tree and stop only those.
-- **Process exits between discovery and kill.** Fix: treat “already exited” as success.
-- **Start command returns but application immediately dies.** Fix: verify the process after a short delay or perform a health check.
-- **Missing alternate executable name treated as fatal.** Fix: enumerate first; stop only processes that exist.
-- **Application was stopped before upgrade but starts afterward.** Fix: record and restore prior running state, not a guessed desired state.
-- **Application was running but upgrade leaves it stopped.** Fix: restart after successful deployment and verify startup.
-- **Locked `esbuild.exe`/DLL/plugin after process stop.** Fix: verify the actual target file can be opened/replaced before package/deploy; diagnose remaining owners instead of killing unrelated processes.
-
-### Build / deploy
-
-- **Build writes directly into live `dist`.** Symptom: sharing violation from host/AV/indexer. Fix: build and stage away from live deployment.
-- **Live `dist` is accidentally used as package staging.** Symptom: DIST fails before DEPLOY because a host owns the plugin. Fix: stage under build output, deploy only after verification.
-- **Host process still owns DLL/WDX.** Fix: identify all host processes that can own the file, not only the project's worker.
-- **Partial deployment.** Fix: verify all artifacts before touching the live target.
-- **Build exits zero but artifact is missing.** Fix: explicit artifact verification.
-- **Stale build state causes false behavior.** Fix: deterministic cleanup of known generated/build directories where necessary.
-
-### Dependencies / installers
-
-- **Installer succeeds but executable is unavailable in current shell.** Fix: refresh PATH/probe known installation paths and verify the tool.
-- **New dependency installed, old dependency removed, then project validation fails.** Fix: validate on the new dependency before removing the old one.
-- **Windows Installer already busy.** Fix: wait with timeout and bounded retry.
-- **Third-party updater installs a second copy elsewhere.** Fix: capture and explicitly pass the existing installation directory; verify the new version there.
-- **Third-party updater resets host configuration.** Fix: preserve project-relevant settings, reapply them, and verify before restart.
-- **Dependency download is partial/corrupt.** Fix: verify required extracted files/content, not only downloader exit code.
-
-### Configuration / data
-
-- **Default config overwrites user config.** Fix: create defaults only when missing; migrate existing configuration.
-- **Managed host entries duplicate on every upgrade.** Fix: canonicalize the entire matching set and verify exactly one project-owned entry remains.
-- **Environment variable text becomes a literal relative path.** Fix: resolve paths in one authoritative layer and validate absolute paths where required.
-- **Migration runs twice.** Fix: migrations must be versioned/idempotent.
-- **Runtime configuration/log/database accidentally becomes tracked.** Fix: define data boundaries and `.gitignore` before deployment logic.
-
-### PowerShell / native commands
-
-- **stderr treated as failure.** Symptom: harmless Git CRLF warning aborts upgrade. Fix: native exit code is authoritative.
-- **`$ErrorActionPreference='Stop'` turns native stderr into an exception.** Fix: isolate native execution in a helper and inspect exit code explicitly.
-- **`$LASTEXITCODE` is read too late.** Fix: capture it immediately.
-- **Argument-array wrapper invokes the wrong command.** Symptom: generic Git usage page. Fix: explicit argument handling and tested invocation.
-- **Localized/garbled compiler output changes logic.** Fix: do not parse human-localized console prose for success/failure when an exit code or stable machine-readable result exists.
-
-### Logging / status
-
-- **Failure has no final status.** Fix: top-level exception/finally handling must always write the final marker.
-- **Log says failed but process exits zero, or vice versa.** Fix: one authoritative final result drives both log marker and exit code.
-- **New run appends to old diagnostics.** Fix: single-run log replacement.
-- **Console is repeatedly cleared by child phases.** Fix: clear once at interactive entry only; never erase diagnostics during recovery/internal execution.
-
-## 24. Three-strike rule for updater debugging
-
-Do not keep applying variants of the same unsuccessful fix.
-
-If a problem has produced three materially similar failed attempts:
-
-1. stop experimentation;
-2. preserve the failing log and exact reproduction;
-3. roll back to the last known-good state before the failed experiments;
-4. search authoritative documentation and strong community/maintainer guidance for the specific failure class;
-5. implement a different evidence-based approach;
-6. add the discovered failure mode and prevention to this document.
-
-This rule exists because bootstrap, Git, quoting, CRLF, installer, and network-drive bugs can easily become circular “fixes” that merely move the failure to another interpreter boundary.
-
-## 25. Patterns explicitly avoided
-
-Do not reintroduce without a strong documented reason:
-
-- large monolithic label-heavy batch updaters;
-- self-overwriting running scripts;
-- repeated CMD/PowerShell interpreter chains;
-- global `safe.directory=*`;
-- raw CRLF/blob byte comparisons as Git state checks;
-- arbitrary stderr-as-failure;
-- blind killing of shared runtime processes;
-- build-to-live-directory;
-- broad untracked-file cleanup;
-- silent destruction of local tracked changes;
-- hidden machine-specific paths;
-- append-only managed host configuration;
-- dependency removal before replacement validation;
-- assuming “process started” means “application healthy”.
-
-## 26. Recommended project files
-
-```text
-upgrade.cmd           bootstrap launcher
-upgrade.ps1           authoritative runner where appropriate
-install.cmd           optional fresh-install entry when install != upgrade
-run.cmd               optional authoritative start/restart entry
-logs/upgrade.log      generated, ignored, single-run diagnostics
-.gitattributes        explicit Windows script line endings
-.gitignore            logs/runtime/cache/build exclusions
-CHANGELOG.md           application changes
-UPGRADE.md             this protocol + project-specific additions if needed
-```
-
-Do not force every repository to have every file. Preserve the architectural responsibilities even when a small project combines them.
-
-## 27. Minimum acceptance matrix
-
-Before declaring an upgrader stable, deliberately test at least:
-
-- clean repository, application stopped;
-- clean repository, application running;
-- immediate second upgrade run;
-- no remote update;
-- real remote update;
-- old local updater reaching the current runner;
-- repository path containing spaces;
-- mapped network drive;
-- UNC path where applicable;
-- Git `dubious ownership` condition;
-- tracked local modification;
-- staged local modification;
-- valuable untracked runtime file;
-- harmless native stderr warning;
-- missing dependency on a fresh machine;
-- dependency installation followed by verification;
-- build/test failure before deploy;
-- required artifact missing despite build completion;
-- locked deployment target;
-- graceful shutdown timeout;
-- project-owned shared-runtime process plus an unrelated process of the same executable type;
-- application restart success and immediate-startup failure;
-- existing user configuration/log/database;
-- already-applied migration;
-- stale updater lock after simulated crash;
-- repeated host integration producing exactly one managed entry;
-- optional third-party host update preserving installation directory and required settings;
-- correct final log marker and exit code for SUCCESS, WARNING, and FAILED.
-
-For projects supporting fresh bootstrap, additionally test a new Windows installation/folder containing only the permitted bootstrap file(s).
-
-## 28. Project-specific additions
-
-A repository may extend this protocol with project-specific rules: required branch, repository URL, runtime process identification, dependencies, build/test commands, deployment destinations, host integrations, configuration paths, migrations, and health checks.
-
-Project-specific rules may strengthen this protocol but should not silently weaken data safety, Git safety, network-drive support, logging, idempotence, or self-update guarantees. Any intentional exception should be documented next to the reason.
-
-## 29. Buglist maintenance rule
-
-Whenever a new updater defect is discovered, do not only patch the code.
-
-Add to this document:
-
-1. failure mode;
-2. recognizable symptom;
-3. root cause;
-4. proven prevention/fix;
-5. acceptance test when practical.
-
-The objective is simple: the same class of upgrade bug should be solved once for the whole project family.
-
-## 30. Design principle
-
-The upgrader is part of the application.
-
-Treat `upgrade.cmd` and its runner with the same engineering discipline as production code: version it, test it on realistic machines and network paths, protect user data, verify every destructive boundary, log enough to diagnose failures remotely, and keep the bootstrap path simpler than the application it maintains.
+Whenever a new project introduces `upgrade.cmd`, review this section before implementation, not after the first failures.
