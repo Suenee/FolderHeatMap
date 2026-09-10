@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.54 - 11.09.2026 hotfix
+
+- Fixed the local-runtime regression introduced by the 1.54 WDX relocation. `FolderHeatMap.wdx64` launches `FolderHeatMapEngine.exe` from its own directory, so deploying only the WDX left Total Commander with working FolderHeatMap columns but no running engine after a reboot.
+- `deploy_local_wdx.ps1` now deploys and SHA-256 verifies the complete local runtime pair: `FolderHeatMap.wdx64` plus its sibling `FolderHeatMapEngine.exe`. The repository, database, settings and logs may remain on mapped/UNC/NAS storage.
+- The deployment helper now preserves a previously running engine by stopping it before runtime replacement and restarting the verified local engine hidden afterwards. A previously running Total Commander instance is likewise restored.
+- `start_engine.ps1` now prefers the engine beside the WDX path registered in the active Total Commander `WINCMD.INI`, with `dist\FolderHeatMapEngine.exe` retained only as a compatibility fallback.
+- No Heat mathematics, SMB/NAS identity rules, lifecycle behavior, database schema or user settings were changed.
+
 ## 1.54 - 09.09.2026
 
 - Moved the live Total Commander WDX out of the repository runtime path. `upgrade.cmd` / `upgrade.ps1` now keep `build` and `dist` as build/distribution artifacts and deploy the verified `FolderHeatMap.wdx64` to a stable local runtime after every successful build.
@@ -63,7 +71,7 @@
 - Updated `README.md` to document the stable `dist` runtime path and the complete `install.cmd` repair workflow. Runtime FolderHeatMap remains version 1.51.
 - Added automatic C++ build-environment bootstrap for fresh Windows machines. `upgrade.cmd` now runs the authoritative `ensure_build_tools.ps1` from `origin/devel` before the main upgrade runner.
 - If Visual Studio/Build Tools is absent, the dependency bootstrap uses `winget` to install Visual Studio 2022 Build Tools with the `Microsoft.VisualStudio.Workload.VCTools` workload and recommended components, including MSVC, Windows SDK and Visual Studio CMake support. Administrator elevation may be requested by Windows.
-- If Visual Studio/Build Tools already exists but the required C++/CMake workload is missing, the bootstrap uses the installed Visual Studio Installer to add the workload instead of installing a second IDE/toolchain.
+- If Visual Studio/Build Tools already exists but the required C++/CMake workload is missing, the dependency bootstrap uses the installed Visual Studio Installer to add the workload instead of installing a second IDE/toolchain.
 - Dependency installation is verified by resolving a usable CMake executable after installation. Missing `winget`, installer failure, cancelled elevation or an incomplete toolchain now produce an explicit dependency-bootstrap error instead of reaching the later generic CMake failure.
 - Added automatic Git `safe.directory` recovery to `upgrade.cmd` (`1.52-bootstrap-network-safe-directory`) for repositories on NAS, UNC paths and mapped network drives. If Git rejects an existing checkout with `detected dubious ownership`, the launcher now parses Git's own suggested repository-specific safe path, registers only that exact path in the user's global Git configuration, retries repository detection and continues normally.
 - `dubious ownership` is no longer treated as "not a Git repository", preventing a valid freshly cloned network checkout from re-entering bootstrap and attempting another clone.
@@ -120,7 +128,7 @@
 - Restored durable path-to-File-ID memory at anchors compatible with the 1.48 generated lifecycle code.
 - A confirmed MOVE now remembers canonical volume, File ID and object type for both old and new endpoints; later removal events can recover that identity even after the tracked database row has already migrated away from the old path.
 - The recovered identity feeds the existing 1.48 surviving-File-ID reconciliation path, allowing `queued_identity_reconciled` to migrate database history to the path where the object physically exists now instead of purging it.
-- No additional timing delays were added and the unsuccessful 1.41-1.43 SLOW lifecycle experiments remain rolled back.
+- No additional timing delays were added and the unsuccessful 1.41-1.43 speculative lifecycle changes remain rolled back.
 - Updated project/runtime/launcher metadata to 1.49 (`1.49-rapid-move-identity-memory`).
 
 ## 1.48 - 29.08.2026
