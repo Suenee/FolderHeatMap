@@ -6,7 +6,9 @@
 - `deploy_local_wdx.ps1` now deploys and SHA-256 verifies the complete local runtime pair: `FolderHeatMap.wdx64` plus its sibling `FolderHeatMapEngine.exe`. The repository, database, settings and logs may remain on mapped/UNC/NAS storage.
 - The deployment helper now preserves a previously running engine by stopping it before runtime replacement and restarting the verified local engine hidden afterwards. A previously running Total Commander instance is likewise restored.
 - `start_engine.ps1` now prefers the engine beside the WDX path registered in the active Total Commander `WINCMD.INI`, with `dist\FolderHeatMapEngine.exe` retained only as a compatibility fallback.
-- No Heat mathematics, SMB/NAS identity rules, lifecycle behavior, database schema or user settings were changed.
+- Fixed the Total Commander startup view after FolderHeatMap custom-column repair. If either panel was left in the `FolderHeatMap` helper/custom-column view, the repair now returns only that panel to the standard Details view (`ViewMode=0`, `SpecialView=0`, `ShowAllDetails=1`) before Total Commander is restarted.
+- Custom-column compaction now preserves unrelated user-selected custom views by title and remaps their `SpecialView` slot when numbering changes, instead of accidentally switching the panel to another custom view.
+- No Heat mathematics, SMB/NAS identity rules, lifecycle behavior, database schema or user settings outside the affected panel view selection were changed.
 
 ## 1.54 - 09.09.2026
 
