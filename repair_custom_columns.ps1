@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+$Version = '1.54'
 
 function Expand-Value([string]$value) {
     if ([string]::IsNullOrWhiteSpace($value)) { return '' }
@@ -87,8 +88,24 @@ $ini=Resolve-TcIni
 $tcExe=Resolve-TcExe
 $wasRunning=Stop-TcIfRunning
 try {
+    Write-Host "[TC] FolderHeatMap custom-column repair $Version"
     $rawTitles=Read-Ini $ini 'CustomFields' 'Titles'
     $titles=if ([string]::IsNullOrEmpty($rawTitles)) { @() } else { @([regex]::Split($rawTitles,'\|')) }
+
+    # Total Commander stores the currently selected custom-column view by numeric slot
+    # in [left]/[right] SpecialView. Remember its title before compaction so unrelated
+    # user views keep working even if their slot number changes.
+    $panelViews=@{}
+    foreach ($section in @('left','right')) {
+        $rawSpecial=Read-Ini $ini $section 'SpecialView' '0'
+        $special=0
+        if ([int]::TryParse($rawSpecial,[ref]$special) -and $special -gt 0 -and $special -le $titles.Count) {
+            $activeTitle=$titles[$special-1]
+            if (-not [string]::IsNullOrWhiteSpace($activeTitle)) {
+                $panelViews[$section]=[pscustomobject]@{ Slot=$special; Title=$activeTitle }
+            }
+        }
+    }
 
     $views=[Collections.Generic.List[object]]::new()
     for ($i=0; $i -lt $titles.Count; $i++) {
@@ -153,6 +170,30 @@ try {
     $count=@($kept | Where-Object { $_.Title -ieq 'FolderHeatMap' }).Count
     if ($count -ne 1) { throw "Custom-column repair verification failed: FolderHeatMap view count is $count instead of 1." }
 
+    # The FolderHeatMap custom-column view is a diagnostic/helper view only. If a panel
+    # was left in that view, return it to standard Details. For any other custom view,
+    # preserve the user's choice and remap its slot if compaction changed the numbering.
+    foreach ($section in @('left','right')) {
+        if (-not $panelViews.ContainsKey($section)) { continue }
+        $state=$panelViews[$section]
+        if ($state.Title -ieq 'FolderHeatMap') {
+            Write-Ini $ini $section 'ViewMode' '0'
+            Write-Ini $ini $section 'SpecialView' '0'
+            Write-Ini $ini $section 'ShowAllDetails' '1'
+            Write-Host "[TC] $section panel: FolderHeatMap helper columns disabled; standard Details view restored."
+            continue
+        }
+
+        $newSlot=0
+        for ($i=0; $i -lt $newTitles.Count; $i++) {
+            if ($newTitles[$i] -ieq $state.Title) { $newSlot=$i+1; break }
+        }
+        if ($newSlot -gt 0 -and $newSlot -ne $state.Slot) {
+            Write-Ini $ini $section 'SpecialView' ([string]$newSlot)
+            Write-Host "[TC] $section panel: preserved custom view '$($state.Title)' after slot compaction ($($state.Slot) -> $newSlot)."
+        }
+    }
+
     if ($removed -gt 0) {
         Write-Host "[TC] Removed $removed duplicate FolderHeatMap custom-column view(s); exactly one remains."
     } else {
@@ -161,6 +202,6 @@ try {
 } finally {
     if ($wasRunning -and $tcExe -and (Test-Path -LiteralPath $tcExe)) {
         Start-Process -FilePath $tcExe | Out-Null
-        Write-Host '[TC] Total Commander restarted after custom-column de-duplication.'
+        Write-Host '[TC] Total Commander restarted after custom-column repair.'
     }
 }
