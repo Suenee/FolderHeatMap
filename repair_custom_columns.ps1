@@ -92,21 +92,6 @@ try {
     $rawTitles=Read-Ini $ini 'CustomFields' 'Titles'
     $titles=if ([string]::IsNullOrEmpty($rawTitles)) { @() } else { @([regex]::Split($rawTitles,'\|')) }
 
-    # Total Commander stores the currently selected custom-column view by numeric slot
-    # in [left]/[right] SpecialView. Remember its title before compaction so unrelated
-    # user views keep working even if their slot number changes.
-    $panelViews=@{}
-    foreach ($section in @('left','right')) {
-        $rawSpecial=Read-Ini $ini $section 'SpecialView' '0'
-        $special=0
-        if ([int]::TryParse($rawSpecial,[ref]$special) -and $special -gt 0 -and $special -le $titles.Count) {
-            $activeTitle=$titles[$special-1]
-            if (-not [string]::IsNullOrWhiteSpace($activeTitle)) {
-                $panelViews[$section]=[pscustomobject]@{ Slot=$special; Title=$activeTitle }
-            }
-        }
-    }
-
     $views=[Collections.Generic.List[object]]::new()
     for ($i=0; $i -lt $titles.Count; $i++) {
         $title=$titles[$i]
@@ -170,28 +155,15 @@ try {
     $count=@($kept | Where-Object { $_.Title -ieq 'FolderHeatMap' }).Count
     if ($count -ne 1) { throw "Custom-column repair verification failed: FolderHeatMap view count is $count instead of 1." }
 
-    # The FolderHeatMap custom-column view is a diagnostic/helper view only. If a panel
-    # was left in that view, return it to standard Details. For any other custom view,
-    # preserve the user's choice and remap its slot if compaction changed the numbering.
+    # The FolderHeatMap custom-column view is a diagnostic/helper view only.
+    # Do not let the repair leave either panel in a SpecialView. Standard Details
+    # is selected by clearing SpecialView and enabling ShowAllDetails. ViewMode is
+    # intentionally left untouched because it belongs to Total Commander's normal
+    # panel-view state and was the wrong layer to modify in the previous attempt.
     foreach ($section in @('left','right')) {
-        if (-not $panelViews.ContainsKey($section)) { continue }
-        $state=$panelViews[$section]
-        if ($state.Title -ieq 'FolderHeatMap') {
-            Write-Ini $ini $section 'ViewMode' '0'
-            Write-Ini $ini $section 'SpecialView' '0'
-            Write-Ini $ini $section 'ShowAllDetails' '1'
-            Write-Host "[TC] $section panel: FolderHeatMap helper columns disabled; standard Details view restored."
-            continue
-        }
-
-        $newSlot=0
-        for ($i=0; $i -lt $newTitles.Count; $i++) {
-            if ($newTitles[$i] -ieq $state.Title) { $newSlot=$i+1; break }
-        }
-        if ($newSlot -gt 0 -and $newSlot -ne $state.Slot) {
-            Write-Ini $ini $section 'SpecialView' ([string]$newSlot)
-            Write-Host "[TC] $section panel: preserved custom view '$($state.Title)' after slot compaction ($($state.Slot) -> $newSlot)."
-        }
+        Write-Ini $ini $section 'SpecialView' '0'
+        Write-Ini $ini $section 'ShowAllDetails' '1'
+        Write-Host "[TC] $section panel: SpecialView disabled; standard Details columns requested."
     }
 
     if ($removed -gt 0) {
