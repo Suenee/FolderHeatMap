@@ -56,6 +56,17 @@ function Resolve-TcIni {
     throw 'Active Total Commander WINCMD.INI could not be located.'
 }
 
+function Resolve-SectionIni([string]$mainIni,[string]$section) {
+    $redirect=Expand-Value (Read-Ini $mainIni $section 'RedirectSection' '')
+    if ([string]::IsNullOrWhiteSpace($redirect)) { return $mainIni }
+    try {
+        if ([IO.Path]::IsPathRooted($redirect)) { return [IO.Path]::GetFullPath($redirect) }
+        return [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $mainIni) $redirect))
+    } catch {
+        throw "Invalid RedirectSection path for [$section]: $redirect"
+    }
+}
+
 function Stop-TcIfRunning {
     $running=@(Get-Process TOTALCMD64,TOTALCMD -ErrorAction SilentlyContinue)
     if ($running.Count -eq 0) { return $false }
@@ -155,15 +166,28 @@ try {
     $count=@($kept | Where-Object { $_.Title -ieq 'FolderHeatMap' }).Count
     if ($count -ne 1) { throw "Custom-column repair verification failed: FolderHeatMap view count is $count instead of 1." }
 
-    # The FolderHeatMap custom-column view is a diagnostic/helper view only.
-    # Do not let the repair leave either panel in a SpecialView. Standard Details
-    # is selected by clearing SpecialView and enabling ShowAllDetails. ViewMode is
-    # intentionally left untouched because it belongs to Total Commander's normal
-    # panel-view state and was the wrong layer to modify in the previous attempt.
+    # FolderHeatMap custom columns are a diagnostic/helper view only. Total Commander
+    # stores current panel state in [left]/[right], but these sections may be redirected
+    # (commonly to History.ini). Write the effective section file, not blindly WINCMD.INI.
+    # SpecialView=0 selects the normal Full/Details columns; ShowAllDetails=1 keeps Details.
+    # ViewMode is intentionally not touched.
     foreach ($section in @('left','right')) {
-        Write-Ini $ini $section 'SpecialView' '0'
-        Write-Ini $ini $section 'ShowAllDetails' '1'
-        Write-Host "[TC] $section panel: SpecialView disabled; standard Details columns requested."
+        $panelIni=Resolve-SectionIni $ini $section
+        if (-not (Test-Path -LiteralPath $panelIni)) {
+            New-Item -ItemType File -Path $panelIni -Force | Out-Null
+        }
+        Write-Ini $panelIni $section 'SpecialView' '0'
+        Write-Ini $panelIni $section 'ShowAllDetails' '1'
+        $verifySpecial=Read-Ini $panelIni $section 'SpecialView' ''
+        $verifyDetails=Read-Ini $panelIni $section 'ShowAllDetails' ''
+        if ($verifySpecial -ne '0' -or $verifyDetails -ne '1') {
+            throw "Could not verify standard Details view for [$section] in '$panelIni'."
+        }
+        if ([string]::Equals($panelIni,$ini,[StringComparison]::OrdinalIgnoreCase)) {
+            Write-Host "[TC] $section panel: SpecialView disabled in WINCMD.INI; standard Details requested."
+        } else {
+            Write-Host "[TC] $section panel: SpecialView disabled in redirected state file '$panelIni'; standard Details requested."
+        }
     }
 
     if ($removed -gt 0) {
