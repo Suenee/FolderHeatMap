@@ -398,6 +398,7 @@ On success:
 - verify final artifacts/deployment;
 - restore previous running state where applicable;
 - print important resulting paths/version;
+- on successful completion, show a clearly visible green final banner containing the resulting application/project version (for example `UPGRADE SUCCESSFUL` and `Project Name vX.XX`); this is a console presentation requirement in addition to the plain-text version/status recorded in the log;
 - report warnings separately;
 - end with `STATUS: SUCCESS` or `STATUS: WARNING`;
 - return zero;
