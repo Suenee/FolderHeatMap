@@ -63,6 +63,8 @@ Before changing an internal bootstrap argument, environment variable, label cont
 
 Do not assume that updating `upgrade.cmd` in the repository automatically updates the already-running launcher. The old launcher is exactly the component performing the transition to the new one.
 
+When a fresh bootstrap starts from a directory containing only a downloaded `upgrade.cmd`, remember that this file is initially untracked. After `git init` + `fetch`, a checkout of `origin/<branch>` will refuse to overwrite that untracked file if the branch contains its own tracked `upgrade.cmd`. Once execution has safely moved to `%TEMP%`, explicitly detect this authoritative bootstrap collision and remove only the known untracked bootstrap files (`upgrade.cmd`, and `upgrade.ps1` if applicable) before checkout. Verify with Git that the file is genuinely untracked before deleting it; never generalize this into deleting arbitrary untracked files.
+
 When repository identity/path must survive the transition, carry it redundantly when practical: use the explicit command-line argument expected by the current protocol and a stable environment-variable fallback. Validate the resolved value before using it. Never allow an empty repository path to silently fall through into Git/bootstrap operations.
 
 If a temporary launcher is created through `git show` or another transport, verify that the destination path variables used by the conversion/copy command are actually defined in that child process. Do not rely on delayed expansion or a parent-local variable magically becoming an environment variable visible to PowerShell.
@@ -79,6 +81,9 @@ A self-update implementation is not considered stable until all of these pass:
 - self-update where `git reset --hard` replaces the repository copy of `upgrade.cmd` while the temporary runner is active;
 - repository path containing spaces;
 - mapped network path;
+- fresh empty target containing only a downloaded `upgrade.cmd` -> complete checkout without manual deletion or Git commands;
+- fresh-bootstrap collision where the downloaded untracked `upgrade.cmd` has the same path as the tracked `origin/<branch>` updater -> current runner;
+- `git fetch` that writes normal progress/information to stderr but exits 0 -> success, not a PowerShell failure;
 - immediate second run after successful self-update.
 
 A build that succeeds but is followed by stray CMD errors is still an updater failure. Success is reached only when control returns cleanly to the caller with the correct exit code and no residual batch execution.
@@ -291,6 +296,10 @@ Use a dedicated native-command helper. Capture `$LASTEXITCODE` immediately after
 
 Avoid ambiguous PowerShell argument-array binding. Do not use parameter names that collide with automatic variables such as `$args`. A wrapper that accidentally invokes bare `git.exe` instead of `git fetch origin` can produce only Git's usage screen. Prefer an explicit parameter such as `$ArgumentList`, call it with named parameters, and test the exact invocation.
 
+PowerShell command/function names are case-insensitive. Never name a native-command wrapper `Git`, `Node`, `Npm`, etc. when it wraps `git`, `node`, `npm`, or another executable with the same command name. Otherwise an apparently explicit call such as `git --version` can resolve back to the wrapper and recurse indefinitely. Use a distinct verb-based name such as `Invoke-Git` / `Invoke-Native`, and invoke the native program explicitly as `git.exe`, `node.exe`, etc.
+
+A native-command wrapper must temporarily prevent Windows PowerShell 5.1 from promoting ordinary native stderr into a terminating PowerShell error, capture `$LASTEXITCODE` immediately, then restore the caller's error preference. Classification is based on the native exit code. A command such as `git fetch` that writes `From https://...` or progress to stderr and returns exit code 0 is successful; retain that stderr in diagnostics as native output, not as an updater error.
+
 ## 17. Logging is mandatory
 
 Every upgrade must produce one single-run diagnostic log. The preferred location is:
@@ -430,6 +439,8 @@ These failure classes have already cost development time and must not be redisco
 - rejecting authoritative bootstrap files as user dirty-tree changes during the very update that is supposed to replace them;
 - using `$args` or another PowerShell automatic-variable name for a native-command wrapper parameter and accidentally invoking bare `git.exe`;
 - treating native stderr as fatal while the native process exit code is zero;
+- naming a PowerShell wrapper `Git` and then calling `git` inside it, causing case-insensitive self-recursion instead of launching `git.exe`;
+- leaving the downloaded fresh-bootstrap `upgrade.cmd` untracked in the target after `git init` + `fetch`, causing checkout to abort because the remote branch contains a tracked file at the same path;
 - assuming whole-directory rename/move on SMB/network storage is a safe deployment primitive;
 - deleting the old live deployment before staged artifacts have been verified and a rollback path exists;
 - allowing console codepage/encoding mismatch to turn localized diagnostics into unreadable mojibake;
