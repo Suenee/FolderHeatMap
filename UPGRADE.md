@@ -38,6 +38,34 @@ Do not build a large label-heavy batch updater unless a project has a compelling
 
 Keep an application version in `x.xx` form and, where useful for diagnostics, a separate updater revision.
 
+### Application version visibility
+
+The application/project version and the updater revision are different values and must never be presented as if they were the same thing.
+
+As soon as the updater has enough repository metadata to determine both versions, the normal console output and `logs\\upgrade.log` must clearly show:
+
+- project/application name;
+- currently installed application version;
+- target application version from the authoritative target branch;
+- updater revision;
+- target branch.
+
+Preferred presentation:
+
+```text
+Application: HA Phone Dialer
+Current:     1.17
+Target:      1.18
+Updater:     1.11
+Branch:      main
+```
+
+The target version must come from the authoritative application-version source in the fetched target branch, not from a hard-coded duplicate in the updater. The current version must describe the application state before repository synchronization. If either value cannot be determined, print `unknown` with a diagnostic reason rather than substituting the updater revision.
+
+When the current and target application versions are equal, say so explicitly (for example `Current: 1.18 / Target: 1.18 - already current`). Do not make the user infer this from commit hashes.
+
+The user-facing instruction that asks the user to run `upgrade.cmd` should name the expected target application version whenever it is known, for example: `Run upgrade.cmd to update HA Phone Dialer to v1.18.`
+
 ## 3. Self-update is phase zero
 
 The updater in the target branch is authoritative. An old local updater must be able to reach and execute the current upgrade implementation before performing the real upgrade.
